@@ -213,3 +213,30 @@ def test_frontdesk_question_html_deduplicates_inline_options(tmp_path):
     assert "A) Find old answers; B) Clean notes" not in html
     assert "A. A) Find old answers" not in html
     assert ">Find old answers<" in html
+
+
+def test_frontdesk_question_html_preserves_rich_inline_options(tmp_path):
+    api = make_api(tmp_path)
+
+    html = api._questions_html(
+        [
+            {
+                "text": (
+                    "你希望这个 Skill 每天帮你产出的知识库结果是哪一种？ "
+                    "A. 每日增量摘要：按日期汇总今天/最近对话中的关键决策、代码经验、待办和灵感； "
+                    "B. 项目 wiki：围绕项目沉淀背景、架构、决策和当前进展； "
+                    "C. 最佳实践库：提炼可复用经验、踩坑记录和操作手册"
+                ),
+                "options": ["每日增量摘要", "项目 wiki", "最佳实践库"],
+                "reason": "明确产出形态，才能决定 Skill 的整理方式。",
+            }
+        ],
+        readiness="needs_clarification",
+        next_action="ask_user",
+    )
+
+    assert "你希望这个 Skill 每天帮你产出的知识库结果是哪一种？" in html
+    assert "关键决策、代码经验、待办和灵感" in html
+    assert "围绕项目沉淀背景、架构、决策和当前进展" in html
+    assert ">每日增量摘要：" in html
+    assert "A. A." not in html

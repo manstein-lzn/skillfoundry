@@ -1066,11 +1066,11 @@ class SkillFoundryAPI:
             reason_html = (
                 f'<div class="small muted question-reason">{escape(reason)}</div>' if reason else ""
             )
-            question_text = _clean_frontdesk_question_text(str(question.get("text") or ""), options)
+            question_text, question_options = _frontdesk_question_parts(str(question.get("text") or ""), options)
             rows.append(
                 '<div class="question">'
                 f'<div class="question-title">{escape(question_text)}</div>'
-                + self._question_options_html(options)
+                + self._question_options_html(question_options)
                 + reason_html
                 + "</div>"
             )
@@ -1322,8 +1322,41 @@ def _frontdesk_status_description(readiness: str, next_action: str) -> str:
     return "系统正在整理上下文，准备进入下一轮判断。"
 
 
-_FRONTDESK_OPTION_MARKER_RE = re.compile(r"(?:(?<=\s)|(?<=[：:；;，,。]))[A-Z]\s*[\)\.、:：]")
+_FRONTDESK_OPTION_MARKER_RE = re.compile(r"(?:^|[\s：:；;，,。?？])([A-Z])\s*[\)\.、:：]\s*")
 _FRONTDESK_OPTION_PREFIX_RE = re.compile(r"^\s*[A-Z]\s*[\)\.、:：]\s*")
+
+
+def _frontdesk_question_parts(text: str, options: Any) -> tuple[str, list[str]]:
+    compact = " ".join(text.split())
+    fallback_options = _clean_frontdesk_options(options)
+    inline_question, inline_options = _split_inline_frontdesk_options(compact)
+    if inline_options and _frontdesk_options_are_richer(inline_options, fallback_options):
+        return inline_question, inline_options
+    return _clean_frontdesk_question_text(compact, fallback_options), fallback_options
+
+
+def _split_inline_frontdesk_options(text: str) -> tuple[str, list[str]]:
+    matches = list(_FRONTDESK_OPTION_MARKER_RE.finditer(text))
+    if len(matches) < 2:
+        return text, []
+
+    question_text = text[: matches[0].start(1)].rstrip(" ：:；;，,。")
+    options: list[str] = []
+    for index, marker in enumerate(matches):
+        start = marker.end()
+        end = matches[index + 1].start(1) if index + 1 < len(matches) else len(text)
+        option = text[start:end].strip(" ：:；;，,。")
+        if option:
+            options.append(option)
+    return question_text, options
+
+
+def _frontdesk_options_are_richer(inline_options: list[str], fallback_options: list[str]) -> bool:
+    if not fallback_options:
+        return True
+    if len(inline_options) != len(fallback_options):
+        return len("".join(inline_options)) > len("".join(fallback_options))
+    return len("".join(inline_options)) > len("".join(fallback_options)) + len(inline_options) * 4
 
 
 def _clean_frontdesk_question_text(text: str, options: Any) -> str:
@@ -1331,8 +1364,19 @@ def _clean_frontdesk_question_text(text: str, options: Any) -> str:
     if isinstance(options, list) and options:
         marker = _FRONTDESK_OPTION_MARKER_RE.search(compact)
         if marker is not None:
-            compact = compact[: marker.start()].rstrip(" ：:；;，,。")
+            compact = compact[: marker.start(1)].rstrip(" ：:；;，,。")
     return compact
+
+
+def _clean_frontdesk_options(options: Any) -> list[str]:
+    if not isinstance(options, list):
+        return []
+    cleaned = []
+    for option in options:
+        option_text = _clean_frontdesk_option_text(str(option))
+        if option_text:
+            cleaned.append(option_text)
+    return cleaned
 
 
 def _clean_frontdesk_option_text(text: str) -> str:
