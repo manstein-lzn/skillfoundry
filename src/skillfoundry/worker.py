@@ -5,9 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 import json
+import os
 from pathlib import Path, PurePosixPath
+import shlex
+import subprocess
 import time
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 
 from .schema import (
     BuildContract,
@@ -15,6 +18,7 @@ from .schema import (
     JsonValue,
     WorkerInvocation,
     ensure_json_compatible,
+    sha256_bytes,
     sha256_file,
     sha256_json,
     utc_now,
@@ -24,6 +28,10 @@ from .workspace import JobWorkspace
 
 
 WORKER_ADAPTER_VERSION = "skillfoundry.worker_adapter.v1"
+CODEX_PILOT_ENV_VAR = "SKILLFOUNDRY_RUN_CODEX_PILOT"
+CODEX_USAGE_UNAVAILABLE_REASON = (
+    "Codex CLI pilot usage is unavailable because the CLI boundary does not expose reliable provider usage."
+)
 
 
 class WorkerAttemptLimitError(ValueError):
@@ -87,6 +95,70 @@ class BuildWorker(Protocol):
 
     def run(self, context: "WorkerRunContext") -> WorkerExecutionOutcome:
         """Run the worker against a confined context."""
+
+
+@dataclass(frozen=True)
+class CodexCommandResult:
+    """Result returned by a Codex command runner.
+
+    Tests inject deterministic fake runners with this shape. The production
+    runner maps ``subprocess.run`` and ``TimeoutExpired`` to the same boundary.
+    """
+
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+    timed_out: bool = False
+
+
+class CodexCommandRunner(Protocol):
+    """Command runner boundary used by ``CodexWorker``."""
+
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        input_text: str,
+        cwd: Path,
+        timeout_seconds: int,
+    ) -> CodexCommandResult:
+        """Run ``command`` with ``input_text`` passed to stdin."""
+
+
+class SubprocessCodexCommandRunner:
+    """Live Codex CLI runner used only when the pilot is explicitly enabled."""
+
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        input_text: str,
+        cwd: Path,
+        timeout_seconds: int,
+    ) -> CodexCommandResult:
+        try:
+            completed = subprocess.run(
+                list(command),
+                input=input_text,
+                cwd=cwd,
+                timeout=timeout_seconds,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return CodexCommandResult(
+                returncode=-1,
+                stdout=_process_output_text(exc.stdout),
+                stderr=_process_output_text(exc.stderr),
+                timed_out=True,
+            )
+        return CodexCommandResult(
+            returncode=completed.returncode,
+            stdout=_process_output_text(completed.stdout),
+            stderr=_process_output_text(completed.stderr),
+            timed_out=False,
+        )
 
 
 @dataclass
@@ -460,20 +532,248 @@ class FakeWorker:
 
 
 class CodexWorker:
-    """Placeholder for the future WP8 Codex adapter; it does not run Codex."""
+    """WP8 Codex CLI adapter behind the ``BuildWorker`` protocol.
+
+    Codex remains an external worker boundary: SkillFoundry constrains the
+    workspace prompt, captures command stdout/stderr, and verifies resulting
+    package files independently. The adapter does not claim to control or
+    replay Codex internal prompt planning, tool loop, context compaction,
+    cache, or cost.
+    """
+
+    def __init__(
+        self,
+        *,
+        executable: str | Sequence[str] = "codex",
+        sandbox: str = "workspace-write",
+        approval_policy: str | None = "never",
+        model: str | None = None,
+        profile: str | None = None,
+        config_overrides: Mapping[str, str] | Sequence[str] | None = None,
+        extra_args: Sequence[str] | None = None,
+        command_runner: CodexCommandRunner | None = None,
+        required_package_files: Sequence[str] = ("package/SKILL.md",),
+        require_live_opt_in: bool = True,
+        skip_git_repo_check: bool = True,
+    ) -> None:
+        self.executable = _normalize_command_parts(executable, "executable")
+        self.sandbox = _require_optional_cli_value(sandbox, "sandbox")
+        self.approval_policy = (
+            _require_optional_cli_value(approval_policy, "approval_policy") if approval_policy is not None else None
+        )
+        self.model = _require_optional_cli_value(model, "model") if model is not None else None
+        self.profile = _require_optional_cli_value(profile, "profile") if profile is not None else None
+        self.config_overrides = _normalize_config_overrides(config_overrides)
+        self.extra_args = _normalize_optional_command_parts(extra_args, "extra_args")
+        self.required_package_files = _normalize_required_package_files(required_package_files)
+        self.require_live_opt_in = require_live_opt_in
+        self.skip_git_repo_check = bool(skip_git_repo_check)
+        if command_runner is None:
+            self.command_runner: CodexCommandRunner = SubprocessCodexCommandRunner()
+            self._runner_requires_live_opt_in = True
+        else:
+            self.command_runner = command_runner
+            self._runner_requires_live_opt_in = isinstance(command_runner, SubprocessCodexCommandRunner)
 
     @property
     def worker_type(self) -> str:
-        return "codex:placeholder"
+        return "codex:exec"
+
+    def build_command(self, context: WorkerRunContext) -> list[str]:
+        """Assemble the non-interactive ``codex exec`` command."""
+
+        workspace_root = context._workspace.root.resolve(strict=True)
+        command = list(self.executable)
+        if self.approval_policy is not None:
+            # The installed CLI exposes approval policy as a top-level option.
+            command.extend(["--ask-for-approval", self.approval_policy])
+        command.append("exec")
+        command.extend(["--cd", str(workspace_root)])
+        command.extend(["--sandbox", self.sandbox])
+        if self.skip_git_repo_check:
+            command.append("--skip-git-repo-check")
+        if self.model is not None:
+            command.extend(["--model", self.model])
+        if self.profile is not None:
+            command.extend(["--profile", self.profile])
+        for config in self.config_overrides:
+            command.extend(["--config", config])
+        command.extend(self.extra_args)
+        command.append("-")
+        return command
+
+    def build_prompt(self, context: WorkerRunContext) -> str:
+        """Build the prompt sent to Codex stdin."""
+
+        manifest_json = json.dumps(
+            ensure_json_compatible(dict(context.input_manifest)),
+            sort_keys=True,
+            indent=2,
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        required_outputs = "\n".join(f"- {path}" for path in self.required_package_files)
+        return "\n".join(
+            [
+                "You are the SkillFoundry CodexWorker pilot running behind WorkerAdapter.",
+                "",
+                f"Workspace root: {context._workspace.root.resolve(strict=True)}",
+                f"Job id: {context.job_id}",
+                f"Attempt id: {context.attempt_id}",
+                f"Invocation id: {context.invocation_id}",
+                "",
+                "Read the locked workspace inputs:",
+                "- build_contract.yaml",
+                "- skill_spec.yaml",
+                "- verification_spec.yaml",
+                "- worker_input.md",
+                f"- {context.attempt_dir_ref}/input_manifest.json",
+                "",
+                "Write only under these paths:",
+                "- package/",
+                f"- {context.attempt_dir_ref}/",
+                "Do not create, modify, delete, move, or chmod any file outside package/ "
+                f"or {context.attempt_dir_ref}/.",
+                "",
+                "Required package output:",
+                required_outputs,
+                "",
+                "Build a Codex Skill package candidate from the workspace inputs. Keep all references, scripts, "
+                "and tests inside package/.",
+                "Do not edit locked inputs, verifier outputs, registry outputs, or files from previous attempts.",
+                "Do not self-approve the package. CodexWorker self-report is not acceptance evidence.",
+                "The independent Verifier and LocalSkillRegistry remain the final SkillFoundry trust gates.",
+                "SkillFoundry records Codex stdout/stderr as boundary evidence only. Do not claim ContextForge "
+                "controls or replays Codex internal prompt planning, tool loop, context compaction, cache, or cost.",
+                "",
+                "Worker input manifest JSON:",
+                "```json",
+                manifest_json,
+                "```",
+                "",
+            ]
+        )
 
     def run(self, context: WorkerRunContext) -> WorkerExecutionOutcome:
+        if self._runner_requires_live_opt_in and self.require_live_opt_in:
+            enabled = os.environ.get(CODEX_PILOT_ENV_VAR) == "1"
+            if not enabled:
+                return WorkerExecutionOutcome(
+                    status="failed",
+                    exit_status="not_enabled",
+                    summary="Live Codex pilot is disabled; set the opt-in environment variable to run codex exec.",
+                    failures=[f"{CODEX_PILOT_ENV_VAR}=1 is required for live Codex CLI invocation"],
+                    transcript_lines=[
+                        "live Codex pilot is disabled before command execution",
+                        f"required_env={CODEX_PILOT_ENV_VAR}",
+                    ],
+                    usage_unavailable_reason=CODEX_USAGE_UNAVAILABLE_REASON,
+                )
+
+        command = self.build_command(context)
+        prompt = self.build_prompt(context)
+        workspace_root = context._workspace.root.resolve(strict=True)
+        before_snapshot = _snapshot_workspace(workspace_root)
+        try:
+            command_result = self.command_runner.run(
+                command,
+                input_text=prompt,
+                cwd=workspace_root,
+                timeout_seconds=context.timeout_seconds,
+            )
+        except FileNotFoundError as exc:
+            return WorkerExecutionOutcome(
+                status="failed",
+                exit_status="failure",
+                summary="Codex executable was not found.",
+                failures=[f"codex executable not found: {exc}"],
+                transcript_lines=_codex_transcript_lines(
+                    command=command,
+                    cwd=workspace_root,
+                    prompt=prompt,
+                    result=None,
+                    extra_lines=[f"runner exception: FileNotFoundError: {exc}"],
+                ),
+                usage_unavailable_reason=CODEX_USAGE_UNAVAILABLE_REASON,
+            )
+        except Exception as exc:
+            return WorkerExecutionOutcome(
+                status="failed",
+                exit_status="failure",
+                summary="Codex command runner failed before a usable result was returned.",
+                failures=[f"codex command runner failed: {type(exc).__name__}: {exc}"],
+                transcript_lines=_codex_transcript_lines(
+                    command=command,
+                    cwd=workspace_root,
+                    prompt=prompt,
+                    result=None,
+                    extra_lines=[f"runner exception: {type(exc).__name__}: {exc}"],
+                ),
+                usage_unavailable_reason=CODEX_USAGE_UNAVAILABLE_REASON,
+            )
+
+        transcript_lines = _codex_transcript_lines(command=command, cwd=workspace_root, prompt=prompt, result=command_result)
+        if command_result.timed_out:
+            return WorkerExecutionOutcome(
+                status="failed",
+                exit_status="timeout",
+                summary="Codex CLI invocation timed out.",
+                failures=[f"codex exec timed out after {context.timeout_seconds} seconds"],
+                transcript_lines=[*transcript_lines, "codex timeout classified as worker failure"],
+                usage_unavailable_reason=CODEX_USAGE_UNAVAILABLE_REASON,
+                simulated_duration_ms=context.timeout_seconds * 1000 + 1,
+                timed_out=True,
+            )
+
+        if command_result.returncode != 0:
+            return WorkerExecutionOutcome(
+                status="failed",
+                exit_status="failure",
+                summary="Codex CLI invocation exited with a nonzero status.",
+                failures=[f"codex exec exited with return code {command_result.returncode}"],
+                transcript_lines=transcript_lines,
+                usage_unavailable_reason=CODEX_USAGE_UNAVAILABLE_REASON,
+            )
+
+        after_snapshot = _snapshot_workspace(workspace_root)
+        disallowed_changes = _changed_paths_outside_roots(
+            before_snapshot,
+            after_snapshot,
+            allowed_roots=context.writable_roots,
+        )
+        if disallowed_changes:
+            preview = ", ".join(disallowed_changes[:10])
+            if len(disallowed_changes) > 10:
+                preview += f", ... ({len(disallowed_changes)} total)"
+            return WorkerExecutionOutcome(
+                status="failed",
+                exit_status="rejected",
+                summary="Codex modified files outside the allowed worker paths.",
+                failures=[f"disallowed workspace changes: {preview}"],
+                transcript_lines=[*transcript_lines, "adapter rejected disallowed workspace changes"],
+                usage_unavailable_reason=CODEX_USAGE_UNAVAILABLE_REASON,
+            )
+
+        missing_outputs = _missing_required_package_files(context._workspace, self.required_package_files)
+        if missing_outputs:
+            return WorkerExecutionOutcome(
+                status="failed",
+                exit_status="failure",
+                summary="Codex CLI completed but did not produce all required package outputs.",
+                failures=[f"missing expected package file: {path}" for path in missing_outputs],
+                transcript_lines=[*transcript_lines, "adapter classified missing package output as failure"],
+                usage_unavailable_reason=CODEX_USAGE_UNAVAILABLE_REASON,
+            )
+
+        artifacts = _collect_package_file_refs(context._workspace)
         return WorkerExecutionOutcome(
-            status="failed",
-            exit_status="unsupported",
-            summary="CodexWorker is a placeholder; real Codex invocation is intentionally not implemented in WP3.",
-            failures=["real Codex worker integration is deferred until WP8"],
-            transcript_lines=["no Codex CLI, SDK, LLM call, shell runtime, or MCP runtime was invoked"],
-            usage_unavailable_reason="CodexWorker placeholder does not invoke a provider.",
+            status="completed",
+            exit_status="success",
+            summary="Codex CLI completed and produced required package outputs; verifier approval is still required.",
+            artifacts=artifacts,
+            transcript_lines=transcript_lines,
+            usage_available=False,
+            usage_unavailable_reason=CODEX_USAGE_UNAVAILABLE_REASON,
         )
 
 
@@ -485,6 +785,154 @@ def _attempt_artifact_refs(attempt_id: str) -> dict[str, str]:
         "diff": f"{attempt_dir}/output_diff.patch",
         "transcript": f"{attempt_dir}/worker_transcript.log",
     }
+
+
+def _process_output_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _require_optional_cli_value(value: str, name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be a non-empty string")
+    if "\x00" in value:
+        raise ValueError(f"{name} must not contain NUL bytes")
+    return value
+
+
+def _normalize_command_parts(value: str | Sequence[str], name: str) -> tuple[str, ...]:
+    if isinstance(value, str):
+        parts = (value,)
+    else:
+        parts = tuple(str(part) for part in value)
+    if not parts:
+        raise ValueError(f"{name} must not be empty")
+    for part in parts:
+        _require_optional_cli_value(part, name)
+    return parts
+
+
+def _normalize_optional_command_parts(value: str | Sequence[str] | None, name: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        parts = (value,)
+    else:
+        parts = tuple(str(part) for part in value)
+    for part in parts:
+        _require_optional_cli_value(part, name)
+    return parts
+
+
+def _normalize_config_overrides(config_overrides: Mapping[str, str] | Sequence[str] | None) -> tuple[str, ...]:
+    if config_overrides is None:
+        return ()
+    if isinstance(config_overrides, Mapping):
+        configs = tuple(f"{key}={value}" for key, value in config_overrides.items())
+    elif isinstance(config_overrides, str):
+        configs = (config_overrides,)
+    else:
+        configs = tuple(str(item) for item in config_overrides)
+    for config in configs:
+        _require_optional_cli_value(config, "config_overrides")
+        if "=" not in config:
+            raise ValueError(f"config override must be formatted as key=value: {config!r}")
+    return configs
+
+
+def _normalize_required_package_files(required_package_files: Sequence[str]) -> tuple[str, ...]:
+    refs = tuple(str(path) for path in required_package_files)
+    if not refs:
+        raise ValueError("required_package_files must not be empty")
+    normalized: list[str] = []
+    package_root = PurePosixPath("package")
+    for ref in refs:
+        safe_ref = validate_relative_path(ref)
+        if safe_ref == package_root or not _is_under_or_equal(safe_ref, package_root):
+            raise ValueError(f"required package file must be under package/: {ref}")
+        normalized.append(safe_ref.as_posix())
+    return tuple(normalized)
+
+
+def _codex_transcript_lines(
+    *,
+    command: Sequence[str],
+    cwd: Path,
+    prompt: str,
+    result: CodexCommandResult | None,
+    extra_lines: Sequence[str] = (),
+) -> list[str]:
+    lines = [
+        f"codex_command={shlex.join(list(command))}",
+        f"codex_cwd={cwd}",
+        f"codex_prompt_sha256={sha256_bytes(prompt.encode('utf-8'))}",
+    ]
+    if result is not None:
+        lines.append(f"codex_returncode={result.returncode}")
+        lines.append(f"codex_timed_out={str(result.timed_out).lower()}")
+        lines.extend(_prefixed_stream_lines("stdout", result.stdout))
+        lines.extend(_prefixed_stream_lines("stderr", result.stderr))
+    lines.extend(extra_lines)
+    return lines
+
+
+def _prefixed_stream_lines(stream_name: str, text: str) -> list[str]:
+    if not text:
+        return [f"{stream_name}: <empty>"]
+    return [f"{stream_name}: {line}" for line in text.splitlines()]
+
+
+def _changed_paths_outside_roots(
+    before: list[dict[str, JsonValue]],
+    after: list[dict[str, JsonValue]],
+    *,
+    allowed_roots: Sequence[str],
+) -> list[str]:
+    allowed = tuple(validate_relative_path(root) for root in allowed_roots)
+    before_by_path = {str(item["path"]): item for item in before}
+    after_by_path = {str(item["path"]): item for item in after}
+    changed_paths: list[str] = []
+    for path in sorted(set(before_by_path) | set(after_by_path)):
+        if _hash_for_entry(before_by_path.get(path)) == _hash_for_entry(after_by_path.get(path)) and before_by_path.get(
+            path, {}
+        ).get("kind") == after_by_path.get(path, {}).get("kind"):
+            continue
+        try:
+            safe_path = validate_relative_path(path)
+        except PathSecurityError:
+            changed_paths.append(path)
+            continue
+        if not any(_is_under_or_equal(safe_path, root) for root in allowed):
+            changed_paths.append(path)
+    return changed_paths
+
+
+def _missing_required_package_files(workspace: JobWorkspace, required_package_files: Sequence[str]) -> list[str]:
+    missing: list[str] = []
+    for ref in required_package_files:
+        try:
+            path = workspace.resolve_path(ref, must_exist=True)
+        except Exception:
+            missing.append(ref)
+            continue
+        if not path.is_file():
+            missing.append(ref)
+    return missing
+
+
+def _collect_package_file_refs(workspace: JobWorkspace) -> list[str]:
+    try:
+        package_dir = workspace.resolve_path("package", must_exist=True)
+    except Exception:
+        return []
+    refs: list[str] = []
+    for path in sorted(package_dir.rglob("*")):
+        if path.is_file():
+            refs.append(path.relative_to(workspace.root.resolve(strict=True)).as_posix())
+    return refs
 
 
 def _attempt_dir_ref(attempt_id: str) -> str:

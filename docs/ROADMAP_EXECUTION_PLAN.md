@@ -42,8 +42,8 @@ WP4  Independent Verifier         已完成
 WP5  ContextForge integration     已完成
 WP6  Local Registry MVP           已完成
 WP7  Offline E2E MVP              已完成
-WP8  CodexWorker pilot            待启动
-WP9  Minimal API/UI               待 WP7 后启动
+WP8  CodexWorker pilot            已完成
+WP9  Minimal API/UI               待启动
 WP10 Feedback loop                待 API/UI 和 Registry 稳定后启动
 ```
 
@@ -69,8 +69,8 @@ WP10 Feedback loop                待 API/UI 和 Registry 稳定后启动
 | WP5  | ContextForge Integration   | context/evidence adapter | owned vs external split | WP1-WP4                  | done                       |
 | WP6  | Local Registry MVP         | verified asset store     | hash/provenance gate    | WP1, WP4, WP5            | done                       |
 | WP7  | Offline E2E MVP            | local full loop + report | build/verify/repair/reg | WP1-WP6                  | done                       |
-| WP8  | CodexWorker Pilot          | real worker adapter      | sandbox + verifier gate | WP1-WP7                  | next                       |
-| WP9  | Minimal API/UI             | internal product entry   | submit/view/download    | WP7, optional WP8        | planned                    |
+| WP8  | CodexWorker Pilot          | real worker adapter      | sandbox + verifier gate | WP1-WP7                  | done                       |
+| WP9  | Minimal API/UI             | internal product entry   | submit/view/download    | WP7, optional WP8        | next                       |
 | WP10 | QA Lab Expansion           | richer evaluators        | fixture + judge quality | WP4, WP7                 | planned                    |
 | WP11 | Feedback + Versioning      | repair/version loop      | feedback creates jobs   | WP6-WP10                 | planned                    |
 | WP12 | Production Hardening       | ops/security/perf        | stable multi-job runs   | WP7-WP11                 | planned                    |
@@ -562,7 +562,7 @@ skillfoundry report --job runs/demo-001
 - 真实 Codex Worker 可作为可选 builder；
 - FakeWorker offline path 仍然稳定。
 
-状态：计划中。
+状态：已完成。
 
 ## 15. WP9：Minimal API/UI
 
@@ -813,11 +813,11 @@ WP0
 
 ## 22. 推荐下一步
 
-下一步只做 WP8：
+下一步只做 WP9：
 
 ```text
-CodexWorker Pilot:
-real worker adapter -> sandbox/timeout boundary -> verifier gate -> registry gate
+Minimal API/UI:
+submit requirement -> view job/report -> query registry -> download approved package
 ```
 
-WP8 只能在不破坏 WP7 离线闭环的前提下推进。真实 Codex Worker 仍然必须被视为外部黑盒 builder，Verifier 和 Registry 继续作为最终信任边界。
+WP9 可以先基于 WP7 离线闭环和 WP8 可选 CodexWorker adapter 做最小内部入口。不要在 WP9 扩展成复杂多租户产品，重点是提交需求、查看状态、查看 final report、查询 registry、下载 approved package，并保持 workspace 路径安全。
