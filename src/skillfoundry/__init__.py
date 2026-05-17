@@ -29,6 +29,7 @@ from .schema import (
     sha256_json,
 )
 from .security import PathSecurityError, assert_under_root, resolve_under_root, validate_relative_path
+from .verifier import DEFAULT_REQUIRED_SKILL_SECTIONS, VERIFIER_VERSION, Verifier, VerifierCheck
 from .workspace import (
     LOCKED_INPUT_PATHS,
     JobWorkspace,
@@ -63,6 +64,7 @@ __all__ = [
     "LOCKED_INPUT_PATHS",
     "LockedInputTamperError",
     "PathSecurityError",
+    "DEFAULT_REQUIRED_SKILL_SECTIONS",
     "RegistryEntry",
     "RepairAttempt",
     "Route",
@@ -71,6 +73,9 @@ __all__ = [
     "SkillSpec",
     "Stage",
     "StateValidationError",
+    "VERIFIER_VERSION",
+    "Verifier",
+    "VerifierCheck",
     "VerificationResult",
     "VerificationSpec",
     "WorkerAdapter",
