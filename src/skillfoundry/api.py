@@ -421,28 +421,41 @@ class SkillFoundryAPI:
                 "    :root { color-scheme: light; font-family: system-ui, sans-serif; color: #172026; background: #f6f7f8; }",
                 "    body { margin: 0; }",
                 "    header { background: #172026; color: white; padding: 16px 24px; }",
-                "    main { max-width: 1120px; margin: 0 auto; padding: 24px; display: grid; gap: 18px; }",
+                "    main { max-width: 1160px; margin: 0 auto; padding: 24px; display: grid; gap: 18px; }",
                 "    h1 { font-size: 22px; margin: 0; font-weight: 650; letter-spacing: 0; }",
                 "    h2 { font-size: 17px; margin: 0 0 10px; font-weight: 650; letter-spacing: 0; }",
                 "    h3 { font-size: 14px; margin: 0 0 8px; font-weight: 650; letter-spacing: 0; }",
                 "    a { color: #075985; text-decoration: none; } a:hover { text-decoration: underline; }",
-                "    .grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr); gap: 18px; align-items: start; }",
+                "    .grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(260px, 0.55fr); gap: 18px; align-items: start; }",
                 "    .panel { background: white; border: 1px solid #dbe0e3; border-radius: 8px; padding: 16px; }",
                 "    .stack { display: grid; gap: 12px; }",
-                "    .bubble { border: 1px solid #dbe0e3; border-radius: 8px; padding: 10px 12px; background: #fbfcfd; }",
-                "    .question { border-left: 3px solid #075985; padding: 10px 12px; background: #f4f8fb; }",
+                "    .conversation { display: grid; gap: 10px; }",
+                "    .bubble { max-width: 84%; border: 1px solid #dbe0e3; border-radius: 8px; padding: 10px 12px; background: #fbfcfd; line-height: 1.55; overflow-wrap: anywhere; }",
+                "    .bubble.user { justify-self: end; background: #e8f1f8; border-color: #cfe0ed; }",
+                "    .bubble.assistant, .bubble.system, .bubble.tool { justify-self: start; }",
+                "    .question { justify-self: start; max-width: 92%; border: 1px solid #d5e3ed; border-left: 3px solid #075985; border-radius: 8px; padding: 12px 14px; background: #f4f8fb; display: grid; gap: 10px; }",
+                "    .question-title { font-size: 16px; line-height: 1.55; font-weight: 650; overflow-wrap: anywhere; }",
+                "    .question-reason { line-height: 1.5; }",
+                "    .option-list { display: grid; gap: 8px; margin-top: 2px; }",
+                "    .option-item { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: start; text-align: left; padding: 8px 10px; border: 1px solid #d5e3ed; border-radius: 6px; background: #fff; color: #172026; line-height: 1.5; overflow-wrap: anywhere; cursor: pointer; }",
+                "    .option-item:hover { border-color: #075985; background: #f8fbfd; text-decoration: none; }",
+                "    .option-key { font-weight: 650; color: #075985; }",
                 "    .muted { color: #667780; }",
                 "    .small { font-size: 13px; }",
                 "    .status { display: inline-flex; width: fit-content; border-radius: 999px; padding: 4px 9px; background: #e8f1f8; color: #075985; font-size: 13px; font-weight: 650; }",
                 "    .success { background: #e9f7ef; color: #166534; }",
                 "    .danger { background: #fdecec; color: #991b1b; }",
-                "    textarea { min-height: 130px; resize: vertical; font: inherit; border: 1px solid #c7ced3; border-radius: 6px; padding: 8px 10px; }",
+                "    label { display: grid; gap: 6px; font-size: 13px; color: #43515a; }",
+                "    textarea { box-sizing: border-box; width: 100%; min-height: 78px; max-height: 220px; resize: vertical; font: inherit; border: 1px solid #c7ced3; border-radius: 8px; padding: 10px 12px; line-height: 1.5; }",
+                "    textarea:focus { outline: 2px solid #b9d7ea; border-color: #075985; }",
                 "    form { display: grid; gap: 10px; }",
+                "    .answer-form { border-top: 1px solid #eef1f3; padding-top: 12px; }",
                 "    button { width: fit-content; border: 1px solid #172026; border-radius: 6px; padding: 8px 12px; background: #172026; color: white; font: inherit; cursor: pointer; }",
                 "    button[disabled] { opacity: .65; cursor: wait; }",
                 "    dl { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px 12px; margin: 0; }",
                 "    dt { color: #667780; } dd { margin: 0; overflow-wrap: anywhere; }",
                 "    ul { margin: 0; padding-left: 20px; }",
+                "    summary { cursor: pointer; color: #43515a; font-weight: 650; }",
                 "    @media (max-width: 760px) { main { padding: 14px; } .grid { grid-template-columns: 1fr; } dl { grid-template-columns: 1fr; } }",
                 "  </style>",
                 "</head>",
@@ -1019,15 +1032,17 @@ class SkillFoundryAPI:
     def _conversation_html(self, turns: list[ConversationTurn]) -> str:
         if not turns:
             return '<p class="muted">暂无对话。</p>'
-        rows = []
+        rows = ['<div class="conversation">']
         for turn in turns:
             role = "你" if turn.role == "user" else turn.role
+            role_class = escape(turn.role if turn.role in {"user", "assistant", "system", "tool"} else "system")
             rows.append(
-                '<div class="bubble">'
+                f'<div class="bubble {role_class}">'
                 f'<div class="small muted">{escape(role)}</div>'
                 f"<div>{escape(turn.content)}</div>"
                 "</div>"
             )
+        rows.append("</div>")
         return "\n".join(rows)
 
     def _questions_html(self, questions: list[Any], *, readiness: str, next_action: str) -> str:
@@ -1041,15 +1056,21 @@ class SkillFoundryAPI:
             return '<div class="bubble"><strong>澄清失败。</strong><div class="small muted">模型输出或系统边界校验未通过。</div></div>'
         if not questions:
             return '<p class="muted">等待下一轮问题。</p>'
-        rows = ["<div class=\"stack\"><h3>需要你确认</h3>"]
+        rows = ['<div class="conversation"><h3>接下来先确认一件事</h3>']
         for question in questions:
             if not isinstance(question, Mapping):
                 continue
+            options = question.get("options")
+            reason = str(question.get("reason") or "")
+            reason_html = (
+                f'<div class="small muted question-reason">{escape(reason)}</div>' if reason else ""
+            )
             rows.append(
                 '<div class="question">'
-                f"<strong>{escape(str(question.get('text') or ''))}</strong>"
-                f"<div class=\"small muted\">{escape(str(question.get('reason') or ''))}</div>"
-                "</div>"
+                f'<div class="question-title">{escape(str(question.get("text") or ""))}</div>'
+                + self._question_options_html(options)
+                + reason_html
+                + "</div>"
             )
         rows.append("</div>")
         return "\n".join(rows)
@@ -1061,22 +1082,39 @@ class SkillFoundryAPI:
             return ""
         return "\n".join(
             [
-                f'<form method="post" action="/frontdesk/jobs/{escape(job_id)}/messages">',
-                '  <label>你的回答 <textarea name="message" required></textarea></label>',
+                f'<form class="answer-form" method="post" action="/frontdesk/jobs/{escape(job_id)}/messages">',
+                '  <label>你的回答 <textarea name="message" required placeholder="可以直接点上面的选项，也可以用自己的话补充背景、偏好或约束。"></textarea></label>',
                 "  <button type=\"submit\">继续对话</button>",
                 '  <div class="small muted" data-submit-status></div>',
                 "</form>",
             ]
         )
 
+    def _question_options_html(self, options: Any) -> str:
+        if not isinstance(options, list) or not options:
+            return ""
+        rows = ['<div class="option-list">']
+        for index, option in enumerate(options, start=1):
+            key = chr(ord("A") + index - 1) if index <= 26 else str(index)
+            option_text = str(option)
+            rows.append(
+                f'<button class="option-item" type="button" data-option-value="{escape(option_text, quote=True)}">'
+                f'<span class="option-key">{escape(key)}.</span>'
+                f"<span>{escape(option_text)}</span>"
+                "</button>"
+            )
+        rows.append("</div>")
+        return "\n".join(rows)
+
     def _frontdesk_status_html(self, readiness: str, next_action: str) -> str:
         label, cls = _frontdesk_status_label(readiness, next_action)
+        description = _frontdesk_status_description(readiness, next_action)
         return "\n".join(
             [
                 f'<span class="status {escape(cls)}">{escape(label)}</span>',
                 "<dl>",
-                f"<dt>阶段</dt><dd>{escape(readiness)}</dd>",
-                f"<dt>下一步</dt><dd>{escape(next_action)}</dd>",
+                f"<dt>进度</dt><dd>{escape(label)}</dd>",
+                f"<dt>说明</dt><dd>{escape(description)}</dd>",
                 "</dl>",
             ]
         )
@@ -1112,12 +1150,24 @@ class SkillFoundryAPI:
         for label, ref in refs:
             ref_html = escape(str(ref)) if ref else '<span class="muted">未生成</span>'
             rows.append(f"<dt>{escape(label)}</dt><dd>{ref_html}</dd>")
-        return "\n".join(["<div><h3>内部证据</h3><dl>", *rows, "</dl></div>"])
+        return "\n".join(["<details><summary>内部证据</summary><dl>", *rows, "</dl></details>"])
 
     def _submit_feedback_script(self) -> str:
         return "\n".join(
             [
                 "<script>",
+                "document.addEventListener('click', function (event) {",
+                "  var target = event.target;",
+                "  if (!(target instanceof Element)) return;",
+                "  var option = target.closest('[data-option-value]');",
+                "  if (!option) return;",
+                "  var textarea = document.querySelector('textarea[name=\"message\"]');",
+                "  if (!textarea) return;",
+                "  textarea.value = option.getAttribute('data-option-value') || '';",
+                "  textarea.focus();",
+                "  var status = document.querySelector('[data-submit-status]');",
+                "  if (status) { status.textContent = '已填入选项，可以直接继续对话，也可以再补充一句。'; }",
+                "});",
                 "document.addEventListener('submit', function (event) {",
                 "  var form = event.target;",
                 "  if (!(form instanceof HTMLFormElement)) return;",
@@ -1254,6 +1304,20 @@ def _frontdesk_status_label(readiness: str, next_action: str) -> tuple[str, str]
     if readiness == "failed" or next_action == "fail_closed":
         return "系统已停止", "danger"
     return "澄清中", "soft"
+
+
+def _frontdesk_status_description(readiness: str, next_action: str) -> str:
+    if readiness == "frozen" or next_action == "route_to_build":
+        return "已经形成可进入构建阶段的 Skill 需求规格。"
+    if readiness == "needs_clarification" or next_action == "ask_user":
+        return "系统正在逐步了解你的真实目标和使用场景。"
+    if readiness == "human_review_required" or next_action == "human_review":
+        return "这个需求需要人工确认风险、权限或交付边界。"
+    if readiness == "rejected" or next_action == "reject":
+        return "当前需求不适合自动交付，需要重新定义目标或约束。"
+    if readiness == "failed" or next_action == "fail_closed":
+        return "系统没有得到可信的结构化结果，可以重试或调整描述。"
+    return "系统正在整理上下文，准备进入下一轮判断。"
 
 
 def _truncate(text: str, limit: int) -> str:
