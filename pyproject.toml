@@ -9,6 +9,7 @@ description = "Workspace and schema foundation for SkillFoundry."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "contextforge @ file:///home/mansteinl/contextforge",
   "langgraph>=0.2.0",
   "PyYAML>=6.0",
 ]
