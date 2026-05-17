@@ -136,7 +136,8 @@ Required shape:
   "assumptions": []
 }
 Use targeted questions. Do not ask a single vague question such as "please provide more details".
-Every next question must include a non-empty missing_field_path."""
+Every next question must include a non-empty missing_field_path.
+For next_questions[].answer_type, use only one of: free_text, enum, file, example, number, boolean."""
 
 SPEC_AUDITOR_PLATFORM_DEVELOPER_INSTRUCTIONS = """PLATFORM/DEVELOPER INSTRUCTIONS (TRUSTED)
 You are SkillFoundry's Spec Auditor Agent.
@@ -1032,10 +1033,70 @@ def _report_from_payload(payload: Mapping[str, Any], *, round_index: int) -> Eli
             details={"round_index": payload_round_index, "expected_round_index": round_index},
         )
 
-    normalized = dict(payload)
+    normalized = _normalize_elicitation_payload(payload)
     normalized["conversation_ref"] = FRONTDESK_CONVERSATION_REF
     normalized["round_index"] = round_index
     return ElicitationReport.from_dict(normalized)
+
+
+def _normalize_elicitation_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+
+    questions = normalized.get("next_questions")
+    if isinstance(questions, list):
+        normalized_questions: list[Any] = []
+        for question in questions:
+            if not isinstance(question, Mapping):
+                normalized_questions.append(question)
+                continue
+            question_payload = dict(question)
+            answer_type = question_payload.get("answer_type")
+            if isinstance(answer_type, str):
+                question_payload["answer_type"] = _normalize_answer_type(answer_type)
+            normalized_questions.append(question_payload)
+        normalized["next_questions"] = normalized_questions
+
+    criteria = normalized.get("draft_acceptance_criteria")
+    if isinstance(criteria, list):
+        normalized_criteria: list[Any] = []
+        for index, criterion in enumerate(criteria, start=1):
+            if isinstance(criterion, str):
+                normalized_criteria.append(
+                    {
+                        "id": f"AC-{index:03d}",
+                        "description": criterion,
+                    }
+                )
+            else:
+                normalized_criteria.append(criterion)
+        normalized["draft_acceptance_criteria"] = normalized_criteria
+
+    return normalized
+
+
+def _normalize_answer_type(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "text": "free_text",
+        "string": "free_text",
+        "markdown": "free_text",
+        "path": "free_text",
+        "paths": "free_text",
+        "directory": "free_text",
+        "directories": "free_text",
+        "single_choice": "enum",
+        "multiple_choice": "enum",
+        "choice": "enum",
+        "select": "enum",
+        "single_choice_or_free_text": "free_text",
+        "enum_or_free_text": "free_text",
+        "yes_no": "boolean",
+        "bool": "boolean",
+        "integer": "number",
+        "float": "number",
+        "sample": "example",
+    }
+    return aliases.get(normalized, normalized)
 
 
 def _validate_report_policy(report: ElicitationReport, config: FrontDeskConfig) -> None:

@@ -325,6 +325,7 @@ class SkillFoundryAPI:
                 "    input, textarea, select { font: inherit; border: 1px solid #c7ced3; border-radius: 6px; padding: 8px 10px; background: white; color: #172026; }",
                 "    textarea { min-height: 150px; resize: vertical; }",
                 "    button { width: fit-content; border: 1px solid #172026; border-radius: 6px; padding: 8px 12px; background: #172026; color: white; font: inherit; cursor: pointer; }",
+                "    button[disabled] { opacity: .65; cursor: wait; }",
                 "    table { width: 100%; border-collapse: collapse; background: white; }",
                 "    th, td { border-bottom: 1px solid #dbe0e3; padding: 9px 10px; text-align: left; vertical-align: top; font-size: 14px; }",
                 "    th { color: #43515a; font-weight: 650; background: #eef1f3; }",
@@ -352,6 +353,7 @@ class SkillFoundryAPI:
                 '        <form method="post" action="/frontdesk/jobs">',
                 '          <label>需求 <textarea name="message" required placeholder="例如：我想要一个 Codex Skill，帮助研发团队根据 pytest 失败日志定位问题，并给出修复建议。"></textarea></label>',
                 '          <button type="submit">开始对话</button>',
+                '          <div class="small muted" data-submit-status></div>',
                 "        </form>",
                 "      </div>",
                 '      <div class="panel stack">',
@@ -378,12 +380,14 @@ class SkillFoundryAPI:
                 '        <label>Attempt Limit <input name="attempt_limit" inputmode="numeric" value="2"></label>',
                 '        <label>Requirement <textarea name="requirement" required></textarea></label>',
                 "        <button type=\"submit\">运行离线闭环</button>",
-                "      </form>",
+                '          <div class="small muted" data-submit-status></div>',
+                "        </form>",
                 "      <h2>离线 Job</h2>",
                 self._jobs_table_html(jobs),
                 "      </details>",
                 "    </section>",
                 "  </main>",
+                self._submit_feedback_script(),
                 "</body>",
                 "</html>",
             ]
@@ -435,6 +439,7 @@ class SkillFoundryAPI:
                 "    textarea { min-height: 130px; resize: vertical; font: inherit; border: 1px solid #c7ced3; border-radius: 6px; padding: 8px 10px; }",
                 "    form { display: grid; gap: 10px; }",
                 "    button { width: fit-content; border: 1px solid #172026; border-radius: 6px; padding: 8px 12px; background: #172026; color: white; font: inherit; cursor: pointer; }",
+                "    button[disabled] { opacity: .65; cursor: wait; }",
                 "    dl { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px 12px; margin: 0; }",
                 "    dt { color: #667780; } dd { margin: 0; overflow-wrap: anywhere; }",
                 "    ul { margin: 0; padding-left: 20px; }",
@@ -460,6 +465,7 @@ class SkillFoundryAPI:
                 "      </aside>",
                 "    </section>",
                 "  </main>",
+                self._submit_feedback_script(),
                 "</body>",
                 "</html>",
             ]
@@ -1058,6 +1064,7 @@ class SkillFoundryAPI:
                 f'<form method="post" action="/frontdesk/jobs/{escape(job_id)}/messages">',
                 '  <label>你的回答 <textarea name="message" required></textarea></label>',
                 "  <button type=\"submit\">继续对话</button>",
+                '  <div class="small muted" data-submit-status></div>',
                 "</form>",
             ]
         )
@@ -1106,6 +1113,22 @@ class SkillFoundryAPI:
             ref_html = escape(str(ref)) if ref else '<span class="muted">未生成</span>'
             rows.append(f"<dt>{escape(label)}</dt><dd>{ref_html}</dd>")
         return "\n".join(["<div><h3>内部证据</h3><dl>", *rows, "</dl></div>"])
+
+    def _submit_feedback_script(self) -> str:
+        return "\n".join(
+            [
+                "<script>",
+                "document.addEventListener('submit', function (event) {",
+                "  var form = event.target;",
+                "  if (!(form instanceof HTMLFormElement)) return;",
+                "  var button = form.querySelector('button[type=\"submit\"]');",
+                "  var status = form.querySelector('[data-submit-status]');",
+                "  if (button) { button.disabled = true; button.textContent = '正在处理...'; }",
+                "  if (status) { status.textContent = '正在和需求澄清 Agent 对话，通常需要 10-60 秒。'; }",
+                "});",
+                "</script>",
+            ]
+        )
 
     def _registry_table_html(self, entries: JsonValue) -> str:
         if not isinstance(entries, list) or not entries:

@@ -292,6 +292,35 @@ def test_schema_invalid_json_fails_closed_without_success_report(tmp_path):
     assert_no_success_report(workspace)
 
 
+def test_elicitor_normalizes_common_live_model_schema_variants(tmp_path):
+    workspace, frontdesk = make_frontdesk_workspace(tmp_path)
+    payload = needs_clarification_payload()
+    payload["next_questions"][0]["answer_type"] = "single_choice_or_free_text"
+    payload["draft_acceptance_criteria"] = [
+        "The skill writes only inside the configured Obsidian vault.",
+        "The skill redacts configured secrets before writing notes.",
+    ]
+    client = ScriptedModelClient(payload=payload)
+
+    result = RequirementsElicitor().elicit(frontdesk, round_index=1, client=client)
+
+    assert result.status == ELICITATION_STATUS_SUCCEEDED
+    assert result.report is not None
+    assert result.report.next_questions[0].answer_type == "free_text"
+    assert result.report.draft_acceptance_criteria == [
+        {
+            "id": "AC-001",
+            "description": "The skill writes only inside the configured Obsidian vault.",
+        },
+        {
+            "id": "AC-002",
+            "description": "The skill redacts configured secrets before writing notes.",
+        },
+    ]
+    assert workspace.resolve_path("frontdesk/elicitation_report_001.json", must_exist=True).is_file()
+    assert not workspace.resolve_path("frontdesk/elicitation_failure_001.json").exists()
+
+
 def test_prompt_labels_untrusted_conversation_and_platform_boundary(tmp_path):
     workspace, frontdesk = make_frontdesk_workspace(
         tmp_path,
