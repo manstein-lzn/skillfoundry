@@ -7,22 +7,37 @@ from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 import json
+import os
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 from uuid import uuid4
 import zipfile
 
+from .frontdesk_loop import FrontDeskLoopResult, run_frontdesk_round
+from .frontdesk_schema import ConversationTurn, FrontDeskState
+from .frontdesk_workspace import (
+    FRONTDESK_CONVERSATION_REF,
+    FrontDeskWorkspace,
+    append_conversation_turn,
+    initialize_frontdesk_workspace,
+    read_conversation_turns,
+    write_frontdesk_artifact,
+)
+from .live_llm import DEFAULT_FRONTDESK_MODEL, OpenAIChatCompletionsClient
 from .offline import OfflineWorkerMode, build_offline, read_final_report
 from .registry import APPROVAL_APPROVED, LocalSkillRegistry, QUARANTINE_NONE
 from .schema import JsonValue, RegistryEntry, ensure_json_compatible
 from .security import PathSecurityError, assert_under_root, resolve_under_root, validate_relative_path
-from .workspace import JOB_ID_RE
+from .workspace import JOB_ID_RE, JobWorkspace, initialize_job_workspace
 
 
 API_VERSION = "skillfoundry.api.wp9.v1"
+FRONTDESK_API_VERSION = "skillfoundry.api.frontdesk.v1"
 DEFAULT_SERVE_HOST = "127.0.0.1"
 DEFAULT_SERVE_PORT = 8765
+FRONTDESK_STATE_REF = "frontdesk/state.json"
+FrontDeskClientFactory = Callable[[str, str, int], Any]
 
 
 class APIError(ValueError):
@@ -62,11 +77,20 @@ class SkillFoundryAPI:
     request boundary around the existing deterministic offline factory.
     """
 
-    def __init__(self, runs_root: str | Path, *, registry_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        runs_root: str | Path,
+        *,
+        registry_path: str | Path | None = None,
+        frontdesk_client_factory: FrontDeskClientFactory | None = None,
+        frontdesk_model: str | None = None,
+    ) -> None:
         self.runs_root = Path(runs_root).expanduser()
         self.runs_root.mkdir(parents=True, exist_ok=True)
         self._runs_root_resolved = self.runs_root.resolve(strict=True)
         self.registry_path = self._resolve_registry_path(registry_path)
+        self.frontdesk_client_factory = frontdesk_client_factory
+        self.frontdesk_model = frontdesk_model or os.environ.get("SKILLFOUNDRY_FRONTDESK_MODEL", DEFAULT_FRONTDESK_MODEL)
 
     def create_job(self, payload: Mapping[str, Any]) -> dict[str, JsonValue]:
         """Create one synchronous offline job from a JSON-like payload."""
@@ -114,6 +138,79 @@ class SkillFoundryAPI:
             raise APIError(400, "job_create_failed", str(exc)) from exc
 
         return self._job_payload(safe_job_id, report=result.final_report)
+
+    def create_frontdesk_job(self, payload: Mapping[str, Any]) -> dict[str, JsonValue]:
+        """Create a real Front Desk clarification job and run one round."""
+
+        if not isinstance(payload, Mapping):
+            raise APIError(400, "invalid_json", "request body must be a JSON object")
+        job_id = payload.get("job_id")
+        if job_id is None or job_id == "":
+            job_id = self._generate_job_id()
+        if not isinstance(job_id, str):
+            raise APIError(400, "invalid_job_id", "job_id must be a string")
+        safe_job_id = self._validate_job_id(job_id)
+        message = payload.get("message", payload.get("requirement"))
+        if not isinstance(message, str) or not message.strip():
+            raise APIError(400, "invalid_message", "message must be a non-empty string")
+        job_root = self._job_root(safe_job_id)
+        if job_root.exists() and any(job_root.iterdir()):
+            raise APIError(409, "job_exists", f"frontdesk job already exists: {safe_job_id}")
+        if self.frontdesk_client_factory is None and not os.environ.get("OPENAI_API_KEY"):
+            raise APIError(503, "openai_api_key_missing", "OPENAI_API_KEY is required for live Front Desk trial")
+
+        workspace = initialize_job_workspace(self._runs_root_resolved, safe_job_id)
+        frontdesk = initialize_frontdesk_workspace(workspace)
+        append_conversation_turn(
+            frontdesk,
+            ConversationTurn(
+                turn_id="turn-001",
+                role="user",
+                content=message.strip(),
+                metadata={"source": "api"},
+            ),
+        )
+        result = self._run_frontdesk_round(frontdesk)
+        return self._frontdesk_payload(safe_job_id, result=result)
+
+    def append_frontdesk_message(self, job_id: str, payload: Mapping[str, Any]) -> dict[str, JsonValue]:
+        """Append one user message and run the next Front Desk round."""
+
+        if not isinstance(payload, Mapping):
+            raise APIError(400, "invalid_json", "request body must be a JSON object")
+        safe_job_id = self._validate_job_id(job_id)
+        message = payload.get("message", payload.get("answer"))
+        if not isinstance(message, str) or not message.strip():
+            raise APIError(400, "invalid_message", "message must be a non-empty string")
+        if self.frontdesk_client_factory is None and not os.environ.get("OPENAI_API_KEY"):
+            raise APIError(503, "openai_api_key_missing", "OPENAI_API_KEY is required for live Front Desk trial")
+
+        job_root = self._require_job_root(safe_job_id)
+        workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
+        frontdesk = FrontDeskWorkspace(workspace)
+        turns = read_conversation_turns(frontdesk)
+        append_conversation_turn(
+            frontdesk,
+            ConversationTurn(
+                turn_id=f"turn-{len(turns) + 1:03d}",
+                role="user",
+                content=message.strip(),
+                metadata={"source": "api"},
+            ),
+        )
+        state = self._read_frontdesk_state(frontdesk)
+        result = self._run_frontdesk_round(frontdesk, state=state)
+        return self._frontdesk_payload(safe_job_id, result=result)
+
+    def get_frontdesk_job(self, job_id: str) -> dict[str, JsonValue]:
+        """Return Front Desk state, questions, and artifact refs for one job."""
+
+        safe_job_id = self._validate_job_id(job_id)
+        job_root = self._require_job_root(safe_job_id)
+        workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
+        frontdesk = FrontDeskWorkspace(workspace)
+        state = self._read_frontdesk_state(frontdesk)
+        return self._frontdesk_payload(safe_job_id, state=state)
 
     def list_jobs(self) -> dict[str, JsonValue]:
         """List known job directories below ``runs_root``."""
@@ -239,7 +336,15 @@ class SkillFoundryAPI:
                 "  <header><h1>SkillFoundry</h1></header>",
                 "  <main>",
                 "    <section>",
-                "      <h2>New Job</h2>",
+                "      <h2>Front Desk Clarification</h2>",
+                '      <form method="post" action="/frontdesk/jobs">',
+                '        <label>Job ID <input name="job_id" autocomplete="off"></label>',
+                '        <label>Message <textarea name="message" required></textarea></label>',
+                '        <button type="submit">Run Front Desk Round</button>',
+                "      </form>",
+                "    </section>",
+                "    <section>",
+                "      <h2>Offline Factory Job</h2>",
                 '      <form method="post" action="/jobs">',
                 '        <label>Job ID <input name="job_id" autocomplete="off"></label>',
                 '        <label>Worker Mode <select name="worker_mode">'
@@ -327,6 +432,35 @@ class SkillFoundryAPI:
                     self.query_registry(status=status, include_quarantined=include_quarantined)
                 )
 
+            if method == "POST" and route == ["frontdesk", "jobs"]:
+                content_type = _header(headers, "content-type")
+                payload = self._parse_body(body, content_type=content_type)
+                created = self.create_frontdesk_job(payload)
+                if content_type.startswith("application/x-www-form-urlencoded"):
+                    return APIHTTPResult(
+                        303,
+                        "text/plain; charset=utf-8",
+                        b"",
+                        headers=(("Location", f"/frontdesk/jobs/{created['job_id']}"),),
+                    )
+                return self._json_response(created, status=201)
+
+            if method == "GET" and len(route) == 3 and route[:2] == ["frontdesk", "jobs"]:
+                return self._json_response(self.get_frontdesk_job(route[2]))
+
+            if method == "POST" and len(route) == 4 and route[:2] == ["frontdesk", "jobs"] and route[3] == "messages":
+                content_type = _header(headers, "content-type")
+                payload = self._parse_body(body, content_type=content_type)
+                result = self.append_frontdesk_message(route[2], payload)
+                if content_type.startswith("application/x-www-form-urlencoded"):
+                    return APIHTTPResult(
+                        303,
+                        "text/plain; charset=utf-8",
+                        b"",
+                        headers=(("Location", f"/frontdesk/jobs/{result['job_id']}"),),
+                    )
+                return self._json_response(result)
+
             if any(part in ("..", ".") or "/" in part or "\\" in part for part in route):
                 raise APIError(400, "unsafe_path", "request path contains an unsafe segment")
             raise APIError(404, "not_found", "route not found")
@@ -397,6 +531,103 @@ class SkillFoundryAPI:
             return read_final_report(job_root)
         except Exception as exc:
             raise APIError(500, "invalid_report", f"final report is invalid: {exc}") from exc
+
+    def _run_frontdesk_round(
+        self,
+        frontdesk: FrontDeskWorkspace,
+        *,
+        state: FrontDeskState | None = None,
+    ) -> FrontDeskLoopResult:
+        round_index = (state.clarification_round if state is not None else 0) + 1
+        elicitor_client = self._frontdesk_client("requirements_elicitor", frontdesk.job_id, round_index)
+        auditor_client = self._frontdesk_client("spec_auditor", frontdesk.job_id, round_index)
+        result = run_frontdesk_round(
+            frontdesk,
+            state=state,
+            elicitor_client=elicitor_client,
+            auditor_client=auditor_client,
+            elicitor_model_params=self._frontdesk_model_params(),
+            auditor_model_params=self._frontdesk_model_params(),
+            elicitor_provider="openai" if self.frontdesk_client_factory is None else "fake",
+            auditor_provider="openai" if self.frontdesk_client_factory is None else "fake",
+            elicitor_model=self.frontdesk_model,
+            auditor_model=self.frontdesk_model,
+        )
+        write_frontdesk_artifact(frontdesk, "state.json", result.state.to_dict())
+        return result
+
+    def _frontdesk_client(self, role: str, job_id: str, round_index: int) -> Any:
+        if self.frontdesk_client_factory is not None:
+            return self.frontdesk_client_factory(role, job_id, round_index)
+        try:
+            return OpenAIChatCompletionsClient.from_env()
+        except Exception as exc:
+            raise APIError(503, "frontdesk_provider_unavailable", str(exc)) from exc
+
+    def _frontdesk_model_params(self) -> dict[str, JsonValue]:
+        params: dict[str, JsonValue] = {
+            "model": self.frontdesk_model,
+            "temperature": float(os.environ.get("SKILLFOUNDRY_FRONTDESK_TEMPERATURE", "0")),
+            "max_tokens": int(os.environ.get("SKILLFOUNDRY_FRONTDESK_MAX_TOKENS", "4096")),
+        }
+        return params
+
+    def _read_frontdesk_state(self, frontdesk: FrontDeskWorkspace) -> FrontDeskState | None:
+        state_path = frontdesk.workspace.resolve_path(FRONTDESK_STATE_REF)
+        if not state_path.exists():
+            return None
+        try:
+            return FrontDeskState.from_json(state_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise APIError(500, "invalid_frontdesk_state", f"frontdesk state is invalid: {exc}") from exc
+
+    def _frontdesk_payload(
+        self,
+        job_id: str,
+        *,
+        result: FrontDeskLoopResult | None = None,
+        state: FrontDeskState | None = None,
+    ) -> dict[str, JsonValue]:
+        job_root = self._require_job_root(job_id)
+        workspace = JobWorkspace(root=job_root, job_id=job_id)
+        frontdesk = FrontDeskWorkspace(workspace)
+        if state is None:
+            state = result.state if result is not None else self._read_frontdesk_state(frontdesk)
+        turns = read_conversation_turns(frontdesk)
+        latest_elicitation = self._read_optional_json_ref(workspace, state.latest_elicitation_report_ref if state else None)
+        latest_audit = self._read_optional_json_ref(workspace, state.latest_audit_report_ref if state else None)
+        questions = latest_elicitation.get("next_questions") if isinstance(latest_elicitation, Mapping) else []
+        payload: dict[str, Any] = {
+            "schema_version": FRONTDESK_API_VERSION,
+            "job_id": job_id,
+            "status": result.status if result is not None else (state.next_action if state else "new_conversation"),
+            "state": state.to_dict() if state is not None else None,
+            "conversation_ref": FRONTDESK_CONVERSATION_REF,
+            "turn_count": len(turns),
+            "next_questions": questions if isinstance(questions, list) else [],
+            "latest_elicitation_report": latest_elicitation,
+            "latest_audit_report": latest_audit,
+            "result": result.to_dict() if result is not None else None,
+            "links": {
+                "self": f"/frontdesk/jobs/{job_id}",
+                "messages": f"/frontdesk/jobs/{job_id}/messages",
+            },
+        }
+        return ensure_json_compatible(payload)  # type: ignore[return-value]
+
+    def _read_optional_json_ref(self, workspace: Any, ref: str | None) -> dict[str, JsonValue] | None:
+        if not ref:
+            return None
+        path = workspace.resolve_path(ref)
+        if not path.exists() or path.suffix.lower() not in {".json", ".jsonl"}:
+            return None
+        if path.suffix.lower() == ".jsonl":
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        return ensure_json_compatible(payload) if isinstance(payload, dict) else None  # type: ignore[return-value]
 
     def _job_payload(
         self,

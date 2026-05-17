@@ -29,6 +29,41 @@ internal network boundary or local tunnel controlled by the operator.
 - `GET /jobs/<job_id>/package.zip`: download a zip archive containing only
   `package/` files.
 
+## Front Desk Trial Routes
+
+WP13-WP17 also expose a thin trial API for the real Front Desk loop. This is
+not the old offline builder form: it runs `FrontDeskLoop` through
+`RequirementsElicitor`, `SpecAuditor`, and `FrontDeskFreezeGate`.
+
+Live provider use is opt-in. Start the server with:
+
+```bash
+export OPENAI_API_KEY=...
+export SKILLFOUNDRY_FRONTDESK_MODEL=gpt-5.5
+skillfoundry serve --runs-root runs --host 127.0.0.1 --port 8765
+```
+
+Routes:
+
+- `POST /frontdesk/jobs`: create a Front Desk clarification job and run one
+  round. JSON fields are `message` or `requirement`, plus optional `job_id`.
+- `POST /frontdesk/jobs/<job_id>/messages`: append a user answer/message and
+  run the next clarification round.
+- `GET /frontdesk/jobs/<job_id>`: return refs-only state, latest questions,
+  latest elicitation report, latest audit report, and artifact refs.
+
+Example:
+
+```bash
+curl -s -X POST http://127.0.0.1:8765/frontdesk/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"job_id":"frontdesk-demo","message":"构建一个帮助分析 pytest 失败日志的 Codex Skill。"}'
+```
+
+If `OPENAI_API_KEY` is not set, the Front Desk trial routes return `503` with
+`openai_api_key_missing`. Default automated tests inject scripted clients and
+do not call live providers.
+
 ## Safety Gates
 
 `job_id` must be one safe path segment. The API rejects traversal segments,

@@ -128,6 +128,10 @@ class FrontDeskLoop:
         auditor_client: Any | None = None,
         elicitor_model_params: Mapping[str, Any] | None = None,
         auditor_model_params: Mapping[str, Any] | None = None,
+        elicitor_provider: str = "fake",
+        auditor_provider: str = "fake",
+        elicitor_model: str = "skillfoundry-requirements-elicitor-fake",
+        auditor_model: str = "skillfoundry-spec-auditor-fake",
     ) -> FrontDeskLoopResult:
         """Run one Front Desk round and return refs-only state.
 
@@ -179,8 +183,8 @@ class FrontDeskLoop:
                 round_index=round_index,
                 client=elicitor_client,
                 config=config,
-                provider="fake",
-                model="skillfoundry-requirements-elicitor-fake",
+                provider=elicitor_provider,
+                model=elicitor_model,
                 model_params=elicitor_model_params,
             )
         except Exception as exc:
@@ -299,8 +303,8 @@ class FrontDeskLoop:
                 round_index=round_index,
                 client=auditor_client,
                 config=config,
-                provider="fake",
-                model="skillfoundry-spec-auditor-fake",
+                provider=auditor_provider,
+                model=auditor_model,
                 model_params=auditor_model_params,
             )
         except Exception as exc:
@@ -449,6 +453,10 @@ def run_frontdesk_round(
     freeze_gate: FrontDeskFreezeGate | None = None,
     elicitor_model_params: Mapping[str, Any] | None = None,
     auditor_model_params: Mapping[str, Any] | None = None,
+    elicitor_provider: str = "fake",
+    auditor_provider: str = "fake",
+    elicitor_model: str = "skillfoundry-requirements-elicitor-fake",
+    auditor_model: str = "skillfoundry-spec-auditor-fake",
 ) -> FrontDeskLoopResult:
     """Convenience wrapper for ``FrontDeskLoop(...).run_round(...)``."""
 
@@ -460,6 +468,10 @@ def run_frontdesk_round(
         auditor_client=auditor_client,
         elicitor_model_params=elicitor_model_params,
         auditor_model_params=auditor_model_params,
+        elicitor_provider=elicitor_provider,
+        auditor_provider=auditor_provider,
+        elicitor_model=elicitor_model,
+        auditor_model=auditor_model,
     )
 
 
