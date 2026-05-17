@@ -536,7 +536,7 @@ class FrontDeskConfig(SchemaModel):
     min_feasibility_score: float = 0.70
     min_testability_score: float = 0.75
     max_followup_questions_per_round: int = 1
-    max_frontdesk_model_calls: int = 12
+    max_frontdesk_model_calls: int = 40
     max_parse_repair_attempts: int = 2
     provider_timeout_seconds: int = 60
     max_output_tokens_per_call: int = 4096

@@ -3,6 +3,7 @@ import json
 from contextforge.schema import ModelResponse
 
 from skillfoundry.api import SkillFoundryAPI
+from skillfoundry.frontdesk_schema import FrontDeskConfig
 
 
 class ScriptedModelClient:
@@ -168,3 +169,25 @@ def test_frontdesk_api_requires_live_key_without_injected_client(tmp_path, monke
 
     assert result.status == 503
     assert result.json()["error"]["code"] == "openai_api_key_missing"
+
+
+def test_frontdesk_retry_upgrades_legacy_low_model_call_budget(tmp_path):
+    payloads = {
+        "requirements_elicitor": [_needs_clarification_payload(), _needs_clarification_payload()],
+        "spec_auditor": [_approved_audit_payload(), _approved_audit_payload()],
+    }
+
+    def factory(role, _job_id, _round_index):
+        return ScriptedModelClient(payloads[role].pop(0))
+
+    api = SkillFoundryAPI(tmp_path / "runs", frontdesk_client_factory=factory)
+    api.create_frontdesk_job({"job_id": "frontdesk-retry-budget", "message": "Build a skill."})
+
+    budget_path = tmp_path / "runs" / "frontdesk-retry-budget" / "frontdesk" / "budget.json"
+    budget_path.write_text(FrontDeskConfig(max_frontdesk_model_calls=1).to_json(), encoding="utf-8")
+
+    retried = api.retry_frontdesk_job("frontdesk-retry-budget")
+    budget = FrontDeskConfig.from_json(budget_path.read_text(encoding="utf-8"))
+
+    assert retried["status"] == "ask_user"
+    assert budget.max_frontdesk_model_calls == FrontDeskConfig().max_frontdesk_model_calls

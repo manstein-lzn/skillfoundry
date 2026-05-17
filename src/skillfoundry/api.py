@@ -16,8 +16,9 @@ from uuid import uuid4
 import zipfile
 
 from .frontdesk_loop import FrontDeskLoopResult, run_frontdesk_round
-from .frontdesk_schema import ConversationTurn, FrontDeskState
+from .frontdesk_schema import ConversationTurn, FrontDeskConfig, FrontDeskState
 from .frontdesk_workspace import (
+    FRONTDESK_BUDGET_REF,
     FRONTDESK_CONVERSATION_REF,
     FrontDeskWorkspace,
     append_conversation_turn,
@@ -240,6 +241,7 @@ class SkillFoundryAPI:
             )
         if state.readiness in {"frozen", "human_review_required", "rejected"}:
             raise APIError(409, "frontdesk_retry_not_available", "frontdesk job is not retryable")
+        self._ensure_frontdesk_retry_budget(frontdesk)
         result = self._run_frontdesk_round(frontdesk, state=state)
         return self._frontdesk_payload(safe_job_id, result=result)
 
@@ -760,6 +762,15 @@ class SkillFoundryAPI:
         }
         return params
 
+    def _ensure_frontdesk_retry_budget(self, frontdesk: FrontDeskWorkspace) -> None:
+        budget_path = frontdesk.workspace.resolve_path(FRONTDESK_BUDGET_REF, must_exist=True)
+        config = FrontDeskConfig.read_json_file(budget_path)
+        default_calls = FrontDeskConfig().max_frontdesk_model_calls
+        if config.max_frontdesk_model_calls >= default_calls:
+            return
+        config.max_frontdesk_model_calls = default_calls
+        write_frontdesk_artifact(frontdesk, "budget.json", config.to_dict())
+
     def _read_frontdesk_state(self, frontdesk: FrontDeskWorkspace) -> FrontDeskState | None:
         state_path = frontdesk.workspace.resolve_path(FRONTDESK_STATE_REF)
         if not state_path.exists():
@@ -784,6 +795,7 @@ class SkillFoundryAPI:
         turns = read_conversation_turns(frontdesk)
         latest_elicitation = self._read_optional_json_ref(workspace, state.latest_elicitation_report_ref if state else None)
         latest_audit = self._read_optional_json_ref(workspace, state.latest_audit_report_ref if state else None)
+        latest_failure = self._read_optional_json_ref(workspace, result.failure_ref if result is not None else None)
         questions = _active_frontdesk_questions(state, latest_elicitation, turn_count=len(turns))
         payload: dict[str, Any] = {
             "schema_version": FRONTDESK_API_VERSION,
@@ -795,6 +807,7 @@ class SkillFoundryAPI:
             "next_questions": questions,
             "latest_elicitation_report": latest_elicitation,
             "latest_audit_report": latest_audit,
+            "latest_failure": latest_failure,
             "result": result.to_dict() if result is not None else None,
             "links": {
                 "self": f"/frontdesk/jobs/{job_id}",
@@ -1304,6 +1317,10 @@ class SkillFoundryAPI:
                 "      if (!response.ok) {",
                 "        var error = data.error || {};",
                 "        throw new Error(error.message || error.code || ('HTTP ' + response.status));",
+                "      }",
+                "      if (data && data.status === 'fail_closed') {",
+                "        var failure = data.latest_failure || {};",
+                "        throw new Error(failure.message || failure.failure_type || '需求澄清没有通过，请查看内部证据。');",
                 "      }",
                 "      return data;",
                 "    });",
