@@ -1,5 +1,15 @@
-"""SkillFoundry WP1 workspace and schema primitives."""
+"""SkillFoundry public package API."""
 
+from .graph import (
+    Route,
+    SkillFoundryState,
+    Stage,
+    StateValidationError,
+    WorkflowStatus,
+    build_skillfoundry_graph,
+    compile_skillfoundry_graph,
+    validate_graph_state,
+)
 from .schema import (
     ApprovalRecord,
     ArtifactManifest,
@@ -39,18 +49,26 @@ __all__ = [
     "PathSecurityError",
     "RegistryEntry",
     "RepairAttempt",
+    "Route",
     "SchemaValidationError",
+    "SkillFoundryState",
     "SkillSpec",
+    "Stage",
+    "StateValidationError",
     "VerificationResult",
     "VerificationSpec",
+    "WorkflowStatus",
     "WorkerInvocation",
     "assert_under_root",
+    "build_skillfoundry_graph",
     "canonical_json_bytes",
+    "compile_skillfoundry_graph",
     "initialize_job_workspace",
     "resolve_under_root",
     "sha256_bytes",
     "sha256_file",
     "sha256_json",
+    "validate_graph_state",
     "validate_relative_path",
     "verify_locked_inputs",
 ]
