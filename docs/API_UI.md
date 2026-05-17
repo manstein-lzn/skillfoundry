@@ -35,6 +35,11 @@ WP13-WP17 also expose a thin trial API for the real Front Desk loop. This is
 not the old offline builder form: it runs `FrontDeskLoop` through
 `RequirementsElicitor`, `SpecAuditor`, and `FrontDeskFreezeGate`.
 
+The Front Desk is product-discovery first. Early rounds should clarify the
+user's pain, goal, workflow, audience, usage moment, desired outcome, success
+signal, and complaint/failure scenario before asking for implementation details
+such as local paths, file formats, API permissions, or exact output directories.
+
 Live provider use is opt-in. Start the server with:
 
 ```bash
