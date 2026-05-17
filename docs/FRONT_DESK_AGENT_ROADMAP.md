@@ -4,6 +4,8 @@
 日期：2026-05-17
 适用范围：SkillFoundry WP13-WP17，面向真实 LLM 需求澄清、规格冻结、验收覆盖和真实 builder 试点
 
+> 状态说明：本文是 Front Desk WP13-WP17 设计形成文档。WP15B Front Desk Loop、WP16 Acceptance Coverage Bridge、WP17 Owned LLM Builder Pilot 已在后续实现中完成。本文中 “next / blocking / blocked” 等状态只保留为历史上下文，当前唯一执行源请看 `docs/DEVELOPMENT_ROADMAP.md`。
+
 ## 1. 一句话结论
 
 SkillFoundry 下一阶段最重要的不是马上增强 builder，而是先把需求澄清层做成真实可用的双 Agent 系统：

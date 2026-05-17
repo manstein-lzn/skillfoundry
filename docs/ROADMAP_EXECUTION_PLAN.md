@@ -4,6 +4,8 @@
 日期：2026-05-17
 适用项目：基于 LangGraph + ContextForge 的 Codex Skill 工厂 MVP
 
+> 状态说明：本文是 WP0-WP17 实施过程中的历史执行路线。WP15B、WP16、WP17 已在后续提交中完成，本文中 “next / blocking / blocked” 等状态不再代表当前待办。当前唯一执行源请看 `docs/DEVELOPMENT_ROADMAP.md`。
+
 ## 1. 一句话结论
 
 SkillFoundry 的第一阶段路线是：
