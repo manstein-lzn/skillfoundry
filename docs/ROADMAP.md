@@ -1,4 +1,4 @@
-# SkillFoundry 分阶段 Roadmap v0.3
+# SkillFoundry 分阶段 Roadmap v1.1
 
 本文是 SkillFoundry 的可执行路线图。目标是让后续第三方 Agent、工程师或 Codex Worker 可以照着阶段推进，而不是只读一个方向性愿景。
 
@@ -57,12 +57,22 @@ MVP 的验收不是“模型生成了文件”，而是：
 
 ## 2. 当前状态
 
-截至当前仓库状态：
+截至 2026-05-17，WP0-WP12 已完成，项目已经具备：
 
-- WP0 文档 v0.2 已完成并提交；
-- WP1 workspace + schema 已有实现草案，正在架构验收阶段；
-- 后续 WP2-WP10 必须基于 WP0 的边界继续推进；
-- 真实 Codex Worker 集成必须等 WP1-WP7 全部通过后再进入试点。
+- workspace + schema 基础；
+- LangGraph refs-only workflow；
+- WorkerAdapter + FakeWorker；
+- 独立 Verifier；
+- ContextForge 自有 LLM 调用和 worker 边界证据接入；
+- Local Registry；
+- offline E2E build/verify/repair/register/report 闭环；
+- 可选 CodexWorker pilot adapter；
+- minimal internal API/UI；
+- QA Lab；
+- feedback/versioning/quarantine/rollback；
+- WP12 operations、health/readiness、observability、cleanup、安全清单和生产就绪边界文档。
+
+当前不是完整生产级多租户平台，而是可以进入受控内部 beta 的 MVP。最完整、可交给第三方 Agent 逐阶段执行的路线见 `docs/ROADMAP_EXECUTION_PLAN.md`。
 
 ## 3. 分层架构
 

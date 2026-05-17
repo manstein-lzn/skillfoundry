@@ -15,6 +15,7 @@ from .offline import (
     register_offline,
     verify_offline,
 )
+from .ops import SkillFoundryOps
 from .schema import ensure_json_compatible
 
 
@@ -81,6 +82,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "ops":
+        ops = SkillFoundryOps(args.runs_root, registry_path=args.registry)
+        if args.ops_command == "health":
+            report = ops.health_check()
+            _print_json(report)
+            return 0 if report.get("ready") is True else 2
+        if args.ops_command == "observability":
+            _print_json(ops.observability_report())
+            return 0
+        if args.ops_command == "cleanup":
+            _print_json(ops.cleanup_artifacts(dry_run=not args.apply))
+            return 0
+        parser.error("ops subcommand is required")
+
     parser.error("command is required")
     return 2
 
@@ -123,6 +138,15 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--registry", type=Path, required=False)
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
+
+    ops = subparsers.add_parser("ops", help="WP12 local operations helpers")
+    ops.add_argument("--runs-root", type=Path, default=Path("runs"))
+    ops.add_argument("--registry", type=Path, required=False)
+    ops_subparsers = ops.add_subparsers(dest="ops_command", required=True)
+    ops_subparsers.add_parser("health", help="print machine-readable health/readiness checks")
+    ops_subparsers.add_parser("observability", help="print local jobs, gates, registry, failures, and usage summary")
+    cleanup = ops_subparsers.add_parser("cleanup", help="plan or apply transient artifact cleanup")
+    cleanup.add_argument("--apply", action="store_true", help="delete planned transient artifacts")
 
     return parser
 

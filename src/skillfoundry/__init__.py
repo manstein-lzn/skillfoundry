@@ -61,6 +61,14 @@ from .offline import (
     run_offline_attempt,
     verify_offline,
 )
+from .ops import (
+    OPS_CLEANUP_REPORT_VERSION,
+    OPS_CONCURRENT_BUILD_REPORT_VERSION,
+    OPS_HEALTH_REPORT_VERSION,
+    OPS_OBSERVABILITY_REPORT_VERSION,
+    OPS_VERSION,
+    SkillFoundryOps,
+)
 from .qa import HARD_CHECK_NAMES, QA_LAB_VERSION, QA_REPORT_VERSION, QACheck, QALab, QAResult
 from .registry import (
     APPROVAL_APPROVED,
@@ -162,6 +170,11 @@ __all__ = [
     "LockedInputTamperError",
     "LocalSkillRegistry",
     "OFFLINE_REPORT_VERSION",
+    "OPS_CLEANUP_REPORT_VERSION",
+    "OPS_CONCURRENT_BUILD_REPORT_VERSION",
+    "OPS_HEALTH_REPORT_VERSION",
+    "OPS_OBSERVABILITY_REPORT_VERSION",
+    "OPS_VERSION",
     "OfflineDeterministicWorker",
     "OfflineRunResult",
     "OfflineWorkerMode",
@@ -192,6 +205,7 @@ __all__ = [
     "SkillFoundryAPI",
     "SkillFoundryContextAdapter",
     "SkillFoundryContextMetrics",
+    "SkillFoundryOps",
     "SkillVersionManager",
     "SkillSpec",
     "Stage",

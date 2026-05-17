@@ -1,6 +1,6 @@
 # SkillFoundry 分阶段执行 Roadmap
 
-版本：v1.0
+版本：v1.1
 日期：2026-05-17
 适用项目：基于 LangGraph + ContextForge 的 Codex Skill 工厂 MVP
 
@@ -46,7 +46,7 @@ WP8  CodexWorker pilot            已完成
 WP9  Minimal API/UI               已完成
 WP10 QA Lab Expansion             已完成
 WP11 Feedback + Versioning        已完成
-WP12 Production Hardening         待启动
+WP12 Production Hardening         已完成
 ```
 
 后续执行必须保持这个边界：
@@ -75,7 +75,7 @@ WP12 Production Hardening         待启动
 | WP9  | Minimal API/UI             | internal product entry   | submit/view/download    | WP7, optional WP8        | done                       |
 | WP10 | QA Lab Expansion           | richer evaluators        | fixture + judge quality | WP4, WP7                 | done                       |
 | WP11 | Feedback + Versioning      | repair/version loop      | feedback creates jobs   | WP6-WP10                 | done                       |
-| WP12 | Production Hardening       | ops/security/perf        | stable multi-job runs   | WP7-WP11                 | next                       |
+| WP12 | Production Hardening       | ops/security/perf        | stable multi-job runs   | WP7-WP11                 | done                       |
 +------+----------------------------+--------------------------+-------------------------+--------------------------+----------------------------+
 ```
 
@@ -709,52 +709,57 @@ skillfoundry report --job runs/demo-001
 
 目标：
 
-- 将 MVP 强化到可小规模生产试用；
-- 聚焦安全、性能、并发、观测和运维。
+- 将 MVP 强化到可小规模内部 beta 试用；
+- 聚焦安全、性能、并发、观测和运维；
+- 明确 Python/Rust 边界和 JSON registry 到数据库的后续迁移触发条件。
 
 输入：
 
 - WP7-WP11 的完整链路；
-- 内部试用反馈；
-- 真实运行日志。
+- 离线 E2E、CodexWorker pilot、API/UI、QA Lab、Feedback/Versioning 的工程事实；
+- 内部 beta 前的稳定性、安全和运维要求。
 
 主要任务：
 
 - 多 job 并发；
-- 队列或调度器；
-- 权限模型；
+- registry 并发写防护；
 - workspace 清理策略；
-- artifact retention；
-- 成本和 usage 报告；
-- long-run stability test；
-- performance profiling；
+- artifact retention 边界；
+- 健康检查和 readiness report；
+- local observability report；
+- 成本和 usage 可得性说明；
+- 安全检查清单；
 - Python/Rust 边界评估；
-- 数据库替换 JSON registry 的方案评估。
+- JSON registry 到 SQLite/数据库的方案评估。
 
 交付物：
 
-- ops guide；
-- security checklist；
-- performance report；
-- concurrency test；
-- migration plan；
-- production readiness report。
+- `src/skillfoundry/ops.py`
+- `tests/test_ops.py`
+- `docs/OPERATIONS.md`
+- `docs/SECURITY_CHECKLIST.md`
+- `docs/PRODUCTION_READINESS.md`
+- registry 本地文件锁和原子写入强化；
+- CLI ops 命令：`health`、`observability`、`cleanup`。
 
 验收门：
 
 - 多 job 不互相污染 workspace；
 - registry 不出现并发写损坏；
 - artifact 可清理但 provenance 不断；
-- 长时间任务可恢复；
-- 成本、失败、耗时可观测；
-- 高性能内核迁移点明确。
+- 健康检查输出机器可读结果；
+- 失败、耗时、QA、Verifier、Registry、Feedback/Versioning 状态可观测；
+- usage/cost 不可得时明确记录不可得原因；
+- 高性能内核迁移点明确；
+- 默认测试保持确定性、离线、无外部 provider 依赖。
 
 退出条件：
 
-- 可以进入内部 beta；
-- 可以决定继续 Python 主体、引入 Rust 内核，或局部迁移。
+- 可以进入受控内部 beta；
+- 可以基于真实试用数据决定继续 Python 主体、引入 Rust 内核，或局部迁移到 SQLite/数据库；
+- 不宣称完整生产级平台已经完成。
 
-状态：计划中。
+状态：已完成。
 
 ## 19. 阶段依赖图
 
@@ -815,11 +820,34 @@ WP0
 
 ## 22. 推荐下一步
 
-下一步只做 WP12：
+WP0-WP12 已经形成第一阶段闭环。下一步不是继续堆功能，而是进入受控内部 beta，用真实需求验证这套 Codex Skill 工厂是否能稳定交付。
 
 ```text
-Production Hardening:
-concurrency -> artifact retention -> observability -> security checklist -> performance/migration plan
+Internal Beta:
+select real skill needs
+-> run health + tests
+-> batch build
+-> inspect observability
+-> collect feedback
+-> repair/version/quarantine
+-> decide Python/Rust/SQLite next move
 ```
 
-WP12 的目标不是扩大产品功能，而是让 WP7-WP11 的闭环具备小规模内部试用所需的稳定性、可观测性、安全清单、并发防护和性能/迁移判断。
+内部 beta 的目标不是证明“完整生产级平台完成”，而是收集足够运行证据，判断下一阶段应该优先补哪一类工程能力：真实 worker 调度、权限和审计、SQLite/数据库注册表、Rust 安全/性能内核、部署监控，或更强的 QA/评估体系。
+
+## 23. 内部 Beta 执行表
+
+```text
++------+--------------------------+--------------------------------------+------------------------------+------------------------------+
+| Step | Action                   | Evidence                             | Pass Gate                    | Owner                        |
++------+--------------------------+--------------------------------------+------------------------------+------------------------------+
+| B1   | Select 3-5 real needs    | requirement docs                     | scope clear and reviewable   | product/architect            |
+| B2   | Preflight                | pytest + ops health JSON             | all tests pass, ready=true   | operator                     |
+| B3   | Batch build              | runs/<job>/final_report.json         | registered/reused or explained| builder workflow             |
+| B4   | Quality review           | verifier + QA reports                | no self-report acceptance    | verifier/reviewer            |
+| B5   | Observability review     | ops observability JSON               | failures/durations visible   | operator/architect           |
+| B6   | User feedback            | feedback records                     | actionable repair/version job| user/product                 |
+| B7   | Asset governance         | registry provenance/quarantine/rollback| approved assets traceable  | reviewer/operator            |
+| B8   | Architecture decision    | beta summary                         | next investment explicit     | architect                    |
++------+--------------------------+--------------------------------------+------------------------------+------------------------------+
+```

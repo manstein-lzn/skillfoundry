@@ -4,10 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from contextlib import contextmanager
+import os
 import json
 from pathlib import Path
 import re
+import threading
 from typing import Any, Mapping
+
+import fcntl
 
 from .schema import (
     ArtifactManifest,
@@ -36,6 +41,9 @@ QUARANTINE_NONE = "none"
 QUARANTINE_QUARANTINED = "quarantined"
 
 _EXECUTION_REPORT_RE = re.compile(r"^attempts/(?P<attempt_id>[0-9]+)/execution_report\.json$")
+_REGISTRY_THREAD_LOCKS: dict[Path, threading.RLock] = {}
+_REGISTRY_THREAD_LOCKS_GUARD = threading.Lock()
+_REGISTRY_LOCK_STATE = threading.local()
 
 
 class DuplicatePolicy(StrEnum):
@@ -122,18 +130,19 @@ class LocalSkillRegistry:
         if not report.valid:
             raise RegistryGateError(report.failures)
 
-        entries = self._load_entries()
-        existing = _find_entry(entries, entry.skill_id, entry.version)
-        if existing is not None:
-            if self.duplicate_policy is DuplicatePolicy.IDEMPOTENT and _same_registered_asset(existing, entry):
-                return existing
-            raise RegistryDuplicateError(
-                f"duplicate registry entry for {entry.skill_id!r} version {entry.version!r} "
-                f"violates duplicate_policy={self.duplicate_policy.value!r}"
-            )
+        with self._locked_store():
+            entries = self._load_entries()
+            existing = _find_entry(entries, entry.skill_id, entry.version)
+            if existing is not None:
+                if self.duplicate_policy is DuplicatePolicy.IDEMPOTENT and _same_registered_asset(existing, entry):
+                    return existing
+                raise RegistryDuplicateError(
+                    f"duplicate registry entry for {entry.skill_id!r} version {entry.version!r} "
+                    f"violates duplicate_policy={self.duplicate_policy.value!r}"
+                )
 
-        entries.append(entry)
-        self._write_entries(entries)
+            entries.append(entry)
+            self._write_entries(entries)
         return entry
 
     def get(self, skill_id: str, version: str) -> RegistryEntry:
@@ -279,45 +288,46 @@ class LocalSkillRegistry:
         event_name: str,
         reason: str,
     ) -> RegistryEntry:
-        entries = self._load_entries()
-        index, existing = _find_entry_with_index(entries, skill_id, version)
-        if existing is None or index is None:
-            raise RegistryEntryNotFound(f"registry entry not found: {skill_id}@{version}")
+        with self._locked_store():
+            entries = self._load_entries()
+            index, existing = _find_entry_with_index(entries, skill_id, version)
+            if existing is None or index is None:
+                raise RegistryEntryNotFound(f"registry entry not found: {skill_id}@{version}")
 
-        provenance = dict(existing.provenance)
-        events = list(provenance.get("registry_events", [])) if isinstance(provenance.get("registry_events"), list) else []
-        events.append(
-            ensure_json_compatible(
-                {
-                    "event": event_name,
-                    "reason": reason,
-                    "created_at": utc_now(),
-                }
+            provenance = dict(existing.provenance)
+            events = list(provenance.get("registry_events", [])) if isinstance(provenance.get("registry_events"), list) else []
+            events.append(
+                ensure_json_compatible(
+                    {
+                        "event": event_name,
+                        "reason": reason,
+                        "created_at": utc_now(),
+                    }
+                )
             )
-        )
-        provenance["registry_events"] = events
+            provenance["registry_events"] = events
 
-        updated = RegistryEntry(
-            skill_id=existing.skill_id,
-            version=existing.version,
-            package_path=existing.package_path,
-            package_hash=existing.package_hash,
-            build_job_id=existing.build_job_id,
-            worker_invocation_id=existing.worker_invocation_id,
-            verification_spec_hash=existing.verification_spec_hash,
-            verification_result_hash=existing.verification_result_hash,
-            artifact_manifest_hash=existing.artifact_manifest_hash,
-            verifier_version=existing.verifier_version,
-            approval_status=approval_status or existing.approval_status,
-            review_status=existing.review_status,
-            created_at=existing.created_at,
-            provenance=ensure_json_compatible(provenance),  # type: ignore[arg-type]
-            quarantine_status=quarantine_status or existing.quarantine_status,
-        )
-        updated.validate()
-        entries[index] = updated
-        self._write_entries(entries)
-        return updated
+            updated = RegistryEntry(
+                skill_id=existing.skill_id,
+                version=existing.version,
+                package_path=existing.package_path,
+                package_hash=existing.package_hash,
+                build_job_id=existing.build_job_id,
+                worker_invocation_id=existing.worker_invocation_id,
+                verification_spec_hash=existing.verification_spec_hash,
+                verification_result_hash=existing.verification_result_hash,
+                artifact_manifest_hash=existing.artifact_manifest_hash,
+                verifier_version=existing.verifier_version,
+                approval_status=approval_status or existing.approval_status,
+                review_status=existing.review_status,
+                created_at=existing.created_at,
+                provenance=ensure_json_compatible(provenance),  # type: ignore[arg-type]
+                quarantine_status=quarantine_status or existing.quarantine_status,
+            )
+            updated.validate()
+            entries[index] = updated
+            self._write_entries(entries)
+            return updated
 
     def _load_entries(self) -> list[RegistryEntry]:
         if not self.path.exists():
@@ -340,6 +350,10 @@ class LocalSkillRegistry:
         return sorted(entries, key=_entry_sort_key)
 
     def _write_entries(self, entries: list[RegistryEntry]) -> None:
+        if not self._lock_held():
+            with self._locked_store():
+                self._write_entries(entries)
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         sorted_entries = sorted(entries, key=_entry_sort_key)
         payload = {
@@ -348,9 +362,29 @@ class LocalSkillRegistry:
             "entries": [entry.to_dict() for entry in sorted_entries],
         }
         text = json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
-        tmp_path = self.path.with_name(f".{self.path.name}.tmp")
+        tmp_path = self.path.with_name(f".{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp_path.write_text(text, encoding="utf-8")
         tmp_path.replace(self.path)
+
+    @contextmanager
+    def _locked_store(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.path.with_name(f".{self.path.name}.lock")
+        resolved_lock_path = lock_path.resolve(strict=False)
+        thread_lock = _registry_thread_lock(lock_path)
+        with thread_lock:
+            with lock_path.open("a+", encoding="utf-8") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                _mark_registry_lock_held(resolved_lock_path)
+                try:
+                    yield
+                finally:
+                    _unmark_registry_lock_held(resolved_lock_path)
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _lock_held(self) -> bool:
+        lock_path = self.path.with_name(f".{self.path.name}.lock").resolve(strict=False)
+        return lock_path in _current_registry_locks()
 
 
 def _build_verified_entry(
@@ -469,6 +503,32 @@ def _build_verified_entry(
     )
     entry.validate()
     return entry
+
+
+def _registry_thread_lock(lock_path: Path) -> threading.RLock:
+    resolved = lock_path.resolve(strict=False)
+    with _REGISTRY_THREAD_LOCKS_GUARD:
+        lock = _REGISTRY_THREAD_LOCKS.get(resolved)
+        if lock is None:
+            lock = threading.RLock()
+            _REGISTRY_THREAD_LOCKS[resolved] = lock
+        return lock
+
+
+def _current_registry_locks() -> set[Path]:
+    held = getattr(_REGISTRY_LOCK_STATE, "held", None)
+    if not isinstance(held, set):
+        held = set()
+        _REGISTRY_LOCK_STATE.held = held
+    return held
+
+
+def _mark_registry_lock_held(lock_path: Path) -> None:
+    _current_registry_locks().add(lock_path)
+
+
+def _unmark_registry_lock_held(lock_path: Path) -> None:
+    _current_registry_locks().discard(lock_path)
 
 
 def _read_verification_result_for_registration(
