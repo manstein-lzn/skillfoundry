@@ -114,6 +114,13 @@ from .frontdesk_workspace import (
     write_frontdesk_artifact,
     write_spec_audit_report,
 )
+from .llm_builder import (
+    LLM_SKILL_BUILDER_AGENT_ROLE,
+    LLM_SKILL_BUILDER_OUTPUT_SCHEMA_VERSION,
+    LLM_SKILL_BUILDER_STATUS_FAIL_CLOSED,
+    LLM_SKILL_BUILDER_STATUS_SUCCEEDED,
+    LLMSkillBuilderWorker,
+)
 from .graph import (
     Route,
     SkillFoundryState,
@@ -289,6 +296,11 @@ __all__ = [
     "HARD_CHECK_NAMES",
     "JobWorkspace",
     "LOCKED_INPUT_PATHS",
+    "LLM_SKILL_BUILDER_AGENT_ROLE",
+    "LLM_SKILL_BUILDER_OUTPUT_SCHEMA_VERSION",
+    "LLM_SKILL_BUILDER_STATUS_FAIL_CLOSED",
+    "LLM_SKILL_BUILDER_STATUS_SUCCEEDED",
+    "LLMSkillBuilderWorker",
     "LockedInputTamperError",
     "LocalSkillRegistry",
     "OFFLINE_REPORT_VERSION",
