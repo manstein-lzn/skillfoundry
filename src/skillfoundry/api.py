@@ -9,6 +9,7 @@ from io import BytesIO
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 from uuid import uuid4
@@ -1065,9 +1066,10 @@ class SkillFoundryAPI:
             reason_html = (
                 f'<div class="small muted question-reason">{escape(reason)}</div>' if reason else ""
             )
+            question_text = _clean_frontdesk_question_text(str(question.get("text") or ""), options)
             rows.append(
                 '<div class="question">'
-                f'<div class="question-title">{escape(str(question.get("text") or ""))}</div>'
+                f'<div class="question-title">{escape(question_text)}</div>'
                 + self._question_options_html(options)
                 + reason_html
                 + "</div>"
@@ -1096,7 +1098,7 @@ class SkillFoundryAPI:
         rows = ['<div class="option-list">']
         for index, option in enumerate(options, start=1):
             key = chr(ord("A") + index - 1) if index <= 26 else str(index)
-            option_text = str(option)
+            option_text = _clean_frontdesk_option_text(str(option))
             rows.append(
                 f'<button class="option-item" type="button" data-option-value="{escape(option_text, quote=True)}">'
                 f'<span class="option-key">{escape(key)}.</span>'
@@ -1318,6 +1320,23 @@ def _frontdesk_status_description(readiness: str, next_action: str) -> str:
     if readiness == "failed" or next_action == "fail_closed":
         return "系统没有得到可信的结构化结果，可以重试或调整描述。"
     return "系统正在整理上下文，准备进入下一轮判断。"
+
+
+_FRONTDESK_OPTION_MARKER_RE = re.compile(r"(?:(?<=\s)|(?<=[：:；;，,。]))[A-Z]\s*[\)\.、:：]")
+_FRONTDESK_OPTION_PREFIX_RE = re.compile(r"^\s*[A-Z]\s*[\)\.、:：]\s*")
+
+
+def _clean_frontdesk_question_text(text: str, options: Any) -> str:
+    compact = " ".join(text.split())
+    if isinstance(options, list) and options:
+        marker = _FRONTDESK_OPTION_MARKER_RE.search(compact)
+        if marker is not None:
+            compact = compact[: marker.start()].rstrip(" ：:；;，,。")
+    return compact
+
+
+def _clean_frontdesk_option_text(text: str) -> str:
+    return _FRONTDESK_OPTION_PREFIX_RE.sub("", " ".join(text.split()), count=1)
 
 
 def _truncate(text: str, limit: int) -> str:

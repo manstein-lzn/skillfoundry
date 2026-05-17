@@ -192,3 +192,24 @@ def test_html_ui_renders_links_and_does_not_mark_failed_jobs_as_downloadable(tmp
     assert "/jobs/ui-failed/package.zip" not in html
     assert "ui-ok-skill" in html
     assert "ui-failed-skill" not in html
+
+
+def test_frontdesk_question_html_deduplicates_inline_options(tmp_path):
+    api = make_api(tmp_path)
+
+    html = api._questions_html(
+        [
+            {
+                "text": "Which problem should this skill solve? Choose one: A) Find old answers; B) Clean notes",
+                "options": ["A) Find old answers", "B) Clean notes", "C) Other"],
+                "reason": "Start from the user's real pain.",
+            }
+        ],
+        readiness="needs_clarification",
+        next_action="ask_user",
+    )
+
+    assert "Which problem should this skill solve? Choose one" in html
+    assert "A) Find old answers; B) Clean notes" not in html
+    assert "A. A) Find old answers" not in html
+    assert ">Find old answers<" in html
