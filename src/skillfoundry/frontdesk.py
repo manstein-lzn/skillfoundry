@@ -1083,6 +1083,9 @@ def _normalize_elicitation_payload(payload: Mapping[str, Any]) -> dict[str, Any]
             answer_type = question_payload.get("answer_type")
             if isinstance(answer_type, str):
                 question_payload["answer_type"] = _normalize_answer_type(answer_type)
+            options = question_payload.get("options")
+            if isinstance(options, list):
+                question_payload["options"] = _normalize_question_options(options)
             normalized_questions.append(question_payload)
         normalized["next_questions"] = normalized_questions
 
@@ -1117,6 +1120,30 @@ def _normalize_string_list(values: list[Any]) -> list[str]:
                 or value.get("text")
                 or value.get("field")
                 or value.get("path")
+            )
+            text = str(preferred).strip() if preferred is not None else json.dumps(value, sort_keys=True, ensure_ascii=False)
+        elif value is None:
+            text = ""
+        else:
+            text = str(value).strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _normalize_question_options(values: list[Any]) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        if isinstance(value, str):
+            text = value.strip()
+        elif isinstance(value, Mapping):
+            preferred = (
+                value.get("label")
+                or value.get("text")
+                or value.get("description")
+                or value.get("title")
+                or value.get("name")
+                or value.get("value")
             )
             text = str(preferred).strip() if preferred is not None else json.dumps(value, sort_keys=True, ensure_ascii=False)
         elif value is None:

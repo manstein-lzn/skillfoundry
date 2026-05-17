@@ -304,6 +304,17 @@ def test_elicitor_normalizes_common_live_model_schema_variants(tmp_path):
     workspace, frontdesk = make_frontdesk_workspace(tmp_path)
     payload = needs_clarification_payload()
     payload["next_questions"][0]["answer_type"] = "single_choice_or_free_text"
+    payload["next_questions"][0]["options"] = [
+        {
+            "value": "project_wiki_update",
+            "label": "项目 wiki 更新：按项目归档背景、当前状态、任务、里程碑、关键文件/模块",
+        },
+        {
+            "value": "daily_review_digest",
+            "label": "每日回顾：按日期汇总进展、待办、灵感和风险",
+        },
+        "我有自己的组织方式",
+    ]
     payload["risk_flags"] = [
         {
             "risk": "Chat logs may contain secrets.",
@@ -322,6 +333,11 @@ def test_elicitor_normalizes_common_live_model_schema_variants(tmp_path):
     assert result.status == ELICITATION_STATUS_SUCCEEDED
     assert result.report is not None
     assert result.report.next_questions[0].answer_type == "free_text"
+    assert result.report.next_questions[0].options == [
+        "项目 wiki 更新：按项目归档背景、当前状态、任务、里程碑、关键文件/模块",
+        "每日回顾：按日期汇总进展、待办、灵感和风险",
+        "我有自己的组织方式",
+    ]
     assert result.report.risk_flags == ["Chat logs may contain secrets."]
     assert result.report.draft_acceptance_criteria == [
         {
