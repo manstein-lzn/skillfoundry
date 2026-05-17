@@ -1042,6 +1042,11 @@ def _report_from_payload(payload: Mapping[str, Any], *, round_index: int) -> Eli
 def _normalize_elicitation_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     normalized = dict(payload)
 
+    for field_name in ("missing_fields", "risk_flags", "assumptions"):
+        value = normalized.get(field_name)
+        if isinstance(value, list):
+            normalized[field_name] = _normalize_string_list(value)
+
     questions = normalized.get("next_questions")
     if isinstance(questions, list):
         normalized_questions: list[Any] = []
@@ -1071,6 +1076,30 @@ def _normalize_elicitation_payload(payload: Mapping[str, Any]) -> dict[str, Any]
                 normalized_criteria.append(criterion)
         normalized["draft_acceptance_criteria"] = normalized_criteria
 
+    return normalized
+
+
+def _normalize_string_list(values: list[Any]) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        if isinstance(value, str):
+            text = value.strip()
+        elif isinstance(value, Mapping):
+            preferred = (
+                value.get("risk")
+                or value.get("message")
+                or value.get("description")
+                or value.get("text")
+                or value.get("field")
+                or value.get("path")
+            )
+            text = str(preferred).strip() if preferred is not None else json.dumps(value, sort_keys=True, ensure_ascii=False)
+        elif value is None:
+            text = ""
+        else:
+            text = str(value).strip()
+        if text:
+            normalized.append(text)
     return normalized
 
 
