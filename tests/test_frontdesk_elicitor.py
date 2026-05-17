@@ -63,23 +63,31 @@ def make_frontdesk_workspace(tmp_path, *, job_id="elicitor-001", config=None, us
     return workspace, frontdesk
 
 
-def needs_clarification_payload(*, question_count=2):
+def needs_clarification_payload(*, question_count=1):
     field_paths = [
-        "input.source",
-        "output.format",
-        "audience.primary",
-        "acceptance.examples",
+        "product.problem",
+        "product.workflow",
+        "product.success_signal",
+        "product.failure_scenario",
         "privacy.sensitivity",
     ]
     questions = [
         {
             "question_id": f"Q-{index + 1:03d}",
-            "text": f"What should the skill use for {field_path}?",
+            "text": f"What should this skill help you solve around {field_path}?",
             "missing_field_path": field_path,
-            "reason": f"The builder needs a concrete {field_path} boundary.",
+            "reason": f"The system needs to understand the product intent behind {field_path}.",
             "priority": "must",
             "answer_type": "free_text",
             "blocks_build": True,
+            "options": [
+                "Save time on repetitive work",
+                "Reduce missed knowledge and decisions",
+                "Create a reusable team workflow",
+                "I want to describe it in my own words",
+            ]
+            if index == 0
+            else [],
         }
         for index, field_path in enumerate(field_paths[:question_count])
     ]
@@ -145,7 +153,7 @@ def test_requirements_elicitor_api_is_exported():
     assert skillfoundry.ELICITATION_STATUS_FAIL_CLOSED == ELICITATION_STATUS_FAIL_CLOSED
 
 
-def test_vague_request_writes_targeted_needs_clarification_report_and_manifest(tmp_path):
+def test_vague_request_writes_one_product_discovery_question_and_manifest(tmp_path):
     workspace, frontdesk = make_frontdesk_workspace(tmp_path)
     client = ScriptedModelClient(payload=needs_clarification_payload())
 
@@ -156,9 +164,9 @@ def test_vague_request_writes_targeted_needs_clarification_report_and_manifest(t
     assert result.report is not None
     assert result.report.readiness_guess == "needs_clarification"
     assert [question.missing_field_path for question in result.report.next_questions] == [
-        "input.source",
-        "output.format",
+        "product.problem",
     ]
+    assert result.report.next_questions[0].options[-1] == "I want to describe it in my own words"
     assert all("more details" not in question.text.lower() for question in result.report.next_questions)
 
     assert result.report_ref == "frontdesk/elicitation_report_001.json"

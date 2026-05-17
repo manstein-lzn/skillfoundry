@@ -423,11 +423,11 @@ human_review_resolved -> freeze_spec_or_reject
 建议默认参数：
 
 ```text
-max_clarification_rounds = 5
+max_clarification_rounds = 10
 min_clarity_score = 0.75
 min_feasibility_score = 0.70
 min_testability_score = 0.75
-max_followup_questions_per_round = 7
+max_followup_questions_per_round = 1
 max_frontdesk_model_calls = 12
 max_parse_repair_attempts = 2
 provider_timeout_seconds = 60

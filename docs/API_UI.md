@@ -39,6 +39,11 @@ The Front Desk is product-discovery first. Early rounds should clarify the
 user's pain, goal, workflow, audience, usage moment, desired outcome, success
 signal, and complaint/failure scenario before asking for implementation details
 such as local paths, file formats, API permissions, or exact output directories.
+By default it asks one high-leverage question per round. When useful, the
+question should offer a few candidate choices plus an option for the user to
+describe their own idea. After the pain and workflow are clear, the Front Desk
+should synthesize candidate Skill solutions and let the user choose or adjust
+the direction before deterministic freeze.
 
 Live provider use is opt-in. Start the server with:
 
