@@ -203,6 +203,46 @@ class SkillFoundryAPI:
         result = self._run_frontdesk_round(frontdesk, state=state)
         return self._frontdesk_payload(safe_job_id, result=result)
 
+    def retry_frontdesk_job(self, job_id: str) -> dict[str, JsonValue]:
+        """Retry the current Front Desk model round without appending a user turn."""
+
+        safe_job_id = self._validate_job_id(job_id)
+        if self.frontdesk_client_factory is None and not os.environ.get("OPENAI_API_KEY"):
+            raise APIError(503, "openai_api_key_missing", "OPENAI_API_KEY is required for live Front Desk trial")
+
+        job_root = self._require_job_root(safe_job_id)
+        workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
+        frontdesk = FrontDeskWorkspace(workspace)
+        state = self._read_frontdesk_state(frontdesk)
+        if state is None:
+            raise APIError(409, "frontdesk_state_missing", "frontdesk state is missing")
+        if state.readiness == "failed":
+            report_index = _frontdesk_report_index(state.latest_elicitation_report_ref)
+            if report_index is None:
+                raise APIError(409, "frontdesk_retry_not_available", "frontdesk job is not retryable")
+            state = FrontDeskState(
+                job_id=state.job_id,
+                stage="elicit",
+                clarification_round=report_index,
+                readiness="needs_clarification",
+                latest_elicitation_report_ref=state.latest_elicitation_report_ref,
+                latest_audit_report_ref=state.latest_audit_report_ref,
+                skill_spec_ref=state.skill_spec_ref,
+                acceptance_criteria_ref=state.acceptance_criteria_ref,
+                verification_spec_ref=state.verification_spec_ref,
+                next_action="elicit",
+                human_review_required=False,
+                frontdesk_budget_ref=state.frontdesk_budget_ref,
+                risk_report_ref=state.risk_report_ref,
+                freeze_gate_result_ref=state.freeze_gate_result_ref,
+                freeze_manifest_ref=state.freeze_manifest_ref,
+                acceptance_coverage_plan_ref=state.acceptance_coverage_plan_ref,
+            )
+        if state.readiness in {"frozen", "human_review_required", "rejected"}:
+            raise APIError(409, "frontdesk_retry_not_available", "frontdesk job is not retryable")
+        result = self._run_frontdesk_round(frontdesk, state=state)
+        return self._frontdesk_payload(safe_job_id, result=result)
+
     def get_frontdesk_job(self, job_id: str) -> dict[str, JsonValue]:
         """Return Front Desk state, questions, and artifact refs for one job."""
 
@@ -467,7 +507,7 @@ class SkillFoundryAPI:
                 '    <section class="grid">',
                 '      <div class="panel stack">',
                 "        <h2>对话</h2>",
-                self._conversation_html(turns),
+                self._conversation_html(turns, workspace=workspace, state=state_map),
                 self._questions_html(question_list, readiness=readiness, next_action=next_action),
                 self._frontdesk_answer_form_html(job_id, readiness=readiness, next_action=next_action),
                 "      </div>",
@@ -585,6 +625,18 @@ class SkillFoundryAPI:
                 content_type = _header(headers, "content-type")
                 payload = self._parse_body(body, content_type=content_type)
                 result = self.append_frontdesk_message(route[2], payload)
+                if content_type.startswith("application/x-www-form-urlencoded"):
+                    return APIHTTPResult(
+                        303,
+                        "text/plain; charset=utf-8",
+                        b"",
+                        headers=(("Location", f"/frontdesk/jobs/{result['job_id']}"),),
+                    )
+                return self._json_response(result)
+
+            if method == "POST" and len(route) == 4 and route[:2] == ["frontdesk", "jobs"] and route[3] == "retry":
+                content_type = _header(headers, "content-type")
+                result = self.retry_frontdesk_job(route[2])
                 if content_type.startswith("application/x-www-form-urlencoded"):
                     return APIHTTPResult(
                         303,
@@ -732,7 +784,7 @@ class SkillFoundryAPI:
         turns = read_conversation_turns(frontdesk)
         latest_elicitation = self._read_optional_json_ref(workspace, state.latest_elicitation_report_ref if state else None)
         latest_audit = self._read_optional_json_ref(workspace, state.latest_audit_report_ref if state else None)
-        questions = latest_elicitation.get("next_questions") if isinstance(latest_elicitation, Mapping) else []
+        questions = _active_frontdesk_questions(state, latest_elicitation, turn_count=len(turns))
         payload: dict[str, Any] = {
             "schema_version": FRONTDESK_API_VERSION,
             "job_id": job_id,
@@ -740,7 +792,7 @@ class SkillFoundryAPI:
             "state": state.to_dict() if state is not None else None,
             "conversation_ref": FRONTDESK_CONVERSATION_REF,
             "turn_count": len(turns),
-            "next_questions": questions if isinstance(questions, list) else [],
+            "next_questions": questions,
             "latest_elicitation_report": latest_elicitation,
             "latest_audit_report": latest_audit,
             "result": result.to_dict() if result is not None else None,
@@ -1030,11 +1082,17 @@ class SkillFoundryAPI:
             ]
         )
 
-    def _conversation_html(self, turns: list[ConversationTurn]) -> str:
+    def _conversation_html(
+        self,
+        turns: list[ConversationTurn],
+        *,
+        workspace: JobWorkspace | None = None,
+        state: Mapping[str, Any] | None = None,
+    ) -> str:
         if not turns:
             return '<p class="muted">暂无对话。</p>'
         rows = ['<div class="conversation">']
-        for turn in turns:
+        for index, turn in enumerate(turns, start=1):
             role = "你" if turn.role == "user" else turn.role
             role_class = escape(turn.role if turn.role in {"user", "assistant", "system", "tool"} else "system")
             rows.append(
@@ -1043,8 +1101,49 @@ class SkillFoundryAPI:
                 f"<div>{escape(turn.content)}</div>"
                 "</div>"
             )
+            if workspace is not None:
+                rows.extend(
+                    self._answered_frontdesk_question_html(
+                        workspace,
+                        report_index=index,
+                        has_later_user_turn=index < len(turns),
+                    )
+                )
         rows.append("</div>")
         return "\n".join(rows)
+
+    def _answered_frontdesk_question_html(
+        self,
+        workspace: JobWorkspace,
+        *,
+        report_index: int,
+        has_later_user_turn: bool,
+    ) -> list[str]:
+        if not has_later_user_turn:
+            return []
+        report_ref = f"frontdesk/elicitation_report_{report_index:03d}.json"
+        report = self._read_optional_json_ref(workspace, report_ref)
+        questions = report.get("next_questions") if isinstance(report, Mapping) else None
+        if not isinstance(questions, list) or not questions:
+            return []
+        rows: list[str] = []
+        for question in questions:
+            if not isinstance(question, Mapping):
+                continue
+            question_text, question_options = _frontdesk_question_parts(str(question.get("text") or ""), question.get("options"))
+            rows.append(
+                '<div class="bubble assistant">'
+                '<div class="small muted">需求澄清 Agent</div>'
+                f"<div>{escape(question_text)}</div>"
+                + self._compact_question_options_html(question_options)
+                + "</div>"
+            )
+        return rows
+
+    def _compact_question_options_html(self, options: list[str]) -> str:
+        if not options:
+            return ""
+        return "<ul>" + "".join(f"<li>{escape(option)}</li>" for option in options) + "</ul>"
 
     def _questions_html(self, questions: list[Any], *, readiness: str, next_action: str) -> str:
         if readiness == "frozen" or next_action == "route_to_build":
@@ -1078,9 +1177,18 @@ class SkillFoundryAPI:
         return "\n".join(rows)
 
     def _frontdesk_answer_form_html(self, job_id: str, *, readiness: str, next_action: str) -> str:
-        if readiness in {"frozen", "human_review_required", "rejected", "failed"}:
+        if readiness in {"frozen", "human_review_required", "rejected"}:
             return ""
-        if next_action not in {"ask_user", "elicit"}:
+        if next_action == "elicit" or (readiness == "failed" and next_action == "fail_closed"):
+            return "\n".join(
+                [
+                    f'<form class="answer-form" method="post" action="/frontdesk/jobs/{escape(job_id)}/retry">',
+                    "  <button type=\"submit\">重试生成下一步</button>",
+                    '  <div class="small muted" data-submit-status>当前回答已保留，重试不会新增一条用户回答。</div>',
+                    "</form>",
+                ]
+            )
+        if next_action != "ask_user":
             return ""
         return "\n".join(
             [
@@ -1297,6 +1405,8 @@ def _wants_html(headers: Mapping[str, str] | None) -> bool:
 def _frontdesk_status_label(readiness: str, next_action: str) -> tuple[str, str]:
     if readiness == "frozen" or next_action == "route_to_build":
         return "需求已确定", "success"
+    if next_action == "elicit":
+        return "等待重试", "soft"
     if readiness == "needs_clarification" or next_action == "ask_user":
         return "等待你补充", ""
     if readiness == "human_review_required" or next_action == "human_review":
@@ -1311,6 +1421,8 @@ def _frontdesk_status_label(readiness: str, next_action: str) -> tuple[str, str]
 def _frontdesk_status_description(readiness: str, next_action: str) -> str:
     if readiness == "frozen" or next_action == "route_to_build":
         return "已经形成可进入构建阶段的 Skill 需求规格。"
+    if next_action == "elicit":
+        return "上次模型调用没有完成，已保留你的回答，可以重试生成下一步。"
     if readiness == "needs_clarification" or next_action == "ask_user":
         return "系统正在逐步了解你的真实目标和使用场景。"
     if readiness == "human_review_required" or next_action == "human_review":
@@ -1324,6 +1436,31 @@ def _frontdesk_status_description(readiness: str, next_action: str) -> str:
 
 _FRONTDESK_OPTION_MARKER_RE = re.compile(r"(?:^|[\s：:；;，,。?？])([A-Z])\s*[\)\.、:：]\s*")
 _FRONTDESK_OPTION_PREFIX_RE = re.compile(r"^\s*[A-Z]\s*[\)\.、:：]\s*")
+_FRONTDESK_REPORT_REF_RE = re.compile(r"^frontdesk/elicitation_report_(\d{3,})\.json$")
+
+
+def _active_frontdesk_questions(
+    state: FrontDeskState | None,
+    latest_elicitation: Mapping[str, Any] | None,
+    *,
+    turn_count: int,
+) -> list[Any]:
+    if state is None or state.next_action != "ask_user" or not isinstance(latest_elicitation, Mapping):
+        return []
+    round_index = latest_elicitation.get("round_index")
+    if isinstance(round_index, int) and round_index < turn_count:
+        return []
+    questions = latest_elicitation.get("next_questions")
+    return questions if isinstance(questions, list) else []
+
+
+def _frontdesk_report_index(ref: str | None) -> int | None:
+    if not isinstance(ref, str):
+        return None
+    match = _FRONTDESK_REPORT_REF_RE.fullmatch(ref)
+    if match is None:
+        return None
+    return int(match.group(1))
 
 
 def _frontdesk_question_parts(text: str, options: Any) -> tuple[str, list[str]]:

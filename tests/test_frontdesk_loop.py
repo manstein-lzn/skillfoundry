@@ -20,7 +20,7 @@ from skillfoundry import (
     initialize_job_workspace,
     run_frontdesk_round,
 )
-from skillfoundry.frontdesk import RequirementsElicitor, SpecAuditor
+from skillfoundry.frontdesk import RequirementsElicitationResult, RequirementsElicitor, SpecAuditor
 
 
 class ScriptedModelClient:
@@ -377,6 +377,41 @@ def test_provider_schema_failure_fails_closed(tmp_path):
     assert result.state.next_action == "fail_closed"
     assert result.failure_ref == "frontdesk/elicitation_failure_001.json"
     assert not workspace.resolve_path("frontdesk/spec_audit_report_001.json").exists()
+
+
+def test_transient_provider_timeout_keeps_frontdesk_retryable(tmp_path):
+    workspace, frontdesk = make_frontdesk_workspace(tmp_path)
+    current_state = FrontDeskState(
+        job_id=workspace.job_id,
+        stage="ask_user",
+        clarification_round=3,
+        readiness="needs_clarification",
+        latest_elicitation_report_ref="frontdesk/elicitation_report_003.json",
+        next_action="ask_user",
+    )
+
+    class TimeoutElicitor:
+        def elicit(self, *_args, **_kwargs):
+            return RequirementsElicitationResult(
+                status="fail_closed",
+                round_index=4,
+                failure_ref="frontdesk/elicitation_failure_004.json",
+                failure={
+                    "failure_type": "provider_error",
+                    "message": "The read operation timed out",
+                    "details": {"error_type": "TimeoutError", "retryable": False},
+                },
+            )
+
+    result = run_frontdesk_round(frontdesk, state=current_state, elicitor=TimeoutElicitor())
+
+    assert result.status == "retry_elicit"
+    assert result.failed_closed is False
+    assert result.state.readiness == "needs_clarification"
+    assert result.state.next_action == "elicit"
+    assert result.state.clarification_round == 3
+    assert result.state.latest_elicitation_report_ref == "frontdesk/elicitation_report_003.json"
+    assert result.failure_ref == "frontdesk/elicitation_failure_004.json"
 
 
 def test_ready_for_audit_with_missing_drafts_fails_closed(tmp_path):

@@ -47,6 +47,7 @@ FRONTDESK_LOOP_STATUS_ROUTE_TO_BUILD = "route_to_build"
 FRONTDESK_LOOP_STATUS_HUMAN_REVIEW = "human_review"
 FRONTDESK_LOOP_STATUS_REJECT = "reject"
 FRONTDESK_LOOP_STATUS_FAIL_CLOSED = "fail_closed"
+FRONTDESK_LOOP_STATUS_RETRY_ELICIT = "retry_elicit"
 
 _TERMINAL_READINESS = frozenset({"frozen", "human_review_required", "rejected", "failed"})
 
@@ -205,6 +206,18 @@ class FrontDeskLoop:
             return _failure_result(failed_state, round_index=round_index, failure_ref=failure_ref)
 
         if elicitation.status == ELICITATION_STATUS_FAIL_CLOSED:
+            if _is_transient_model_failure(elicitation.failure):
+                retry_state = _retry_elicit_state(current_state)
+                return FrontDeskLoopResult(
+                    state=retry_state,
+                    round_index=round_index,
+                    status=FRONTDESK_LOOP_STATUS_RETRY_ELICIT,
+                    elicitation_report_ref=current_state.latest_elicitation_report_ref,
+                    audit_report_ref=current_state.latest_audit_report_ref,
+                    freeze_gate_result_ref=current_state.freeze_gate_result_ref,
+                    freeze_manifest_ref=current_state.freeze_manifest_ref,
+                    failure_ref=elicitation.failure_ref,
+                )
             failed_state = _failed_state(
                 current_state,
                 clarification_round=round_index,
@@ -811,6 +824,44 @@ def _failed_state(
     )
     result.validate()
     return result
+
+
+def _retry_elicit_state(state: FrontDeskState) -> FrontDeskState:
+    result = FrontDeskState(
+        job_id=state.job_id,
+        stage="elicit",
+        clarification_round=state.clarification_round,
+        readiness="needs_clarification",
+        latest_elicitation_report_ref=state.latest_elicitation_report_ref,
+        latest_audit_report_ref=state.latest_audit_report_ref,
+        skill_spec_ref=state.skill_spec_ref,
+        acceptance_criteria_ref=state.acceptance_criteria_ref,
+        verification_spec_ref=state.verification_spec_ref,
+        next_action="elicit",
+        human_review_required=False,
+        frontdesk_budget_ref=state.frontdesk_budget_ref,
+        risk_report_ref=state.risk_report_ref,
+        freeze_gate_result_ref=state.freeze_gate_result_ref,
+        freeze_manifest_ref=state.freeze_manifest_ref,
+        acceptance_coverage_plan_ref=state.acceptance_coverage_plan_ref,
+    )
+    result.validate()
+    return result
+
+
+def _is_transient_model_failure(failure: Mapping[str, Any] | None) -> bool:
+    if not isinstance(failure, Mapping):
+        return False
+    failure_type = str(failure.get("failure_type") or "")
+    if failure_type not in {"provider_error", "context_call_failed"}:
+        return False
+    details = failure.get("details")
+    details_map = details if isinstance(details, Mapping) else {}
+    error_type = str(details_map.get("error_type") or details_map.get("exception_type") or "").lower()
+    message = str(failure.get("message") or "").lower()
+    if "timeout" in error_type or "timed out" in message or "timeout" in message:
+        return True
+    return bool(details_map.get("retryable"))
 
 
 def _failure_result(state: FrontDeskState, *, round_index: int, failure_ref: str | None) -> FrontDeskLoopResult:
