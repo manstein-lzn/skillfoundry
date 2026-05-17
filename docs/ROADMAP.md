@@ -57,7 +57,7 @@ MVP 的验收不是“模型生成了文件”，而是：
 
 ## 2. 当前状态
 
-截至 2026-05-17，WP0-WP12 已完成，项目已经具备：
+截至 2026-05-17，WP0-WP15 的部件级实现已完成，项目已经具备：
 
 - workspace + schema 基础；
 - LangGraph refs-only workflow；
@@ -71,8 +71,17 @@ MVP 的验收不是“模型生成了文件”，而是：
 - QA Lab；
 - feedback/versioning/quarantine/rollback；
 - WP12 operations、health/readiness、observability、cleanup、安全清单和生产就绪边界文档。
+- Front Desk schema/workspace；
+- RequirementsElicitor；
+- SpecAuditor；
+- deterministic FrontDeskFreezeGate。
 
-当前不是完整生产级多租户平台，而是可以进入受控内部 beta 的 MVP。最完整、可交给第三方 Agent 逐阶段执行的路线见 `docs/ROADMAP_EXECUTION_PLAN.md`。
+当前不是完整生产级多租户平台，也不是 Front Desk 端到端闭环完成状态。WP13-WP15 完成的是部件级能力；`ask_user -> elicit -> audit -> freeze/human/reject` 的 LangGraph 多轮闭环、Acceptance Criteria 到 QA/Verifier 的覆盖桥、真实 builder 试点仍需继续推进。
+
+WP13 之后的最新路线见：
+
+- `docs/FRONT_DESK_AGENT_ROADMAP.md`
+- `docs/FRONT_DESK_ROADMAP_AUDIT.md`
 
 ## 3. 分层架构
 

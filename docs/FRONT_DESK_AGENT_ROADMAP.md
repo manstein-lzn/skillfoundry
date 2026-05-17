@@ -1,8 +1,8 @@
 # SkillFoundry Front Desk Agent Roadmap
 
-版本：v0.1
+版本：v0.2
 日期：2026-05-17
-适用范围：SkillFoundry WP13-WP16，面向真实 LLM 需求澄清和规格冻结
+适用范围：SkillFoundry WP13-WP17，面向真实 LLM 需求澄清、规格冻结、验收覆盖和真实 builder 试点
 
 ## 1. 一句话结论
 
@@ -30,7 +30,7 @@ Requirements Elicitor Agent
 
 ## 2. 当前基线
 
-截至 WP12，SkillFoundry 已经具备：
+截至 WP15，SkillFoundry 已经具备：
 
 ```text
 LangGraph refs-only workflow
@@ -42,21 +42,31 @@ QA Lab
 Registry
 Feedback + Versioning
 Ops health / observability / cleanup
+Front Desk schema/workspace protocol
+RequirementsElicitor owned LLM boundary
+SpecAuditor owned LLM boundary
+deterministic FrontDeskFreezeGate
 ```
 
-但当前默认路径仍然是离线 deterministic worker。它可以验证工程闭环，但不能真正完成主动需求澄清。
+当前默认路径仍然是离线 deterministic worker。WP14/WP15 已经把真实 LLM 节点的边界、schema、落盘和失败兜底做出来，但默认测试仍使用 fake/scripted client，不调用真实 provider。
 
-缺口：
+重要状态修正：
 
-- 没有真实 LLM Requirements Elicitation Agent；
-- 没有独立 Spec Auditor gate；
-- 没有确定性 FrontDeskFreezeGate；
+- WP13-WP15 已完成的是 `schema/workspace`、`RequirementsElicitor`、`SpecAuditor`、`FrontDeskFreezeGate` 的部件级实现；
+- 这还不等于 Front Desk 端到端闭环完成；
+- `ask_user -> elicit -> audit -> freeze/human/reject` 的 LangGraph 多轮状态机仍是下一步阻塞项；
+- WP16 的验收覆盖闭环完成前，不能把 `planned` coverage 当作 Registry approved 的事实证据；
+- WP17 的真实 builder 试点必须等 Front Desk loop 和 WP16 coverage gate 可用后再进入主线。
+
+剩余缺口：
+
 - 没有多轮澄清状态机；
-- 没有结构化 `acceptance_criteria.yaml`；
-- 没有 `feasibility_report.json`；
-- 没有 `freeze_manifest.json`；
 - 没有把 acceptance criteria 稳定转换为 QA/Verifier 输入；
 - 没有真实用户对话 transcript 的治理、摘要和冻结机制。
+- 没有从 frozen spec 启动真实 builder 的受控试点；
+- 没有面向真实 provider 的 opt-in smoke 与成本观测闭环。
+- FreezeGate 的风险、隐私、预算确定性策略还需要继续硬化；
+- Elicitor 输出到 draft artifact 的自动物化还没有接入流水线。
 
 ## 3. 目标
 
@@ -632,12 +642,22 @@ QA Lab 至少应该输出：
 +------+--------------------------------+-------------------------------+------------------------------+------------------------------+
 | WP   | Phase                          | Primary Output                | Core Gate                    | Status                       |
 +------+--------------------------------+-------------------------------+------------------------------+------------------------------+
-| WP13 | Front Desk Schema + Workspace  | conversation/spec/audit files | deterministic schema tests   | planned                      |
-| WP14 | LLM Elicitor Agent             | active clarification loop     | asks targeted questions      | planned                      |
-| WP15 | Auditor + Freeze Gate          | objective audit + hard gate   | no premature build           | planned                      |
-| WP16 | Acceptance Criteria to QA       | QA/Verifier coverage bridge   | criteria drive evaluation    | planned                      |
-| WP17 | Real Builder Integration       | Codex/LLM builder from spec   | verified real skill output   | future                       |
+| WP13 | Front Desk Schema + Workspace  | conversation/spec/audit files | deterministic schema tests   | done                         |
+| WP14 | LLM Elicitor Agent             | elicitation node + artifacts  | asks targeted questions      | done                         |
+| WP15 | Auditor + Freeze Gate          | objective audit + hard gate   | no premature build           | component done               |
+| WP15B| Front Desk LangGraph Loop      | multi-round clarification     | route/freeze/human/reject    | next / blocking              |
+| WP16 | Acceptance Criteria to QA       | QA/Verifier coverage bridge   | criteria drive evaluation    | next                         |
+| WP17 | Real Builder Integration       | Codex/LLM builder from spec   | verified real skill output   | blocked by WP15B-WP16        |
 +------+--------------------------------+-------------------------------+------------------------------+------------------------------+
+```
+
+当前实现证据：
+
+```text
+WP13 commit: 3197858 Add Front Desk schema workspace foundation
+WP14 commit: f94ecab Add Requirements Elicitor frontdesk agent
+WP15 component commit: 84ade40 Add Spec Auditor and Front Desk freeze gate
+Targeted Front Desk tests: 74 passed
 ```
 
 ### WP13：Front Desk Schema + Workspace
@@ -706,13 +726,11 @@ QA Lab 至少应该输出：
 
 - `SpecAuditor`
 - `FrontDeskFreezeGate`
-- `frontdesk_graph` 或扩展现有 graph
 - audit rubric
 - freeze rubric
 - `freeze_manifest.json`
 - `tests/test_frontdesk_auditor.py`
 - `tests/test_frontdesk_freeze_gate.py`
-- `tests/test_frontdesk_loop.py`
 
 验收门：
 
@@ -725,6 +743,43 @@ QA Lab 至少应该输出：
 - frozen artifacts 必须写入 `freeze_manifest.json` 和 artifact manifest；
 - Auditor approved 但 FreezeGate fail 时不能进入构建；
 - round limit 进入 human review。
+
+当前状态：
+
+- `SpecAuditor` 已实现为 ContextForge owned LLM call；
+- `FrontDeskFreezeGate` 已实现为 non-LLM deterministic gate；
+- 单元级测试已覆盖 auditor/freeze gate；
+- `frontdesk_graph` 和多轮 loop 不归入 WP15 已完成范围，拆到 WP15B。
+
+### WP15B：Front Desk LangGraph Loop
+
+目标：
+
+- 把 Elicitor、Auditor、FreezeGate 串成真正可执行的多轮 Front Desk；
+- 支持 `ask_user -> elicit -> audit -> freeze/human/reject` 路由；
+- 保持 LangGraph state refs-only，不保存完整 conversation、raw prompt 或完整 model output；
+- 将 Elicitor 的 `draft_skill_spec`、`draft_acceptance_criteria` 自动物化为 workspace artifacts；
+- 增加 summary/redaction/retention 的最小治理接口，避免长对话直接无限进入 prompt。
+
+交付物：
+
+- `frontdesk_graph` 或等价 LangGraph node 组合；
+- `FrontDeskLoopState` 或现有 `FrontDeskState` 的路由字段扩展；
+- `tests/test_frontdesk_loop.py`；
+- draft artifact materializer；
+- round limit / human gate / provider failure / parse failure 路由测试；
+- conversation summary artifact 接入点。
+
+验收门：
+
+- 模糊需求第一轮进入 `needs_clarification`，不会启动 builder；
+- 用户补充信息后能重新进入 Elicitor/Auditor；
+- Auditor approved 但 FreezeGate fail 时回到 clarification 或 human gate；
+- high-risk / privacy / unsafe data access 进入 human review；
+- round limit 到达后进入 human review；
+- frozen 后写入 locked refs，后续 builder 只能读取 frozen inputs；
+- LangGraph state 中没有完整 transcript、raw prompt、raw model output、大文本 blob；
+- 默认测试不调用真实 provider、网络或 Codex。
 
 ### WP16：Acceptance Criteria to QA/Verifier
 
@@ -745,13 +800,26 @@ QA Lab 至少应该输出：
 
 验收门：
 
-- must criteria 必须有 evidence；
+- freeze/build 前允许 `planned` coverage，但 Registry approved 前不允许 must criteria 停留在 `planned`；
+- must criteria 必须有实际 evidence 或明确 manual authority；
 - manual-only criteria 被明确标记；
 - bad skill 能按 criteria fail；
 - good skill 能按 criteria pass；
 - coverage 写入 final_report；
 - QA/Verifier 对未覆盖 must criteria 输出 fail；
 - registry 只检查 QA/Verifier pass、coverage result hash 和 provenance，不自己计算 coverage。
+
+关键语义：
+
+```text
+planned          只表示 build 前覆盖计划，不是验收事实
+covered/pass     有证据且通过
+covered/fail     有证据但失败
+manual_only      需要人工验收权威
+uncovered        没有可接受证据
+```
+
+Registry 只能消费 `acceptance_coverage_result.json` 的 `passed=true`、hash 和 provenance；不能自己重新计算 coverage，也不能因为 LLM judge 的文字判断而批准资产。
 
 ### WP17：Real Builder Integration
 
@@ -770,7 +838,8 @@ QA Lab 至少应该输出：
 
 验收门：
 
-- 真实业务需求可产出非模板 Skill；
+- 给定 frozen spec，builder 不读取 raw conversation；
+- builder 不修改 locked inputs；
 - builder 输出完全基于 frozen spec；
 - Verifier/QA/Registry 仍是最终 gate；
 - Codex 内部仍作为 external boundary，不被 ContextForge 假装 replay。

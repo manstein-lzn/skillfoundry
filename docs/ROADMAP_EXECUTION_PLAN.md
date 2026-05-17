@@ -47,7 +47,15 @@ WP9  Minimal API/UI               已完成
 WP10 QA Lab Expansion             已完成
 WP11 Feedback + Versioning        已完成
 WP12 Production Hardening         已完成
+WP13 Front Desk Schema            已完成
+WP14 Requirements Elicitor        已完成
+WP15 Auditor + FreezeGate         部件级完成
+WP15B Front Desk LangGraph Loop   下一步阻塞项
+WP16 Acceptance Coverage Bridge   下一步
+WP17 Real Builder Integration     WP15B-WP16 后试点
 ```
+
+WP13 之后的详细路线已经转移到 `docs/FRONT_DESK_AGENT_ROADMAP.md`。独立审核结论见 `docs/FRONT_DESK_ROADMAP_AUDIT.md`。
 
 后续执行必须保持这个边界：
 
@@ -76,6 +84,12 @@ WP12 Production Hardening         已完成
 | WP10 | QA Lab Expansion           | richer evaluators        | fixture + judge quality | WP4, WP7                 | done                       |
 | WP11 | Feedback + Versioning      | repair/version loop      | feedback creates jobs   | WP6-WP10                 | done                       |
 | WP12 | Production Hardening       | ops/security/perf        | stable multi-job runs   | WP7-WP11                 | done                       |
+| WP13 | Front Desk Schema          | schema/workspace         | deterministic tests     | WP1, WP5                 | done                       |
+| WP14 | Requirements Elicitor      | elicitation node         | targeted questions      | WP13                     | done                       |
+| WP15 | Auditor + FreezeGate       | audit + hard gate        | no premature build      | WP13-WP14                | component done             |
+| WP15B| Front Desk Loop            | multi-round graph        | route/freeze/human      | WP15                     | next / blocking            |
+| WP16 | Acceptance Coverage Bridge | QA/Verifier coverage     | criteria drive quality  | WP15B                    | next                       |
+| WP17 | Real Builder Integration   | LLM/Codex builder pilot  | verified real output    | WP15B-WP16               | blocked                    |
 +------+----------------------------+--------------------------+-------------------------+--------------------------+----------------------------+
 ```
 
