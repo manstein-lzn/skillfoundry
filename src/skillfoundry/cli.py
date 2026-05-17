@@ -70,6 +70,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_json(report)
         return 0
 
+    if args.command == "serve":
+        from .api import serve_http
+
+        serve_http(
+            args.runs_root,
+            registry_path=args.registry,
+            host=args.host,
+            port=args.port,
+        )
+        return 0
+
     parser.error("command is required")
     return 2
 
@@ -106,6 +117,12 @@ def _build_parser() -> argparse.ArgumentParser:
     report.add_argument("--job", type=Path, required=True)
     report.add_argument("--registry", type=Path, required=False)
     report.add_argument("--refresh", action="store_true")
+
+    serve = subparsers.add_parser("serve", help="serve the minimal WP9 internal API/UI")
+    serve.add_argument("--runs-root", type=Path, default=Path("runs"))
+    serve.add_argument("--registry", type=Path, required=False)
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8765)
 
     return parser
 

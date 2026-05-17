@@ -1,0 +1,717 @@
+"""WP9 minimal internal API/UI over the offline SkillFoundry factory."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from html import escape
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
+import json
+from pathlib import Path
+from typing import Any, Mapping
+from urllib.parse import parse_qs, unquote, urlparse
+from uuid import uuid4
+import zipfile
+
+from .offline import OfflineWorkerMode, build_offline, read_final_report
+from .registry import APPROVAL_APPROVED, LocalSkillRegistry, QUARANTINE_NONE
+from .schema import JsonValue, RegistryEntry, ensure_json_compatible
+from .security import PathSecurityError, assert_under_root, resolve_under_root, validate_relative_path
+from .workspace import JOB_ID_RE
+
+
+API_VERSION = "skillfoundry.api.wp9.v1"
+DEFAULT_SERVE_HOST = "127.0.0.1"
+DEFAULT_SERVE_PORT = 8765
+
+
+class APIError(ValueError):
+    """Expected request failure for the minimal WP9 API."""
+
+    def __init__(self, status: int, code: str, message: str) -> None:
+        self.status = status
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        return {"error": {"code": self.code, "message": self.message}}
+
+
+@dataclass(frozen=True)
+class APIHTTPResult:
+    """Small response object shared by tests and the stdlib HTTP wrapper."""
+
+    status: int
+    content_type: str
+    body: bytes
+    headers: tuple[tuple[str, str], ...] = ()
+
+    def json(self) -> dict[str, JsonValue]:
+        payload = json.loads(self.body.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("response body is not a JSON object")
+        return ensure_json_compatible(payload)  # type: ignore[return-value]
+
+
+class SkillFoundryAPI:
+    """Minimal synchronous service for WP9 internal use.
+
+    This class deliberately does not introduce a queue, auth platform, frontend
+    framework, provider dependency, or live Codex dependency. It is a small
+    request boundary around the existing deterministic offline factory.
+    """
+
+    def __init__(self, runs_root: str | Path, *, registry_path: str | Path | None = None) -> None:
+        self.runs_root = Path(runs_root).expanduser()
+        self.runs_root.mkdir(parents=True, exist_ok=True)
+        self._runs_root_resolved = self.runs_root.resolve(strict=True)
+        self.registry_path = self._resolve_registry_path(registry_path)
+
+    def create_job(self, payload: Mapping[str, Any]) -> dict[str, JsonValue]:
+        """Create one synchronous offline job from a JSON-like payload."""
+
+        if not isinstance(payload, Mapping):
+            raise APIError(400, "invalid_json", "request body must be a JSON object")
+
+        job_id = payload.get("job_id")
+        if job_id is None or job_id == "":
+            job_id = self._generate_job_id()
+        if not isinstance(job_id, str):
+            raise APIError(400, "invalid_job_id", "job_id must be a string")
+        safe_job_id = self._validate_job_id(job_id)
+
+        requirement = payload.get("requirement")
+        if not isinstance(requirement, str) or not requirement.strip():
+            raise APIError(400, "invalid_requirement", "requirement must be a non-empty string")
+
+        worker_mode = payload.get("worker_mode")
+        if worker_mode is not None:
+            if not isinstance(worker_mode, str):
+                raise APIError(400, "invalid_worker_mode", "worker_mode must be a string")
+            try:
+                worker_mode = OfflineWorkerMode(worker_mode).value
+            except ValueError as exc:
+                raise APIError(400, "invalid_worker_mode", f"unknown worker_mode: {worker_mode}") from exc
+
+        attempt_limit = self._coerce_attempt_limit(payload.get("attempt_limit", 2))
+        job_root = self._job_root(safe_job_id)
+        if job_root.exists() and any(job_root.iterdir()):
+            raise APIError(409, "job_exists", f"job already exists: {safe_job_id}")
+
+        requirement_path = self._write_requirement(safe_job_id, requirement)
+        try:
+            result = build_offline(
+                requirement_path=requirement_path,
+                output=job_root,
+                registry_path=self.registry_path,
+                worker_mode=worker_mode,
+                attempt_limit=attempt_limit,
+            )
+        except FileExistsError as exc:
+            raise APIError(409, "job_exists", str(exc)) from exc
+        except ValueError as exc:
+            raise APIError(400, "job_create_failed", str(exc)) from exc
+
+        return self._job_payload(safe_job_id, report=result.final_report)
+
+    def list_jobs(self) -> dict[str, JsonValue]:
+        """List known job directories below ``runs_root``."""
+
+        jobs = [self._job_summary(path.name) for path in self._job_dirs()]
+        return ensure_json_compatible(
+            {
+                "schema_version": API_VERSION,
+                "jobs": jobs,
+                "count": len(jobs),
+            }
+        )  # type: ignore[return-value]
+
+    def get_job(self, job_id: str) -> dict[str, JsonValue]:
+        """Return a job payload, including final report when present."""
+
+        safe_job_id = self._validate_job_id(job_id)
+        job_root = self._require_job_root(safe_job_id)
+        report_path = job_root / "final_report.json"
+        if report_path.exists():
+            return self._job_payload(safe_job_id, report=self._read_report(safe_job_id))
+        return self._job_payload(safe_job_id, report=None)
+
+    def get_final_report(self, job_id: str) -> dict[str, JsonValue]:
+        """Return ``final_report.json`` for one job."""
+
+        safe_job_id = self._validate_job_id(job_id)
+        self._require_job_root(safe_job_id)
+        return self._read_report(safe_job_id)
+
+    def query_registry(
+        self,
+        *,
+        status: str | None = APPROVAL_APPROVED,
+        include_quarantined: bool = False,
+    ) -> dict[str, JsonValue]:
+        """Return registry entries, defaulting to approved and non-quarantined."""
+
+        entries = LocalSkillRegistry(self.registry_path).list(
+            status=status,
+            include_quarantined=include_quarantined,
+        )
+        return ensure_json_compatible(
+            {
+                "schema_version": API_VERSION,
+                "registry_path": self._relative_to_runs_root(self.registry_path),
+                "status": status if status is not None else "all",
+                "include_quarantined": include_quarantined,
+                "entries": [entry.to_dict() for entry in entries],
+                "count": len(entries),
+            }
+        )  # type: ignore[return-value]
+
+    def download_approved_package(self, job_id: str) -> tuple[bytes, str]:
+        """Return a zip archive for a registered, approved, non-quarantined job."""
+
+        safe_job_id = self._validate_job_id(job_id)
+        report = self._read_report(safe_job_id)
+        entry = self._approved_registry_entry_for_report(safe_job_id, report)
+        if entry is None:
+            raise APIError(403, "package_not_approved", "job does not have an approved registered package")
+
+        job_root = self._require_job_root(safe_job_id)
+        package_dir = self._package_dir(job_root)
+        if not (package_dir / "SKILL.md").is_file():
+            raise APIError(404, "package_missing", "approved package is missing package/SKILL.md")
+
+        archive = BytesIO()
+        file_count = 0
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as handle:
+            for path in sorted(package_dir.rglob("*")):
+                if path.is_symlink():
+                    raise APIError(403, "unsafe_package_path", "package contains a symlink")
+                if not path.is_file():
+                    continue
+                assert_under_root(package_dir, path)
+                relative = path.relative_to(job_root.resolve(strict=True)).as_posix()
+                validate_relative_path(relative)
+                if not relative.startswith("package/"):
+                    raise APIError(403, "unsafe_package_path", f"package archive path escaped package/: {relative}")
+                handle.write(path, relative)
+                file_count += 1
+        if file_count == 0:
+            raise APIError(404, "package_missing", "approved package contains no files")
+        return archive.getvalue(), f"{safe_job_id}-package.zip"
+
+    def render_index_html(self) -> str:
+        """Render a quiet internal HTML page for jobs and registry entries."""
+
+        jobs = [self._job_summary(path.name) for path in self._job_dirs()]
+        registry_entries = self.query_registry()["entries"]
+        return "\n".join(
+            [
+                "<!doctype html>",
+                '<html lang="en">',
+                "<head>",
+                '  <meta charset="utf-8">',
+                '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+                "  <title>SkillFoundry</title>",
+                "  <style>",
+                "    :root { color-scheme: light; font-family: system-ui, sans-serif; color: #172026; background: #f6f7f8; }",
+                "    body { margin: 0; }",
+                "    header { background: #172026; color: white; padding: 16px 24px; }",
+                "    main { max-width: 1120px; margin: 0 auto; padding: 24px; }",
+                "    section { margin-block: 24px; }",
+                "    h1 { font-size: 22px; margin: 0; font-weight: 650; letter-spacing: 0; }",
+                "    h2 { font-size: 16px; margin: 0 0 12px; font-weight: 650; letter-spacing: 0; }",
+                "    form { display: grid; gap: 10px; max-width: 760px; }",
+                "    label { display: grid; gap: 4px; font-size: 13px; color: #43515a; }",
+                "    input, textarea, select { font: inherit; border: 1px solid #c7ced3; border-radius: 6px; padding: 8px 10px; background: white; color: #172026; }",
+                "    textarea { min-height: 110px; resize: vertical; }",
+                "    button { width: fit-content; border: 1px solid #172026; border-radius: 6px; padding: 8px 12px; background: #172026; color: white; font: inherit; cursor: pointer; }",
+                "    table { width: 100%; border-collapse: collapse; background: white; }",
+                "    th, td { border-bottom: 1px solid #dbe0e3; padding: 9px 10px; text-align: left; vertical-align: top; font-size: 14px; }",
+                "    th { color: #43515a; font-weight: 650; background: #eef1f3; }",
+                "    a { color: #075985; text-decoration: none; }",
+                "    a:hover { text-decoration: underline; }",
+                "    .muted { color: #667780; }",
+                "    .links { display: flex; gap: 12px; flex-wrap: wrap; }",
+                "  </style>",
+                "</head>",
+                "<body>",
+                "  <header><h1>SkillFoundry</h1></header>",
+                "  <main>",
+                "    <section>",
+                "      <h2>New Job</h2>",
+                '      <form method="post" action="/jobs">',
+                '        <label>Job ID <input name="job_id" autocomplete="off"></label>',
+                '        <label>Worker Mode <select name="worker_mode">'
+                + "".join(
+                    f'<option value="{escape(mode.value)}">{escape(mode.value)}</option>'
+                    for mode in OfflineWorkerMode
+                )
+                + "</select></label>",
+                '        <label>Attempt Limit <input name="attempt_limit" inputmode="numeric" value="2"></label>',
+                '        <label>Requirement <textarea name="requirement" required></textarea></label>',
+                "        <button type=\"submit\">Create Job</button>",
+                "      </form>",
+                "    </section>",
+                "    <section>",
+                "      <h2>Jobs</h2>",
+                self._jobs_table_html(jobs),
+                "    </section>",
+                "    <section>",
+                "      <h2>Registry</h2>",
+                self._registry_table_html(registry_entries),
+                "    </section>",
+                "  </main>",
+                "</body>",
+                "</html>",
+            ]
+        )
+
+    def handle(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes | str | Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> APIHTTPResult:
+        """Handle a minimal HTTP-shaped request without requiring a live server."""
+
+        try:
+            parsed = urlparse(path)
+            route = [unquote(part) for part in parsed.path.split("/") if part]
+            query = parse_qs(parsed.query, keep_blank_values=False)
+            method = method.upper()
+
+            if method == "GET" and route == []:
+                html = self.render_index_html().encode("utf-8")
+                return APIHTTPResult(200, "text/html; charset=utf-8", html)
+
+            if method == "POST" and route == ["jobs"]:
+                content_type = _header(headers, "content-type")
+                payload = self._parse_body(body, content_type=content_type)
+                created = self.create_job(payload)
+                if content_type.startswith("application/x-www-form-urlencoded"):
+                    return APIHTTPResult(
+                        303,
+                        "text/plain; charset=utf-8",
+                        b"",
+                        headers=(("Location", f"/jobs/{created['job_id']}"),),
+                    )
+                return self._json_response(created, status=201)
+
+            if method == "GET" and route == ["jobs"]:
+                return self._json_response(self.list_jobs())
+
+            if method == "GET" and len(route) == 2 and route[0] == "jobs":
+                return self._json_response(self.get_job(route[1]))
+
+            if method == "GET" and len(route) == 3 and route[0] == "jobs" and route[2] == "report":
+                return self._json_response(self.get_final_report(route[1]))
+
+            if method == "GET" and len(route) == 3 and route[0] == "jobs" and route[2] == "package.zip":
+                data, filename = self.download_approved_package(route[1])
+                return APIHTTPResult(
+                    200,
+                    "application/zip",
+                    data,
+                    headers=(("Content-Disposition", f'attachment; filename="{filename}"'),),
+                )
+
+            if method == "GET" and route == ["registry"]:
+                status = query.get("status", [APPROVAL_APPROVED])[0]
+                if status == "all":
+                    status = "all"
+                include_quarantined = _query_bool(query.get("include_quarantined", ["false"])[0])
+                return self._json_response(
+                    self.query_registry(status=status, include_quarantined=include_quarantined)
+                )
+
+            if any(part in ("..", ".") or "/" in part or "\\" in part for part in route):
+                raise APIError(400, "unsafe_path", "request path contains an unsafe segment")
+            raise APIError(404, "not_found", "route not found")
+        except APIError as exc:
+            return self._json_response(exc.to_dict(), status=exc.status)
+
+    def _resolve_registry_path(self, registry_path: str | Path | None) -> Path:
+        path = self.runs_root / "registry.json" if registry_path is None else Path(registry_path).expanduser()
+        if not path.is_absolute():
+            path = self.runs_root / path
+        resolved = path.resolve(strict=False)
+        try:
+            resolved.relative_to(self._runs_root_resolved)
+        except ValueError as exc:
+            raise APIError(400, "unsafe_registry_path", "registry_path must be under runs_root") from exc
+        return resolved
+
+    def _validate_job_id(self, job_id: str) -> str:
+        if not JOB_ID_RE.fullmatch(job_id):
+            raise APIError(400, "invalid_job_id", "job_id must be a non-empty safe path segment")
+        try:
+            safe = validate_relative_path(job_id)
+        except PathSecurityError as exc:
+            raise APIError(400, "invalid_job_id", str(exc)) from exc
+        if len(safe.parts) != 1:
+            raise APIError(400, "invalid_job_id", "job_id must be one path segment")
+        return safe.as_posix()
+
+    def _job_root(self, job_id: str) -> Path:
+        try:
+            return resolve_under_root(self._runs_root_resolved, job_id, must_exist=False)
+        except PathSecurityError as exc:
+            raise APIError(400, "invalid_job_id", str(exc)) from exc
+
+    def _require_job_root(self, job_id: str) -> Path:
+        try:
+            root = resolve_under_root(self._runs_root_resolved, job_id, must_exist=True)
+        except PathSecurityError as exc:
+            raise APIError(404, "job_not_found", f"job not found: {job_id}") from exc
+        if not root.is_dir():
+            raise APIError(404, "job_not_found", f"job not found: {job_id}")
+        return root
+
+    def _package_dir(self, job_root: Path) -> Path:
+        try:
+            package_dir = resolve_under_root(job_root, "package", must_exist=True)
+        except PathSecurityError as exc:
+            raise APIError(404, "package_missing", str(exc)) from exc
+        if not package_dir.is_dir():
+            raise APIError(404, "package_missing", "package path is not a directory")
+        return package_dir
+
+    def _write_requirement(self, job_id: str, requirement: str) -> Path:
+        requirement_dir = self._runs_root_resolved / ".api_requirements"
+        requirement_dir.mkdir(parents=True, exist_ok=True)
+        assert_under_root(self._runs_root_resolved, requirement_dir)
+        path = requirement_dir / f"{job_id}.md"
+        assert_under_root(self._runs_root_resolved, path)
+        path.write_text(requirement.strip() + "\n", encoding="utf-8")
+        return path
+
+    def _read_report(self, job_id: str) -> dict[str, JsonValue]:
+        job_root = self._require_job_root(job_id)
+        report_path = job_root / "final_report.json"
+        if not report_path.exists():
+            raise APIError(404, "report_not_found", f"final report not found for job: {job_id}")
+        try:
+            return read_final_report(job_root)
+        except Exception as exc:
+            raise APIError(500, "invalid_report", f"final report is invalid: {exc}") from exc
+
+    def _job_payload(
+        self,
+        job_id: str,
+        *,
+        report: Mapping[str, Any] | None,
+    ) -> dict[str, JsonValue]:
+        approved_entry = self._approved_registry_entry_for_report(job_id, report) if report is not None else None
+        final_status = str(report.get("final_status")) if report is not None and report.get("final_status") else None
+        payload: dict[str, Any] = {
+            "schema_version": API_VERSION,
+            "job_id": job_id,
+            "status": final_status or "workspace",
+            "final_status": final_status,
+            "route": report.get("route") if report is not None else None,
+            "created_at": report.get("created_at") if report is not None else None,
+            "verifier_passed": self._verifier_passed(report),
+            "package_downloadable": approved_entry is not None,
+            "links": self._links(job_id, package_downloadable=approved_entry is not None),
+            "report": report,
+        }
+        if approved_entry is not None:
+            payload["registry_entry"] = approved_entry.to_dict()
+        return ensure_json_compatible(payload)  # type: ignore[return-value]
+
+    def _job_summary(self, job_id: str) -> dict[str, JsonValue]:
+        report: dict[str, JsonValue] | None = None
+        final_status: str | None = None
+        verifier_passed = False
+        created_at: JsonValue = None
+        try:
+            report = self._read_report(job_id)
+        except APIError:
+            pass
+        if report is not None:
+            final_status = str(report.get("final_status")) if report.get("final_status") else None
+            verifier_passed = self._verifier_passed(report)
+            created_at = report.get("created_at")
+        approved_entry = self._approved_registry_entry_for_report(job_id, report) if report is not None else None
+        return ensure_json_compatible(
+            {
+                "job_id": job_id,
+                "status": final_status or "workspace",
+                "final_status": final_status,
+                "created_at": created_at,
+                "verifier_passed": verifier_passed,
+                "package_downloadable": approved_entry is not None,
+                "links": self._links(job_id, package_downloadable=approved_entry is not None),
+            }
+        )  # type: ignore[return-value]
+
+    def _approved_registry_entry_for_report(
+        self,
+        job_id: str,
+        report: Mapping[str, Any] | None,
+    ) -> RegistryEntry | None:
+        if report is None or report.get("final_status") != "registered":
+            return None
+        report_package_hash = report.get("package_hash")
+        refs = report.get("refs")
+        registry_ref = refs.get("registry_entry") if isinstance(refs, Mapping) else None
+        expected_skill_id = registry_ref.get("skill_id") if isinstance(registry_ref, Mapping) else None
+        expected_version = registry_ref.get("version") if isinstance(registry_ref, Mapping) else None
+
+        try:
+            entries = LocalSkillRegistry(self.registry_path).list(
+                status=APPROVAL_APPROVED,
+                include_quarantined=False,
+            )
+        except Exception:
+            return None
+
+        job_root = self._job_root(job_id)
+        package_dir = job_root / "package"
+        for entry in entries:
+            if entry.build_job_id != job_id:
+                continue
+            if entry.approval_status != APPROVAL_APPROVED or entry.quarantine_status != QUARANTINE_NONE:
+                continue
+            if isinstance(expected_skill_id, str) and entry.skill_id != expected_skill_id:
+                continue
+            if isinstance(expected_version, str) and entry.version != expected_version:
+                continue
+            if isinstance(report_package_hash, str) and entry.package_hash != report_package_hash:
+                continue
+            try:
+                verification = LocalSkillRegistry(self.registry_path).verify_entry(entry)
+                entry_package_dir = Path(entry.package_path).resolve(strict=True)
+                if entry_package_dir != package_dir.resolve(strict=True):
+                    continue
+                assert_under_root(self._runs_root_resolved, entry_package_dir)
+            except Exception:
+                continue
+            if verification.valid:
+                return entry
+        return None
+
+    def _links(self, job_id: str, *, package_downloadable: bool) -> dict[str, JsonValue]:
+        links: dict[str, JsonValue] = {
+            "self": f"/jobs/{job_id}",
+            "report": f"/jobs/{job_id}/report",
+        }
+        if package_downloadable:
+            links["package"] = f"/jobs/{job_id}/package.zip"
+        return links
+
+    def _job_dirs(self) -> list[Path]:
+        candidates: list[Path] = []
+        for path in sorted(self._runs_root_resolved.iterdir(), key=lambda item: item.name):
+            if not path.is_dir() or path.is_symlink():
+                continue
+            if not JOB_ID_RE.fullmatch(path.name):
+                continue
+            if any((path / marker).exists() for marker in ("final_report.json", "artifact_manifest.json", "build_contract.yaml")):
+                candidates.append(path)
+        return candidates
+
+    def _relative_to_runs_root(self, path: Path) -> str:
+        return path.resolve(strict=False).relative_to(self._runs_root_resolved).as_posix()
+
+    def _parse_body(
+        self,
+        body: bytes | str | Mapping[str, Any] | None,
+        *,
+        content_type: str,
+    ) -> Mapping[str, Any]:
+        if isinstance(body, Mapping):
+            return body
+        raw = b"" if body is None else body.encode("utf-8") if isinstance(body, str) else body
+        if content_type.startswith("application/x-www-form-urlencoded"):
+            parsed = parse_qs(raw.decode("utf-8"), keep_blank_values=False)
+            return {key: values[-1] for key, values in parsed.items() if values}
+        try:
+            payload = json.loads(raw.decode("utf-8") or "{}")
+        except json.JSONDecodeError as exc:
+            raise APIError(400, "invalid_json", f"request body is invalid JSON: {exc}") from exc
+        if not isinstance(payload, Mapping):
+            raise APIError(400, "invalid_json", "request body must be a JSON object")
+        return payload
+
+    def _json_response(self, payload: Mapping[str, Any], *, status: int = 200) -> APIHTTPResult:
+        compatible = ensure_json_compatible(dict(payload))
+        data = (
+            json.dumps(compatible, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+        ).encode("utf-8")
+        return APIHTTPResult(status, "application/json; charset=utf-8", data)
+
+    def _coerce_attempt_limit(self, value: Any) -> int:
+        if isinstance(value, bool):
+            raise APIError(400, "invalid_attempt_limit", "attempt_limit must be a positive integer")
+        try:
+            attempt_limit = int(value)
+        except (TypeError, ValueError) as exc:
+            raise APIError(400, "invalid_attempt_limit", "attempt_limit must be a positive integer") from exc
+        if attempt_limit <= 0:
+            raise APIError(400, "invalid_attempt_limit", "attempt_limit must be a positive integer")
+        return attempt_limit
+
+    def _generate_job_id(self) -> str:
+        return f"job-{uuid4().hex[:12]}"
+
+    @staticmethod
+    def _verifier_passed(report: Mapping[str, Any] | None) -> bool:
+        if report is None:
+            return False
+        refs = report.get("refs")
+        verifier = refs.get("verifier_result") if isinstance(refs, Mapping) else None
+        return bool(isinstance(verifier, Mapping) and verifier.get("passed") is True)
+
+    def _jobs_table_html(self, jobs: list[dict[str, JsonValue]]) -> str:
+        if not jobs:
+            return '<p class="muted">No jobs.</p>'
+        rows = []
+        for job in jobs:
+            job_id = str(job["job_id"])
+            links = job.get("links")
+            report_link = f"/jobs/{job_id}/report"
+            package_link = None
+            if isinstance(links, Mapping) and isinstance(links.get("package"), str):
+                package_link = str(links["package"])
+            action_links = [f'<a href="{escape(report_link)}">Report</a>']
+            if package_link is not None:
+                action_links.append(f'<a href="{escape(package_link)}">Download</a>')
+            rows.append(
+                "        <tr>"
+                f'<td><a href="/jobs/{escape(job_id)}">{escape(job_id)}</a></td>'
+                f"<td>{escape(str(job.get('status') or 'workspace'))}</td>"
+                f"<td>{'passed' if job.get('verifier_passed') is True else 'not passed'}</td>"
+                f'<td><span class="links">{"".join(action_links)}</span></td>'
+                "</tr>"
+            )
+        return "\n".join(
+            [
+                "      <table>",
+                "        <thead><tr><th>Job</th><th>Status</th><th>Verifier</th><th>Links</th></tr></thead>",
+                "        <tbody>",
+                *rows,
+                "        </tbody>",
+                "      </table>",
+            ]
+        )
+
+    def _registry_table_html(self, entries: JsonValue) -> str:
+        if not isinstance(entries, list) or not entries:
+            return '<p class="muted">No registry entries.</p>'
+        rows = []
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            skill_id = str(entry.get("skill_id") or "")
+            version = str(entry.get("version") or "")
+            build_job_id = str(entry.get("build_job_id") or "")
+            status = str(entry.get("approval_status") or "")
+            rows.append(
+                "        <tr>"
+                f"<td>{escape(skill_id)}</td>"
+                f"<td>{escape(version)}</td>"
+                f'<td><a href="/jobs/{escape(build_job_id)}">{escape(build_job_id)}</a></td>'
+                f"<td>{escape(status)}</td>"
+                "</tr>"
+            )
+        return "\n".join(
+            [
+                "      <table>",
+                "        <thead><tr><th>Skill</th><th>Version</th><th>Job</th><th>Status</th></tr></thead>",
+                "        <tbody>",
+                *rows,
+                "        </tbody>",
+                "      </table>",
+            ]
+        )
+
+
+def make_handler(api: SkillFoundryAPI) -> type[BaseHTTPRequestHandler]:
+    """Return a ``BaseHTTPRequestHandler`` class bound to ``api``."""
+
+    class SkillFoundryHTTPRequestHandler(BaseHTTPRequestHandler):
+        server_version = "SkillFoundryWP9/0.1"
+
+        def do_GET(self) -> None:  # noqa: N802 - stdlib API
+            self._send(api.handle("GET", self.path, headers=dict(self.headers)))
+
+        def do_POST(self) -> None:  # noqa: N802 - stdlib API
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            body = self.rfile.read(length) if length else b""
+            self._send(api.handle("POST", self.path, body=body, headers=dict(self.headers)))
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+        def _send(self, result: APIHTTPResult) -> None:
+            self.send_response(result.status)
+            self.send_header("Content-Type", result.content_type)
+            self.send_header("Content-Length", str(len(result.body)))
+            for key, value in result.headers:
+                self.send_header(key, value)
+            self.end_headers()
+            if result.body:
+                self.wfile.write(result.body)
+
+    return SkillFoundryHTTPRequestHandler
+
+
+def make_server(
+    api: SkillFoundryAPI,
+    *,
+    host: str = DEFAULT_SERVE_HOST,
+    port: int = DEFAULT_SERVE_PORT,
+) -> ThreadingHTTPServer:
+    """Create a stdlib HTTP server for the WP9 API/UI."""
+
+    return ThreadingHTTPServer((host, port), make_handler(api))
+
+
+def serve_http(
+    runs_root: str | Path,
+    *,
+    registry_path: str | Path | None = None,
+    host: str = DEFAULT_SERVE_HOST,
+    port: int = DEFAULT_SERVE_PORT,
+) -> None:
+    """Serve the minimal internal API/UI until interrupted."""
+
+    api = SkillFoundryAPI(runs_root, registry_path=registry_path)
+    server = make_server(api, host=host, port=port)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        return
+    finally:
+        server.server_close()
+
+
+def _header(headers: Mapping[str, str] | None, name: str) -> str:
+    if headers is None:
+        return ""
+    target = name.lower()
+    for key, value in headers.items():
+        if key.lower() == target:
+            return value.lower()
+    return ""
+
+
+def _query_bool(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+__all__ = [
+    "APIError",
+    "APIHTTPResult",
+    "API_VERSION",
+    "DEFAULT_SERVE_HOST",
+    "DEFAULT_SERVE_PORT",
+    "SkillFoundryAPI",
+    "make_handler",
+    "make_server",
+    "serve_http",
+]

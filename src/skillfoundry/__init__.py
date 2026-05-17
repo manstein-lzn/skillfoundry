@@ -1,5 +1,16 @@
 """SkillFoundry public package API."""
 
+from .api import (
+    API_VERSION,
+    DEFAULT_SERVE_HOST,
+    DEFAULT_SERVE_PORT,
+    APIError,
+    APIHTTPResult,
+    SkillFoundryAPI,
+    make_handler,
+    make_server,
+    serve_http,
+)
 from .context import (
     CONTEXT_ADAPTER_VERSION,
     ContextAuditReport,
@@ -97,6 +108,9 @@ from .worker import (
 )
 
 __all__ = [
+    "API_VERSION",
+    "APIError",
+    "APIHTTPResult",
     "ApprovalRecord",
     "APPROVAL_APPROVED",
     "APPROVAL_REJECTED",
@@ -112,6 +126,8 @@ __all__ = [
     "ContextAuditReport",
     "DEFAULT_REVIEW_STATUS",
     "DEFAULT_REGISTRY_VERSION",
+    "DEFAULT_SERVE_HOST",
+    "DEFAULT_SERVE_PORT",
     "DuplicatePolicy",
     "ExecutionReport",
     "FakeWorker",
@@ -142,6 +158,7 @@ __all__ = [
     "Route",
     "SchemaValidationError",
     "SkillFoundryState",
+    "SkillFoundryAPI",
     "SkillFoundryContextAdapter",
     "SkillFoundryContextMetrics",
     "SkillSpec",
@@ -172,11 +189,14 @@ __all__ = [
     "emit_final_report",
     "initialize_job_workspace",
     "load_offline_workspace",
+    "make_handler",
+    "make_server",
     "prepare_offline_workspace",
     "read_final_report",
     "register_offline",
     "resolve_under_root",
     "run_offline_attempt",
+    "serve_http",
     "sha256_bytes",
     "sha256_file",
     "sha256_json",

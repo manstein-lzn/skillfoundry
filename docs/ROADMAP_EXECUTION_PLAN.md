@@ -43,8 +43,8 @@ WP5  ContextForge integration     已完成
 WP6  Local Registry MVP           已完成
 WP7  Offline E2E MVP              已完成
 WP8  CodexWorker pilot            已完成
-WP9  Minimal API/UI               待启动
-WP10 Feedback loop                待 API/UI 和 Registry 稳定后启动
+WP9  Minimal API/UI               已完成
+WP10 QA Lab Expansion             待启动
 ```
 
 后续执行必须保持这个边界：
@@ -70,8 +70,8 @@ WP10 Feedback loop                待 API/UI 和 Registry 稳定后启动
 | WP6  | Local Registry MVP         | verified asset store     | hash/provenance gate    | WP1, WP4, WP5            | done                       |
 | WP7  | Offline E2E MVP            | local full loop + report | build/verify/repair/reg | WP1-WP6                  | done                       |
 | WP8  | CodexWorker Pilot          | real worker adapter      | sandbox + verifier gate | WP1-WP7                  | done                       |
-| WP9  | Minimal API/UI             | internal product entry   | submit/view/download    | WP7, optional WP8        | next                       |
-| WP10 | QA Lab Expansion           | richer evaluators        | fixture + judge quality | WP4, WP7                 | planned                    |
+| WP9  | Minimal API/UI             | internal product entry   | submit/view/download    | WP7, optional WP8        | done                       |
+| WP10 | QA Lab Expansion           | richer evaluators        | fixture + judge quality | WP4, WP7                 | next                       |
 | WP11 | Feedback + Versioning      | repair/version loop      | feedback creates jobs   | WP6-WP10                 | planned                    |
 | WP12 | Production Hardening       | ops/security/perf        | stable multi-job runs   | WP7-WP11                 | planned                    |
 +------+----------------------------+--------------------------+-------------------------+--------------------------+----------------------------+
@@ -607,7 +607,7 @@ skillfoundry report --job runs/demo-001
 
 - 第一个内部用户可以不接触命令行完成一次 Skill 工厂流程。
 
-状态：计划中。
+状态：已完成。
 
 ## 16. WP10：QA Lab Expansion
 
@@ -813,11 +813,11 @@ WP0
 
 ## 22. 推荐下一步
 
-下一步只做 WP9：
+下一步只做 WP10：
 
 ```text
-Minimal API/UI:
-submit requirement -> view job/report -> query registry -> download approved package
+QA Lab Expansion:
+static verifier -> fixture suite -> optional governed judge -> quality report -> repair-driving failure taxonomy
 ```
 
-WP9 可以先基于 WP7 离线闭环和 WP8 可选 CodexWorker adapter 做最小内部入口。不要在 WP9 扩展成复杂多租户产品，重点是提交需求、查看状态、查看 final report、查询 registry、下载 approved package，并保持 workspace 路径安全。
+WP10 的目标是把质量门从“结构正确”推进到“更接近真实可用”。LLM judge 可以作为辅助信号，但不能替代静态检查、fixture 检查、sandbox smoke 和 Registry gate。
