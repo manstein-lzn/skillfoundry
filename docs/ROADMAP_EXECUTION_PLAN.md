@@ -44,7 +44,7 @@ WP6  Local Registry MVP           已完成
 WP7  Offline E2E MVP              已完成
 WP8  CodexWorker pilot            已完成
 WP9  Minimal API/UI               已完成
-WP10 QA Lab Expansion             待启动
+WP10 QA Lab Expansion             已完成
 ```
 
 后续执行必须保持这个边界：
@@ -71,8 +71,8 @@ WP10 QA Lab Expansion             待启动
 | WP7  | Offline E2E MVP            | local full loop + report | build/verify/repair/reg | WP1-WP6                  | done                       |
 | WP8  | CodexWorker Pilot          | real worker adapter      | sandbox + verifier gate | WP1-WP7                  | done                       |
 | WP9  | Minimal API/UI             | internal product entry   | submit/view/download    | WP7, optional WP8        | done                       |
-| WP10 | QA Lab Expansion           | richer evaluators        | fixture + judge quality | WP4, WP7                 | next                       |
-| WP11 | Feedback + Versioning      | repair/version loop      | feedback creates jobs   | WP6-WP10                 | planned                    |
+| WP10 | QA Lab Expansion           | richer evaluators        | fixture + judge quality | WP4, WP7                 | done                       |
+| WP11 | Feedback + Versioning      | repair/version loop      | feedback creates jobs   | WP6-WP10                 | next                       |
 | WP12 | Production Hardening       | ops/security/perf        | stable multi-job runs   | WP7-WP11                 | planned                    |
 +------+----------------------------+--------------------------+-------------------------+--------------------------+----------------------------+
 ```
@@ -654,7 +654,7 @@ skillfoundry report --job runs/demo-001
 
 - Skill 质量评估不再只是“格式正确”，而开始覆盖“是否真的可用”。
 
-状态：计划中。
+状态：已完成。
 
 ## 17. WP11：Feedback + Versioning
 
@@ -813,11 +813,11 @@ WP0
 
 ## 22. 推荐下一步
 
-下一步只做 WP10：
+下一步只做 WP11：
 
 ```text
-QA Lab Expansion:
-static verifier -> fixture suite -> optional governed judge -> quality report -> repair-driving failure taxonomy
+Feedback + Versioning:
+user feedback -> repair job -> new Skill version -> verifier/QA gate -> registry update/quarantine/rollback
 ```
 
-WP10 的目标是把质量门从“结构正确”推进到“更接近真实可用”。LLM judge 可以作为辅助信号，但不能替代静态检查、fixture 检查、sandbox smoke 和 Registry gate。
+WP11 的目标是把一次性 Skill 生成变成可持续维护的能力资产系统。反馈不能直接修改 approved package，新版本仍然必须经过 Verifier、QA Lab 和 Registry gate。

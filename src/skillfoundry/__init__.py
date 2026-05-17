@@ -47,6 +47,7 @@ from .offline import (
     run_offline_attempt,
     verify_offline,
 )
+from .qa import HARD_CHECK_NAMES, QA_LAB_VERSION, QA_REPORT_VERSION, QACheck, QALab, QAResult
 from .registry import (
     APPROVAL_APPROVED,
     APPROVAL_REJECTED,
@@ -132,6 +133,7 @@ __all__ = [
     "ExecutionReport",
     "FakeWorker",
     "FakeWorkerMode",
+    "HARD_CHECK_NAMES",
     "JobWorkspace",
     "LOCKED_INPUT_PATHS",
     "LockedInputTamperError",
@@ -142,6 +144,11 @@ __all__ = [
     "OfflineWorkerMode",
     "OwnedLLMCallResult",
     "PathSecurityError",
+    "QA_LAB_VERSION",
+    "QA_REPORT_VERSION",
+    "QACheck",
+    "QALab",
+    "QAResult",
     "DEFAULT_REQUIRED_SKILL_SECTIONS",
     "QUARANTINE_NONE",
     "QUARANTINE_QUARANTINED",
