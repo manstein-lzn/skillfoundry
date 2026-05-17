@@ -1,0 +1,312 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+import skillfoundry
+from skillfoundry import (
+    APPROVAL_APPROVED,
+    QUARANTINE_QUARANTINED,
+    DuplicatePolicy,
+    LocalSkillRegistry,
+    RegistryDuplicateError,
+    RegistryEntry,
+    RegistryGateError,
+    VerificationResult,
+    Verifier,
+    WorkerAdapter,
+    WorkerExecutionOutcome,
+    initialize_job_workspace,
+)
+from skillfoundry.schema import sha256_file
+
+
+VALID_REGISTRY_SKILL_MD = """---
+name: valid-registry-skill
+description: Deterministic registry fixture.
+references:
+  - references/guide.md
+scripts:
+  - scripts/helper.py
+---
+
+# Valid Registry Skill
+
+## Overview
+
+This fixture describes a complete local Codex Skill package for registry tests.
+
+## When To Use
+
+- Use when the registry needs a deterministic passing package.
+
+## When Not To Use
+
+- Do not use when independent verifier evidence is missing or failing.
+
+## Inputs
+
+- A SkillFoundry build contract and worker input manifest.
+
+## Outputs
+
+- A verifier-approved Skill package and a traceable registry entry.
+
+## Workflow
+
+1. Read the locked inputs.
+2. Build a package in the allowed package directory.
+3. Let the independent verifier decide approval.
+
+## Safety
+
+- Do not treat worker self-report as acceptance evidence.
+"""
+
+
+INVALID_SELF_REPORT_SKILL_MD = """# Invalid Builder Self Report Fixture
+
+The worker says success, but this package is structurally incomplete.
+"""
+
+
+class RegistryFixtureWorker:
+    def __init__(self, skill_md: str = VALID_REGISTRY_SKILL_MD) -> None:
+        self.skill_md = skill_md
+
+    @property
+    def worker_type(self) -> str:
+        return "test:registry-fixture"
+
+    def run(self, context):
+        context.write_text("package/SKILL.md", self.skill_md)
+        context.write_text("package/references/guide.md", "# Guide\n\nReference fixture.\n")
+        context.write_text("package/scripts/helper.py", "# helper fixture; never executed by verifier\n")
+        return WorkerExecutionOutcome(
+            status="completed",
+            exit_status="success",
+            summary="Fixture worker reported success; registry must still require verifier evidence.",
+            artifacts=[
+                "package/SKILL.md",
+                "package/references/guide.md",
+                "package/scripts/helper.py",
+            ],
+            transcript_lines=["wrote registry fixture package"],
+            usage_unavailable_reason="Fixture worker does not call model providers.",
+        )
+
+
+def make_workspace(tmp_path, *, job_id: str = "registry-001", skill_md: str = VALID_REGISTRY_SKILL_MD):
+    workspace = initialize_job_workspace(tmp_path / "runs", job_id)
+    WorkerAdapter(RegistryFixtureWorker(skill_md)).invoke(workspace, "001")
+    return workspace
+
+
+def make_verified_workspace(
+    tmp_path,
+    *,
+    job_id: str = "registry-001",
+    skill_md: str = VALID_REGISTRY_SKILL_MD,
+):
+    workspace = make_workspace(tmp_path, job_id=job_id, skill_md=skill_md)
+    result = Verifier().verify(workspace)
+    return workspace, result
+
+
+def test_registry_api_is_exported():
+    assert skillfoundry.LocalSkillRegistry is LocalSkillRegistry
+    assert skillfoundry.DuplicatePolicy is DuplicatePolicy
+    assert skillfoundry.RegistryGateError is RegistryGateError
+
+
+def test_verifier_passed_package_registers_and_registry_entry_round_trips(tmp_path):
+    workspace, result = make_verified_workspace(tmp_path)
+    registry = LocalSkillRegistry(tmp_path / "registry.json")
+    package_hash_before = result.package_hash
+    skill_path = workspace.resolve_path("package/SKILL.md", must_exist=True)
+    skill_file_hash_before = sha256_file(skill_path)
+
+    entry = registry.add_verified(workspace, version="1.0.0")
+
+    assert entry.skill_id == "registry-001-skill"
+    assert entry.version == "1.0.0"
+    assert entry.package_hash == package_hash_before
+    assert entry.approval_status == APPROVAL_APPROVED
+    assert entry.quarantine_status == "none"
+    assert sha256_file(skill_path) == skill_file_hash_before
+    assert RegistryEntry.from_json(entry.to_json()).to_dict() == entry.to_dict()
+    assert registry.get(entry.skill_id, entry.version).to_dict() == entry.to_dict()
+    assert [item.to_dict() for item in registry.list()] == [entry.to_dict()]
+
+    report = registry.verify(entry.skill_id, entry.version)
+    assert report.valid is True
+    assert report.failures == []
+
+
+def test_verifier_failed_package_cannot_register(tmp_path):
+    workspace, result = make_verified_workspace(tmp_path, skill_md=INVALID_SELF_REPORT_SKILL_MD)
+    assert result.passed is False
+
+    registry = LocalSkillRegistry(tmp_path / "registry.json")
+    with pytest.raises(RegistryGateError) as exc_info:
+        registry.add_verified(workspace, version="1.0.0")
+
+    assert any("verification_result.passed" in failure for failure in exc_info.value.failures)
+    assert not (tmp_path / "registry.json").exists()
+
+
+def test_builder_self_report_alone_cannot_register(tmp_path):
+    workspace = make_workspace(tmp_path)
+
+    registry = LocalSkillRegistry(tmp_path / "registry.json")
+    with pytest.raises(RegistryGateError) as exc_info:
+        registry.add_verified(workspace, version="1.0.0")
+
+    assert any("verification_result" in failure for failure in exc_info.value.failures)
+    assert not (tmp_path / "registry.json").exists()
+
+
+def test_tampered_package_after_verification_cannot_register(tmp_path):
+    workspace, result = make_verified_workspace(tmp_path)
+    skill_path = workspace.resolve_path("package/SKILL.md", must_exist=True)
+    skill_path.write_text(skill_path.read_text(encoding="utf-8") + "\nTamper after verification.\n", encoding="utf-8")
+
+    registry = LocalSkillRegistry(tmp_path / "registry.json")
+    with pytest.raises(RegistryGateError) as exc_info:
+        registry.add_verified(workspace, version="1.0.0")
+
+    assert any("package_hash" in failure for failure in exc_info.value.failures)
+
+
+def test_tampered_package_after_registration_fails_registry_verify(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path)
+    registry = LocalSkillRegistry(tmp_path / "registry.json")
+    entry = registry.add_verified(workspace, version="1.0.0")
+
+    skill_path = workspace.resolve_path("package/SKILL.md", must_exist=True)
+    skill_path.write_text(skill_path.read_text(encoding="utf-8") + "\nTamper after registration.\n", encoding="utf-8")
+
+    report = registry.verify_entry(entry)
+
+    assert report.valid is False
+    assert any("package_hash" in failure for failure in report.failures)
+
+
+def test_tampered_verification_result_fails_registry_verify(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path)
+    registry = LocalSkillRegistry(tmp_path / "registry.json")
+    entry = registry.add_verified(workspace, version="1.0.0")
+
+    result_path = workspace.resolve_path("verifier/verification_result.json", must_exist=True)
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    payload["created_at"] = "2099-01-01T00:00:00Z"
+    result_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+    report = registry.verify_entry(entry)
+
+    assert report.valid is False
+    assert any("verification_result_hash" in failure for failure in report.failures)
+
+
+def test_verification_result_must_reference_execution_report(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path)
+    result_path = workspace.resolve_path("verifier/verification_result.json", must_exist=True)
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    payload["evidence_refs"] = [ref for ref in payload["evidence_refs"] if not ref.startswith("attempts/")]
+    result_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+    registry = LocalSkillRegistry(tmp_path / "registry.json")
+    with pytest.raises(RegistryGateError) as exc_info:
+        registry.add_verified(workspace, version="1.0.0")
+
+    assert any("execution report ref" in failure for failure in exc_info.value.failures)
+
+
+def test_missing_artifact_manifest_fails_registration(tmp_path):
+    workspace, result = make_verified_workspace(tmp_path)
+    assert result.passed is True
+    workspace.resolve_path("artifact_manifest.json", must_exist=True).unlink()
+
+    registry = LocalSkillRegistry(tmp_path / "registry.json")
+    with pytest.raises(RegistryGateError) as exc_info:
+        registry.add_verified(workspace, version="1.0.0")
+
+    assert any("artifact_manifest" in failure for failure in exc_info.value.failures)
+
+
+def test_approved_entry_traces_to_required_wp6_evidence(tmp_path):
+    workspace, result = make_verified_workspace(tmp_path)
+    registry = LocalSkillRegistry(tmp_path / "registry.json")
+
+    entry = registry.add_verified(workspace, version="1.0.0")
+    provenance = entry.provenance
+
+    assert entry.build_job_id == workspace.job_id
+    assert provenance["build_job_id"] == workspace.job_id
+    assert provenance["package"]["ref"] == "package"
+    assert provenance["package"]["sha256"] == entry.package_hash
+    assert provenance["worker_invocation"]["invocation_id"] == entry.worker_invocation_id
+    assert provenance["worker_invocation"]["input_manifest_ref"] == "attempts/001/input_manifest.json"
+    assert provenance["execution_report"]["ref"] == "attempts/001/execution_report.json"
+    assert provenance["verification_spec"]["ref"] == "verification_spec.yaml"
+    assert provenance["verification_spec"]["sha256"] == entry.verification_spec_hash
+    assert provenance["verification_result"]["ref"] == "verifier/verification_result.json"
+    assert provenance["verification_result"]["result_id"] == result.result_id
+    assert provenance["verification_result"]["sha256"] == entry.verification_result_hash
+    assert provenance["artifact_manifest"]["ref"] == "artifact_manifest.json"
+    assert provenance["artifact_manifest"]["sha256"] == entry.artifact_manifest_hash
+    assert provenance["verifier"]["version"] == entry.verifier_version
+
+
+def test_quarantined_entry_is_excluded_from_default_list_and_reuse_candidates(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path)
+    registry = LocalSkillRegistry(tmp_path / "registry.json")
+    entry = registry.add_verified(workspace, version="1.0.0")
+
+    quarantined = registry.quarantine(entry.skill_id, entry.version, "manual safety hold")
+
+    assert quarantined.quarantine_status == QUARANTINE_QUARANTINED
+    assert registry.list() == []
+    assert registry.reuse_candidates() == []
+    assert [item.to_dict() for item in registry.list(status=QUARANTINE_QUARANTINED)] == [quarantined.to_dict()]
+    assert [item.to_dict() for item in registry.list(status=APPROVAL_APPROVED, include_quarantined=True)] == [
+        quarantined.to_dict()
+    ]
+
+
+def test_duplicate_version_policy_rejects_by_default(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path)
+    registry = LocalSkillRegistry(tmp_path / "registry.json")
+    assert registry.duplicate_policy is DuplicatePolicy.REJECT
+
+    registry.add_verified(workspace, version="1.0.0")
+    with pytest.raises(RegistryDuplicateError):
+        registry.add_verified(workspace, version="1.0.0")
+
+
+def test_duplicate_version_policy_can_be_idempotent(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path)
+    registry = LocalSkillRegistry(tmp_path / "registry.json", duplicate_policy=DuplicatePolicy.IDEMPOTENT)
+
+    first = registry.add_verified(workspace, version="1.0.0")
+    second = registry.add_verified(workspace, version="1.0.0")
+
+    assert second.to_dict() == first.to_dict()
+    assert [item.to_dict() for item in registry.list()] == [first.to_dict()]
+
+
+def test_tampered_verification_result_payload_cannot_be_reused_as_pass_evidence(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path)
+    result_path = workspace.resolve_path("verifier/verification_result.json", must_exist=True)
+    result = VerificationResult.read_json_file(result_path)
+    payload = result.to_dict()
+    payload["passed"] = True
+    payload["failures"] = ["tampered verifier result should fail"]
+    result_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+    registry = LocalSkillRegistry(tmp_path / "registry.json")
+    with pytest.raises(RegistryGateError) as exc_info:
+        registry.add_verified(workspace, version="1.0.0")
+
+    assert any("verification_result.failures" in failure for failure in exc_info.value.failures)
