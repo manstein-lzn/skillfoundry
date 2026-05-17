@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 import yaml
 
+from .acceptance import ACCEPTANCE_COVERAGE_RESULT_REF
 from .schema import (
     ArtifactManifest,
     JsonValue,
@@ -421,6 +422,7 @@ class QALab:
                 "failed_hard_checks": [check.name for check in failed_hard_checks],
             },
         )
+        acceptance_coverage_summary = _read_acceptance_coverage_summary(job_workspace)
 
         report = ensure_json_compatible(
             {
@@ -456,6 +458,7 @@ class QALab:
                 "workflow_actionability": workflow_result,
                 "safety_actionability": safety_result,
                 "script_smoke_results": script_smoke,
+                "acceptance_coverage": acceptance_coverage_summary,
                 "judge_signal": judge_signal,
                 "failure_taxonomy": failure_taxonomy,
                 "refs": {
@@ -464,6 +467,7 @@ class QALab:
                     "verification_spec": _file_ref(job_workspace, "verification_spec.yaml"),
                     "verifier_result": verifier_evidence.to_report(),
                     "quality_report": {"ref": "qa/quality_report.json"},
+                    "acceptance_coverage_result": acceptance_coverage_summary,
                 },
             }
         )
@@ -550,6 +554,55 @@ def _read_fixture_spec(workspace: JobWorkspace) -> tuple[dict[str, list[str]], d
         if isinstance(value, list):
             fixtures[key] = [str(item).strip() for item in value if str(item).strip()]
     return fixtures, _file_ref(workspace, ref)
+
+
+def _read_acceptance_coverage_summary(workspace: JobWorkspace) -> dict[str, JsonValue] | None:
+    ref = ACCEPTANCE_COVERAGE_RESULT_REF
+    try:
+        path = workspace.resolve_path(ref, must_exist=True)
+    except Exception:
+        return None
+    digest = sha256_file(path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return ensure_json_compatible(
+            {
+                "present": True,
+                "valid": False,
+                "ref": ref,
+                "sha256": digest,
+                "error": f"invalid JSON: {exc}",
+            }
+        )  # type: ignore[return-value]
+    if not isinstance(payload, Mapping):
+        return ensure_json_compatible(
+            {
+                "present": True,
+                "valid": False,
+                "ref": ref,
+                "sha256": digest,
+                "error": "acceptance coverage result must be a JSON object",
+            }
+        )  # type: ignore[return-value]
+    summary = {
+        "present": True,
+        "valid": True,
+        "ref": ref,
+        "sha256": digest,
+        "schema_version": payload.get("schema_version"),
+        "result_id": payload.get("result_id"),
+        "passed": payload.get("passed"),
+        "coverage_score": payload.get("coverage_score"),
+        "must_total": payload.get("must_total"),
+        "must_passed": payload.get("must_passed"),
+        "must_manual_only": payload.get("must_manual_only"),
+        "must_failed": payload.get("must_failed"),
+        "optional_total": payload.get("optional_total"),
+        "optional_failed": payload.get("optional_failed"),
+        "failures": payload.get("failures") if isinstance(payload.get("failures"), list) else [],
+    }
+    return ensure_json_compatible(summary)  # type: ignore[return-value]
 
 
 def _expected_qa_inputs(

@@ -14,6 +14,7 @@ from typing import Any, Mapping
 
 import fcntl
 
+from .acceptance import ACCEPTANCE_COVERAGE_RESULT_REF
 from .schema import (
     ArtifactManifest,
     ExecutionReport,
@@ -244,6 +245,8 @@ class LocalSkillRegistry:
                 _check_execution_report_against_entry(report, entry, failures)
                 _check_input_manifest_against_entry(entry, workspace_root, report, failures)
 
+        _check_acceptance_coverage_against_entry(entry, workspace_root, failures)
+
         return RegistryVerificationReport(
             skill_id=entry.skill_id,
             version=entry.version,
@@ -418,6 +421,7 @@ def _build_verified_entry(
     artifact_manifest_hash = _artifact_manifest_hash_for_registration(workspace, failures)
     execution_report, execution_report_ref = _execution_report_for_registration(workspace, result, failures)
     worker_invocation = _worker_invocation_for_registration(workspace, execution_report, failures)
+    acceptance_coverage = _acceptance_coverage_for_registration(workspace, failures)
 
     if failures:
         raise RegistryGateError(failures)
@@ -483,6 +487,8 @@ def _build_verified_entry(
             },
         }
     )
+    if acceptance_coverage is not None:
+        provenance["acceptance_coverage_result"] = acceptance_coverage
 
     entry = RegistryEntry(
         skill_id=resolved_skill_id,
@@ -673,6 +679,88 @@ def _worker_invocation_for_registration(
             "worker_input_ref": payload.get("worker_input_ref"),
         }
     )  # type: ignore[return-value]
+
+
+def _acceptance_coverage_for_registration(
+    workspace: JobWorkspace,
+    failures: list[str],
+) -> dict[str, JsonValue] | None:
+    if not _workspace_has_root_acceptance_criteria(workspace):
+        return None
+
+    ref = ACCEPTANCE_COVERAGE_RESULT_REF
+    try:
+        path = workspace.resolve_path(ref, must_exist=True)
+    except Exception as exc:
+        failures.append(f"acceptance_coverage_result: missing or unsafe: {exc}")
+        return None
+
+    digest = sha256_file(path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        failures.append(f"acceptance_coverage_result: invalid JSON: {exc}")
+        return None
+    if not isinstance(payload, dict):
+        failures.append("acceptance_coverage_result: expected JSON object")
+        return None
+
+    if payload.get("passed") is not True:
+        failures.append("acceptance_coverage_result.passed: acceptance coverage did not pass")
+    result_id = payload.get("result_id")
+    if not isinstance(result_id, str) or not result_id.strip():
+        failures.append("acceptance_coverage_result.result_id: missing")
+        result_id = None
+
+    provenance = payload.get("provenance")
+    if not isinstance(provenance, dict):
+        provenance = {}
+
+    return ensure_json_compatible(
+        {
+            "ref": ref,
+            "result_id": result_id,
+            "sha256": digest,
+            "passed": payload.get("passed") is True,
+            "provenance": _acceptance_coverage_provenance_refs(provenance),
+        }
+    )  # type: ignore[return-value]
+
+
+def _workspace_has_root_acceptance_criteria(workspace: JobWorkspace) -> bool:
+    try:
+        return workspace.resolve_path("acceptance_criteria.yaml").is_file()
+    except Exception:
+        return False
+
+
+def _workspace_root_has_acceptance_criteria(workspace_root: Path | None) -> bool:
+    if workspace_root is None:
+        return False
+    try:
+        criteria_path = resolve_under_root(workspace_root, "acceptance_criteria.yaml", must_exist=False)
+    except Exception:
+        return False
+    return criteria_path.is_file()
+
+
+def _acceptance_coverage_provenance_refs(provenance: Mapping[str, Any]) -> dict[str, JsonValue]:
+    refs: dict[str, JsonValue] = {}
+    for key in ("acceptance_criteria", "coverage_plan", "qa_report", "verification_result", "package"):
+        value = provenance.get(key)
+        if not isinstance(value, Mapping):
+            continue
+        refs[key] = ensure_json_compatible(
+            {
+                "ref": value.get("ref") if isinstance(value.get("ref"), str) else None,
+                "sha256": value.get("sha256") if isinstance(value.get("sha256"), str) else None,
+                "result_id": value.get("result_id") if isinstance(value.get("result_id"), str) else None,
+                "plan_id": value.get("plan_id") if isinstance(value.get("plan_id"), str) else None,
+                "passed": value.get("passed") if isinstance(value.get("passed"), bool) else None,
+                "present": value.get("present") if isinstance(value.get("present"), bool) else None,
+            }
+        )  # type: ignore[assignment]
+    return refs
 
 
 def _workspace_root_for_entry(entry: RegistryEntry, failures: list[str]) -> Path | None:
@@ -881,6 +969,59 @@ def _check_input_manifest_against_entry(
         actual_hash = sha256_file(path)
         if actual_hash != input_manifest_hash:
             failures.append(f"worker_input_manifest_hash: expected {input_manifest_hash}, got {actual_hash}")
+
+
+def _check_acceptance_coverage_against_entry(
+    entry: RegistryEntry,
+    workspace_root: Path | None,
+    failures: list[str],
+) -> None:
+    coverage_value = entry.provenance.get("acceptance_coverage_result")
+    has_root_acceptance = _workspace_root_has_acceptance_criteria(workspace_root)
+    if not has_root_acceptance and coverage_value is None:
+        return
+    if has_root_acceptance and not isinstance(coverage_value, Mapping):
+        failures.append("acceptance_coverage_result: required when acceptance_criteria.yaml exists")
+        return
+    if not isinstance(coverage_value, Mapping):
+        failures.append("acceptance_coverage_result: provenance must be a JSON object")
+        return
+    if workspace_root is None:
+        failures.append("acceptance_coverage_result: cannot resolve without workspace_root")
+        return
+
+    ref = _nested_str(entry.provenance, ("acceptance_coverage_result", "ref")) or ACCEPTANCE_COVERAGE_RESULT_REF
+    try:
+        path = resolve_under_root(workspace_root, ref, must_exist=True)
+    except Exception as exc:
+        failures.append(f"acceptance_coverage_result: missing or unsafe ref {ref!r}: {exc}")
+        return
+
+    expected_hash = _nested_str(entry.provenance, ("acceptance_coverage_result", "sha256"))
+    if expected_hash is None:
+        failures.append("acceptance_coverage_result.sha256: missing from provenance")
+    actual_hash = _hash_file_or_failure(path, "acceptance_coverage_result_hash", failures)
+    if expected_hash is not None and actual_hash is not None and actual_hash != expected_hash:
+        failures.append(f"acceptance_coverage_result_hash: expected {expected_hash}, got {actual_hash}")
+
+    expected_passed = coverage_value.get("passed")
+    if expected_passed is not True:
+        failures.append("acceptance_coverage_result.passed: registry provenance does not record passed=true")
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        failures.append(f"acceptance_coverage_result: invalid JSON: {exc}")
+        return
+    if not isinstance(payload, dict):
+        failures.append("acceptance_coverage_result: expected JSON object")
+        return
+    if payload.get("passed") is not True:
+        failures.append("acceptance_coverage_result.passed: acceptance coverage did not pass")
+    expected_result_id = _nested_str(entry.provenance, ("acceptance_coverage_result", "result_id"))
+    actual_result_id = payload.get("result_id")
+    if expected_result_id is not None and actual_result_id != expected_result_id:
+        failures.append(f"acceptance_coverage_result.result_id: expected {expected_result_id}, got {actual_result_id!r}")
 
 
 def _hash_package_dir(package_dir: Path) -> tuple[str, list[str]]:
