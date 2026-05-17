@@ -1,63 +1,100 @@
-# SkillFoundry 分阶段 Roadmap
+# SkillFoundry 分阶段 Roadmap v0.3
 
-## 0. 路线总判定
+本文是 SkillFoundry 的可执行路线图。目标是让后续第三方 Agent、工程师或 Codex Worker 可以照着阶段推进，而不是只读一个方向性愿景。
 
-SkillFoundry 的 MVP 采用以下路线：
+## 0. 总体结论
+
+SkillFoundry 第一阶段采用以下路线：
 
 ```text
-LangGraph 编排
-+ 文件即上下文的 workspace 协议
-+ Codex Worker 黑盒执行
-+ 独立 Verifier 强验收
-+ Registry 资产沉淀
-+ ContextForge 任务级证据账本
-+ MetaLoop 风格任务治理思想
+LangGraph 流程编排
++ ContextForge 自有 LLM 上下文治理和证据账本
++ 文件即上下文 workspace 协议
++ WorkerAdapter 外部 worker 边界
++ Codex Worker 黑盒高能力构建
++ 独立 Verifier 主质量门
++ Registry approved asset store
 ```
 
-这是一条 **conditional-go** 路线：
+路线判断是 **conditional-go**：
 
-- 可以作为 MVP 采用；
+- 可做，且适合作为 Codex Skill 工厂 MVP；
 - 不先自建完整 ActionRuntime；
-- 不假装 ContextForge 能控制 Codex Worker 内部上下文；
-- 必须先定义 workspace 协议、worker 边界、verifier、registry 信任模型和安全底线。
+- 不复制 Codex、OpenHuman 或 MetaLoop 源码；
+- 借鉴其核心思想：文件上下文、边界证据、长任务恢复、独立验收、失败修复；
+- ContextForge 只控制 SkillFoundry 自有 LLM 调用，不控制 Codex Worker 内部 prompt、tool loop、上下文压缩、缓存或成本；
+- Codex Worker 必须被看作外部黑盒 builder；
+- Verifier 和 Registry 是信任边界。
 
-核心原则：
+核心工程原则：
 
 ```text
-少管黑盒过程，严管输入边界和输出验收。
+少管黑盒过程，严管输入边界、输出协议、独立验收和资产注册。
 ```
 
-## 1. 最终产物定义
+## 1. 产品目标
 
-SkillFoundry 最终要成为一套大模型需求交付平台。
+SkillFoundry 的长期目标是成为一套基于 LangGraph + ContextForge 的大模型需求交付平台。
 
-第一个 MVP 只交付 **Codex Skill 工厂**：
+第一个 MVP 只做 **Codex Skill 工厂**：
 
 ```text
 自然语言需求
   -> 需求澄清
   -> SkillSpec
   -> BuildContract
-  -> Codex Worker 构建 Skill package
+  -> Workspace 初始化
+  -> Worker 构建 Skill package
   -> 独立 Verifier 验收
   -> Repair loop
   -> Registry approved entry
   -> Verification report
 ```
 
-MVP 的真实目标不是“能生成文件”，而是：
+MVP 的验收不是“模型生成了文件”，而是：
 
-> 能把一个需求转化为经过独立验证、可追溯、可注册、可复用的 Codex Skill。
+> 能把一个模糊需求转化为经过独立验证、可追溯、可注册、可复用的 Codex Skill。
 
-## 2. 架构边界
+## 2. 当前状态
 
-### 2.1 LangGraph
+截至当前仓库状态：
 
-LangGraph 负责流程和状态：
+- WP0 文档 v0.2 已完成并提交；
+- WP1 workspace + schema 已有实现草案，正在架构验收阶段；
+- 后续 WP2-WP10 必须基于 WP0 的边界继续推进；
+- 真实 Codex Worker 集成必须等 WP1-WP7 全部通过后再进入试点。
+
+## 3. 分层架构
+
+```text
++--------------------------------------------------------------+
+| Product/API Layer                                             |
+| requirement intake, job view, report view, registry query     |
++--------------------------------------------------------------+
+| Orchestration Layer                                           |
+| LangGraph nodes, route, retry, checkpoint, fail-closed        |
++--------------------------------------------------------------+
+| Context and Evidence Layer                                    |
+| ContextForge for owned LLM calls and worker boundary records  |
++--------------------------------------------------------------+
+| Workspace Protocol Layer                                      |
+| locked specs, manifests, attempts, package, verifier outputs  |
++--------------------------------------------------------------+
+| Worker Boundary Layer                                         |
+| WorkerAdapter, FakeWorker, CodexWorker adapter                |
++--------------------------------------------------------------+
+| Quality and Asset Layer                                       |
+| independent Verifier, Registry gate, quarantine, provenance   |
++--------------------------------------------------------------+
+```
+
+### 3.1 LangGraph 边界
+
+LangGraph 负责流程和轻量状态：
 
 - 当前 job 处于哪个阶段；
 - 下一个节点是什么；
-- repair / reject / human review / register 如何路由；
+- retry、repair、reject、human review、register 如何路由；
 - checkpoint 和 resume；
 - attempt 计数和失败分类。
 
@@ -67,20 +104,78 @@ LangGraph state 只能保存轻量引用：
 job_id
 stage
 status
-attempt_count
 route
+attempt_count
+failure_class
 refs
 hashes
 next_action
+human_review_required
 ```
 
-禁止把大文本、worker transcript、raw logs、完整 Skill 包、replay bundle 放入 LangGraph state。
+禁止把以下内容放入 LangGraph state：
 
-### 2.2 Workspace Protocol
+```text
+完整 Skill package
+完整 worker transcript
+raw tool logs
+完整 replay bundle
+大型 prompt 正文
+完整 verification logs
+```
 
-Workspace 是“文件即上下文”的载体。
+### 3.2 ContextForge 边界
 
-每个 build job 有独立目录：
+ContextForge 在 SkillFoundry 中有两个职责。
+
+第一，管理 SkillFoundry 自有 LLM 调用：
+
+```text
+ContextRequest
+  -> PromptView
+  -> ModelCallEnvelope
+  -> ContextKernel.invoke_model()
+  -> ModelCallRecord / UsageRecord / ErrorRecord
+```
+
+适用节点包括：
+
+- 需求澄清；
+- SkillSpec 生成；
+- route 判断；
+- failure 分析；
+- repair plan；
+- LLM judge；
+- report summary。
+
+第二，记录外部 worker 边界证据：
+
+- worker invocation；
+- worker input manifest；
+- workspace hash before/after；
+- transcript artifact；
+- output diff；
+- execution report；
+- verifier result；
+- registry decision；
+- usage unavailable reason。
+
+ContextForge 不承担：
+
+- shell runtime；
+- MCP runtime；
+- Codex Worker 内部 prompt 控制；
+- Codex Worker 内部 tool loop replay；
+- 权限系统；
+- 沙箱系统；
+- 队列系统；
+- UI。
+
+### 3.3 Workspace 协议
+
+Workspace 是“文件即上下文”的事实边界。
+
+标准目录：
 
 ```text
 runs/<job_id>/
@@ -109,102 +204,72 @@ runs/<job_id>/
 
 关键规则：
 
-- `build_contract.yaml`、`skill_spec.yaml`、`verification_spec.yaml` 构建前锁定；
+- 构建前锁定 `build_contract.yaml`、`skill_spec.yaml`、`verification_spec.yaml`、`worker_input.md`；
 - worker 只允许写 `package/` 和当前 `attempts/<n>/`；
+- verifier 只允许写 `verifier/`；
 - registry 只能由平台写；
 - 所有路径必须 resolve 后确认在 job workspace 内；
+- 绝对路径、`..`、符号链接逃逸、隐藏跳转默认拒绝；
 - 所有关键 artifact 必须有 hash；
 - 每次 attempt 必须有 execution report。
 
-### 2.3 Codex Worker
+### 3.4 WorkerAdapter 边界
 
-Codex Worker 是封闭但高能力的外部 agent runtime。
+WorkerAdapter 是 SkillFoundry 与外部 builder 的唯一调用接口。
 
-它负责：
-
-- 读取 workspace 文件；
-- 生成或修复 Skill package；
-- 写 `SKILL.md`、reference、scripts、tests；
-- 运行它内部需要的工程操作；
-- 输出 execution report、diff、summary、transcript。
-
-SkillFoundry 不控制 Codex Worker 内部 prompt、tool loop、上下文压缩和 cache。
-
-SkillFoundry 只控制：
-
-- worker 输入文件；
-- worker 可写范围；
-- worker timeout；
-- worker 输出协议；
-- worker transcript / diff / report 的记录；
-- verifier 是否接受结果。
-
-### 2.4 ContextForge
-
-ContextForge 在 SkillFoundry 中承担两类职责。
-
-第一类：对 SkillFoundry 自有 LLM 节点做细粒度上下文治理：
-
-- 需求澄清；
-- SkillSpec 生成；
-- 路由判断；
-- failure 分析；
-- repair plan；
-- LLM judge；
-- report summary。
-
-这些 owned LLM call 必须走：
+建议接口语义：
 
 ```text
-ContextRequest -> PromptView -> ModelCallEnvelope -> ContextKernel.invoke_model()
+prepare(invocation)
+run(invocation)
+collect(invocation)
+classify_failure(invocation)
 ```
 
-第二类：对 Codex Worker 做边界证据记录：
+输入：
 
-- worker invocation；
+- job workspace 路径；
+- build contract；
 - worker input manifest；
-- workspace hash；
+- timeout；
+- env allowlist；
+- writable path allowlist；
+- attempt id。
+
+输出：
+
 - execution report；
 - output diff；
 - transcript artifact；
-- verifier result；
-- registry decision；
-- usage unavailable reason。
+- workspace hash before/after；
+- exit status；
+- duration；
+- usage availability；
+- failure class。
 
-ContextForge 不承担：
+第一阶段先实现 FakeWorker。真实 CodexWorker 只能在 workspace、verifier、registry、offline E2E 都稳定后试点。
 
-- shell runtime；
-- MCP runtime；
-- Codex Worker 内部 prompt 控制；
-- 权限系统；
-- 沙箱系统；
-- 任务队列；
-- marketplace。
+### 3.5 Verifier 边界
 
-### 2.5 Verifier
+Verifier 是 MVP 的质量生命线。它独立于 builder，不接受 builder 自报成功。
 
-Verifier 是 MVP 的质量生命线。
+第一版必须检查：
 
-它独立于 builder，不接受 builder 自报成功。
-
-第一版必须包含：
-
-- package 结构检查；
+- package 结构；
 - `SKILL.md` required sections；
-- trigger / non-trigger 检查；
-- required inputs / expected outputs 检查；
+- trigger / non-trigger；
+- required inputs / expected outputs；
 - reference/scripts 路径安全；
 - package path confinement；
-- 禁止路径穿越；
-- artifact hash 校验；
-- verification report schema 校验；
+- artifact hash；
+- verification report schema；
 - sandbox smoke；
 - fixture case；
 - 可选 LLM judge，但不能作为唯一主验收门。
 
-### 2.6 Registry
+### 3.6 Registry 边界
 
-Registry 只接受 verifier 通过的 Skill。
+Registry 只接受 verifier-passed package。
 
 RegistryEntry 至少包含：
 
@@ -226,46 +291,102 @@ provenance
 quarantine_status
 ```
 
-## 3. 分阶段 Roadmap
+Registry 不接受 builder self-report，不接受 hash 不完整的 package，不把 quarantined entry 作为默认复用候选。
 
-### Phase 0：路线修正与设计冻结
+## 4. ASCII 总览表
+
+```text
++-------+-----------------------+---------------------------+----------------------------+----------------------------+--------------------------+
+| Phase | Name                  | Main Deliverable          | Must Pass                  | Depends On                 | Exit Condition           |
++-------+-----------------------+---------------------------+----------------------------+----------------------------+--------------------------+
+| 0     | Design Baseline       | Whitepaper/docs v0.2      | boundaries explicit        | none                       | route frozen             |
+| 1     | Workspace + Schema    | schemas, job workspace    | path/hash/schema tests     | Phase 0                    | workspace trusted        |
+| 2     | LangGraph Skeleton    | refs-only workflow        | resume/retry/fail-closed   | Phase 1                    | graph can run stubs      |
+| 3     | WorkerAdapter         | FakeWorker, worker API    | timeout/diff/report tests  | Phase 1, partial Phase 2   | worker boundary stable   |
+| 4     | Verifier              | independent quality gate  | deterministic pass/fail    | Phase 1, Phase 3           | builder cannot self-pass |
+| 5     | ContextForge Link     | context/evidence adapter  | owned call replay boundary | Phase 1-4                  | no black-box overclaim   |
+| 6     | Registry MVP          | approved asset registry   | hash/provenance gate       | Phase 1, Phase 4           | approved skill traceable |
+| 7     | Offline E2E MVP       | local CLI full loop       | fixtures cover main routes | Phase 1-6                  | demo job fully verified  |
+| 8     | CodexWorker Pilot     | real worker adapter       | sandbox/timeout/gate works | Phase 1-7                  | simple real skill built  |
+| 9     | Minimal API/UI        | internal product entry    | submit/view/download works | Phase 7, optional Phase 8  | first users can use it   |
+| 10    | Feedback Loop         | version and feedback flow | feedback creates repair    | Phase 6-9                  | repeatable improvement   |
++-------+-----------------------+---------------------------+----------------------------+----------------------------+--------------------------+
+```
+
+## 5. 阶段执行计划
+
+### Phase 0：Design Baseline
 
 目标：
 
-- 将白皮书升级到 v0.2；
-- 明确新路线是“外部 worker 监督型工厂”；
-- 修正 ContextForge 和 Codex Worker 的边界；
-- 固化 MVP 不自建完整 ActionRuntime 的决策。
+- 将产品路线冻结为外部 worker 监督型工厂；
+- 明确 LangGraph、ContextForge、Workspace、WorkerAdapter、Verifier、Registry 的边界；
+- 明确 ContextForge 不控制 Codex Worker 内部；
+- 明确不自建完整 ActionRuntime；
+- 明确 Codex、OpenHuman、MetaLoop 只作为思想参考，不搬源码。
+
+输入：
+
+- 前期关于 Codex 上下文管理、OpenHuman 长任务机制、MetaLoop 任务治理的讨论；
+- ContextForge v0.1 能力边界；
+- SkillFoundry 产品目标。
 
 交付物：
 
-- `WHITEPAPER.md` v0.2；
-- `docs/ROADMAP.md`；
-- `docs/ARCHITECTURE.md`；
-- `docs/WORK_PACKAGES.md`；
-- `docs/ACCEPTANCE_PLAN.md`。
+- `README.md`
+- `WHITEPAPER.md`
+- `docs/ARCHITECTURE.md`
+- `docs/WORK_PACKAGES.md`
+- `docs/ACCEPTANCE_PLAN.md`
+- `docs/ROADMAP.md`
 
-验收：
+验收门：
 
+- 文档明确 Codex Worker 是黑盒 external worker；
 - 文档明确 owned LLM call 和 external worker invocation 的区别；
-- 文档明确 ContextForge 不控制 Codex Worker 内部上下文；
-- 文档明确 verifier 是主质量门；
-- 文档明确接真实 Codex Worker 前必须有 workspace confinement。
+- 文档明确 Verifier 是主质量门；
+- 文档明确真实 Codex Worker 试点的前置条件；
+- 文档不存在“ContextForge 控制 Codex 内部 tool loop/cache/cost”的过度声明。
 
-### Phase 1：Workspace 协议与数据模型
+退出条件：
+
+- 设计文档可以指导 WP1-WP10 实现；
+- 后续任何 worker 或工程师可以从文档判断什么该做、什么不该做。
+
+当前状态：
+
+- 已完成并提交。
+
+### Phase 1：Workspace + Schema
 
 目标：
 
-- 定义所有核心 schema；
-- 定义 job workspace 目录；
-- 定义文件权限和 hash 规则；
-- 定义 attempt 模型和 resume 模型。
+- 定义 job workspace 文件协议；
+- 定义核心 schema；
+- 实现 hash、锁定输入、artifact manifest、attempt 和 resume 基础；
+- 实现路径 confinement 基础能力。
+
+输入：
+
+- Phase 0 架构文档；
+- workspace 标准目录；
+- schema 清单；
+- 安全边界要求。
 
 交付物：
 
-- `BuildJob`
-- `BuildContract`
+- `pyproject.toml`
+- `src/skillfoundry/__init__.py`
+- `src/skillfoundry/schema.py`
+- `src/skillfoundry/security.py`
+- `src/skillfoundry/workspace.py`
+- `tests/test_schema.py`
+- `tests/test_workspace.py`
+
+核心对象：
+
 - `SkillSpec`
+- `BuildContract`
 - `VerificationSpec`
 - `WorkerInvocation`
 - `ExecutionReport`
@@ -275,21 +396,49 @@ quarantine_status
 - `RegistryEntry`
 - `ApprovalRecord`
 
-验收：
+验收门：
 
 - schema 可 JSON/YAML round-trip；
+- canonical JSON hash 稳定；
 - workspace 可初始化；
-- hash 可稳定生成；
-- 路径逃逸被拒绝；
-- locked input 被修改时 verifier 能发现。
+- locked input 被修改后检查失败；
+- 绝对路径被拒绝；
+- `..` 路径被拒绝；
+- 符号链接逃逸被拒绝或显式禁止；
+- artifact manifest 覆盖锁定输入；
+- resume brief 只保存摘要和引用，不复制完整 transcript。
 
-### Phase 2：LangGraph 骨架
+建议命令：
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+退出条件：
+
+- workspace 和 schema 可以被 WP2、WP3、WP4 同时依赖；
+- 路径安全测试通过；
+- 架构师验收通过后提交。
+
+当前状态：
+
+- 已有实现草案，正在架构验收阶段。
+
+### Phase 2：LangGraph Skeleton
 
 目标：
 
-- 实现最小 LangGraph workflow；
+- 建立最小 LangGraph workflow；
 - state 只保存 refs、hashes、status、attempt counters；
-- 支持 build / verify / repair / register 主流程。
+- 支持 build、verify、repair、register 主流程；
+- 支持 fail-closed 和 resume。
+
+输入：
+
+- Phase 1 schema；
+- workspace refs；
+- route enum；
+- failure classification 草案。
 
 建议节点：
 
@@ -308,53 +457,83 @@ intake
 交付物：
 
 - refs-only state；
-- checkpoint；
+- workflow graph；
 - route enum；
+- checkpoint；
 - failure classification；
 - repair loop；
-- human review gate placeholder。
+- human review placeholder；
+- graph smoke tests。
 
-验收：
+验收门：
 
-- 不把大文本放入 LangGraph state；
-- workflow 可用 FakeWorker 跑通；
-- attempt 超限后 fail-closed；
-- 中断后可 resume。
+- state 不包含大文本、raw logs、完整 package 或 replay bundle；
+- workflow 可用 stub node 跑通；
+- attempt 超限后进入 fail-closed 或 human review；
+- 中断后可根据 refs resume；
+- route 至少覆盖 `build_new`、`reuse_existing`、`reject_unsafe`、`ask_clarifying_question`。
+
+退出条件：
+
+- 不接真实 worker 的情况下，graph 可以完成一次 stub build/verify/repair/register 流程；
+- inspect-state 能证明 state 是 refs-only。
 
 ### Phase 3：WorkerAdapter
 
 目标：
 
-- 先实现 FakeWorker；
-- 定义 CodexWorker adapter 接口；
-- 统一 worker 输入输出协议；
-- 实现 attempt 目录、diff、transcript 和 execution report。
+- 定义 worker 调用边界；
+- 实现 FakeWorker；
+- 为 CodexWorker 保留 adapter 接口；
+- 统一 attempt、diff、transcript、execution report 输出协议。
+
+输入：
+
+- Phase 1 workspace；
+- Phase 2 workflow skeleton；
+- worker invocation schema。
 
 交付物：
 
 - `BuildWorker` interface；
 - `FakeWorker`；
 - `CodexWorker` placeholder 或 adapter skeleton；
-- worker timeout；
+- timeout；
 - env allowlist；
 - writable path allowlist；
 - worker transcript artifact；
-- output diff。
+- output diff；
+- execution report；
+- usage availability 字段。
 
-验收：
+验收门：
 
+- FakeWorker 可生成一个最小 Skill；
 - FakeWorker 可生成一个故意失败 Skill；
 - FakeWorker 可根据 repair input 修复 Skill；
-- Worker 试图写 workspace 外路径时失败；
-- Worker 没有 execution report 时不能进入 verifier pass。
+- worker 试图写 workspace 外路径时失败；
+- worker 缺 execution report 时不能进入 verifier pass；
+- invocation 记录 duration、exit status、input/output refs 和 usage availability。
 
-### Phase 4：独立 Verifier
+退出条件：
+
+- 上层 workflow 不依赖具体 worker 实现；
+- FakeWorker 可以支撑后续 Verifier 和 offline E2E。
+
+### Phase 4：Verifier
 
 目标：
 
-- 构建强验证门；
-- builder self-report 不算证据；
-- verifier 输出机器可读 `verification_result.json`。
+- 构建独立强验收门；
+- 使 builder self-report 无法绕过验收；
+- 输出机器可读 `verification_result.json`。
+
+输入：
+
+- Phase 1 schema 和 path checker；
+- Phase 3 worker 输出；
+- verification spec；
+- fixture cases。
 
 交付物：
 
@@ -368,24 +547,39 @@ intake
 - optional LLM judge adapter；
 - verification summary。
 
-验收：
+验收门：
 
 - 缺 required section 必 fail；
 - 路径穿越必 fail；
-- hash 不匹配必 fail；
+- hash mismatch 必 fail；
 - 缺 artifact manifest 必 fail；
-- builder 自报 pass 但 verifier fail 时 registry 不接受；
+- builder 自报 pass 但 verifier fail 时整体失败；
+- LLM judge pass 但静态检查 fail 时整体失败；
+- verification result schema 可校验；
 - verifier result 可复现。
 
-### Phase 5：ContextForge 集成
+退出条件：
+
+- Registry 可以信任 Verifier 的 pass/fail；
+- builder self-report 不能成为 pass evidence。
+
+### Phase 5：ContextForge Integration
 
 目标：
 
-- 把 ContextForge 接入 SkillFoundry；
-- owned LLM 节点走 ContextForge；
-- worker 黑盒只记录边界；
-- verifier logs 走 ToolOutputGovernor；
-- metrics 和 evidence refs 落盘。
+- 将 ContextForge 接入 SkillFoundry；
+- owned LLM 节点通过 ContextForge；
+- external worker invocation 只记录边界证据；
+- verifier logs 经过 ToolOutputGovernor 或等价治理后才可进入 prompt；
+- 落盘 metrics 和 evidence refs。
+
+输入：
+
+- ContextForge v0.1；
+- Phase 1 artifact refs；
+- Phase 2 LLM node skeleton；
+- Phase 3 worker boundary；
+- Phase 4 verifier result。
 
 交付物：
 
@@ -395,23 +589,37 @@ intake
 - verifier log governance；
 - artifact refs；
 - job-level metrics；
-- usage unavailable reason。
+- usage unavailable reason；
+- replay coverage 计算规则。
 
-验收：
+验收门：
 
-- owned LLM call 有 PromptView / ModelCallEnvelope；
+- owned LLM call 有 PromptView 和 ModelCallEnvelope；
+- owned LLM replay artifact 可定位；
 - worker invocation 有 input/output boundary record；
 - raw verifier log 不直接进入 prompt；
 - metrics 包含 attempt count、verification status、worker duration、usage availability；
-- replay coverage 不夸大 Codex Worker 内部过程。
+- replay coverage 不夸大 Codex Worker 内部过程；
+- usage 不可得时记录明确原因。
+
+退出条件：
+
+- 用户可以审计一个 job 中哪些 LLM 调用是可 replay 的，哪些只是外部 worker boundary evidence；
+- 系统不伪造外部 worker 成本和内部上下文控制能力。
 
 ### Phase 6：Registry MVP
 
 目标：
 
-- 注册通过 verifier 的 Skill；
+- 注册通过 Verifier 的 Skill；
 - 保存 provenance 和 hash；
-- 支持 approved / rejected / quarantined 状态。
+- 支持 approved、rejected、quarantined 状态。
+
+输入：
+
+- Phase 1 schema；
+- Phase 4 verification result；
+- Phase 5 evidence refs。
 
 交付物：
 
@@ -421,24 +629,38 @@ intake
 - package hash；
 - verification result hash；
 - artifact manifest hash；
-- rollback/quarantine metadata。
+- rollback/quarantine metadata；
+- registry query。
 
-验收：
+验收门：
 
 - verifier fail 不能注册；
 - hash 改变后 registry 校验失败；
-- approved entry 可追溯到 build job 和 worker invocation；
-- registry 不接受 builder 自报成功。
+- approved entry 可追溯到 build job、worker invocation、verification spec 和 verification result；
+- quarantined entry 不能作为默认复用候选；
+- registry 不接受 builder self-report；
+- duplicate version 有明确拒绝或幂等策略。
 
-### Phase 7：端到端离线 MVP
+退出条件：
+
+- approved Skill 可以被查询、追溯、验证和隔离；
+- Registry 成为后续复用决策的可信来源。
+
+### Phase 7：Offline E2E MVP
 
 目标：
 
-- 本地 CLI 跑通完整 Codex Skill 工厂闭环；
-- 暂时使用 FakeWorker；
+- 本地 CLI 或等价入口跑通完整 Codex Skill 工厂闭环；
+- 使用 FakeWorker；
 - 输出最终 verification report 和 registry entry。
 
-最小命令：
+输入：
+
+- Phase 1-WP6 全部能力；
+- sample requirements；
+- fixture cases。
+
+最小命令形态：
 
 ```bash
 skillfoundry build --requirement examples/requirements/pytest_repair.md --output runs/demo-001
@@ -446,7 +668,17 @@ skillfoundry verify --job runs/demo-001
 skillfoundry registry list
 ```
 
-验收场景：
+交付物：
+
+- offline build command；
+- offline verify command；
+- sample requirements；
+- fixture cases；
+- repair loop；
+- final report generation；
+- smoke test。
+
+验收门：
 
 - `build_new` 正常构建；
 - `reuse_existing` 可路由；
@@ -454,15 +686,21 @@ skillfoundry registry list
 - 模糊需求触发澄清；
 - 初版 Skill 故意失败，repair 后通过；
 - 路径穿越被拒绝；
-- attempt 超限进入 human_review；
-- 中断后 resume；
-- registry 只接受 hash 匹配 package。
+- attempt 超限进入 human review 或 fail-closed；
+- 中断后可 resume；
+- registry 只接受 hash 匹配 package；
+- final verification report 能链接核心 evidence refs。
 
-### Phase 8：真实 Codex Worker 试点
+退出条件：
+
+- 在不接真实 Codex Worker、不接 UI 的情况下，可以完成一条可验证的本地闭环；
+- 这是第一个可以演示给内部用户和技术评审看的版本。
+
+### Phase 8：CodexWorker Pilot
 
 目标：
 
-- 接入 Codex CLI/SDK；
+- 接入真实 Codex CLI/SDK 或可用 Codex Worker；
 - 不改变 WorkerAdapter 上层协议；
 - 验证真实 worker 在受限 workspace 中构建 Skill 的可行性。
 
@@ -473,46 +711,81 @@ skillfoundry registry list
 - verifier 已实现；
 - registry gate 已实现；
 - worker timeout 和 attempt limit 已实现；
-- transcript / diff / execution report 已落盘。
+- transcript、diff、execution report 已落盘。
 
-验收：
+交付物：
+
+- CodexWorker adapter；
+- invocation command assembly；
+- transcript capture；
+- timeout handling；
+- failure classification；
+- usage availability handling；
+- pilot fixtures。
+
+验收门：
 
 - CodexWorker 能完成一个简单 Skill；
 - CodexWorker 失败能进入 repair；
 - CodexWorker 越权写路径被拒绝；
-- 成本/usage 不可得时记录 `usage_unavailable_reason`；
-- verifier 是最终 gate。
+- 成本或 usage 不可得时记录 `usage_unavailable_reason`；
+- Verifier 是最终 gate；
+- Registry 只接受 verifier-passed package。
 
-### Phase 9：最小 API / UI
+退出条件：
+
+- 真实 Codex Worker 可以作为可替换 worker 被监督调用；
+- 系统仍然不声称控制 Codex Worker 内部上下文。
+
+### Phase 9：Minimal API/UI
 
 目标：
 
 - 给内部用户一个最小可用入口；
-- 不做企业级多租户；
-- 能提交需求、查看 job、查看报告、下载 Skill。
+- 能提交需求、查看 job、查看报告、下载 approved Skill。
+
+输入：
+
+- Phase 7 offline E2E；
+- Phase 6 registry；
+- 可选 Phase 8 CodexWorker pilot。
 
 交付物：
 
-- FastAPI 或等价 API；
-- job create / get / list；
+- API job create/get/list；
 - artifact download；
 - registry query；
-- minimal read-only UI 或静态报告页。
+- minimal read-only UI 或静态报告页；
+- basic auth placeholder 或内部访问说明。
 
-验收：
+验收门：
 
 - 用户能提交需求；
 - 用户能看到澄清、构建、验证、注册状态；
 - 用户能查看 verification report；
-- 用户能下载 approved Skill package。
+- 用户能下载 approved Skill package；
+- API 不暴露 workspace 外文件；
+- UI 不展示未通过 verifier 的 package 为 approved。
 
-### Phase 10：反馈闭环与产品化
+退出条件：
+
+- 第一个内部用户可以不用命令行完成一次需求提交和结果查看；
+- 产品仍然遵守 Verifier 和 Registry 信任边界。
+
+### Phase 10：Feedback Loop
 
 目标：
 
 - 收集真实使用反馈；
 - 形成 Skill 版本迭代；
-- 支持组织内部分发。
+- 支持组织内部分发和质量改进。
+
+输入：
+
+- Phase 6 registry；
+- Phase 7 reports；
+- Phase 9 用户入口；
+- 真实使用反馈。
 
 交付物：
 
@@ -522,60 +795,103 @@ skillfoundry registry list
 - registry search；
 - usage metrics；
 - reviewer workflow；
-- batch build queue。
+- batch build queue 设计或最小实现。
 
-验收：
+验收门：
 
 - 反馈能生成 repair job；
 - Skill 可以版本升级；
 - 旧版本可 quarantine 或 rollback；
-- dashboard 可看到成功率、失败分类、成本和 worker 质量。
+- 新版本仍需通过 Verifier 和 Registry gate；
+- dashboard 或报告可看到成功率、失败分类、成本和 worker 质量；
+- 反馈链路保留来源和审查记录。
 
-## 4. Work Packages 总表
+退出条件：
 
-| WP | 名称 | 主要目标 | 关键验收 |
-| --- | --- | --- | --- |
-| WP0 | 文档 v0.2 | 修正路线和边界 | 白皮书承认 Codex Worker 黑盒边界 |
-| WP1 | Workspace + Schema | 定义文件协议和核心对象 | schema round-trip、路径安全、hash 稳定 |
-| WP2 | LangGraph 骨架 | refs-only state 和主流程 | FakeWorker 跑通 build/verify/repair |
-| WP3 | WorkerAdapter | FakeWorker 与 CodexWorker 接口 | attempt、diff、transcript、timeout |
-| WP4 | Verifier | 独立强验收 | 路径穿越、缺 section、hash mismatch 必 fail |
-| WP5 | ContextForge 集成 | 证据账本和 owned LLM 管理 | 不夸大 Codex 内部 replay |
-| WP6 | Registry MVP | approved Skill 资产沉淀 | 只接受 verifier-passed + hash 固定 package |
-| WP7 | E2E 离线 MVP | 本地 CLI 完整闭环 | 覆盖 build/reuse/reject/repair/resume |
-| WP8 | CodexWorker 试点 | 接真实 Codex Worker | 受限 workspace 内成功构建简单 Skill |
-| WP9 | 最小 API/UI | 内部可用入口 | 提交需求、查看报告、下载 Skill |
-| WP10 | 反馈闭环 | 版本迭代和产品化 | feedback -> repair job -> version upgrade |
+- SkillFoundry 从一次性生成工具升级为持续改进的 Skill 资产工厂；
+- 具备扩大到更多需求类型的基础。
 
-## 5. ASCII 总览表
+## 6. 执行纪律
+
+后续每个 WP 都按同一个节奏推进：
 
 ```text
-+-------+-----------------------+-----------------------------+------------------------------+---------------------------+
-| Phase | Name                  | Main Deliverable            | Must Pass                    | Exit Condition            |
-+-------+-----------------------+-----------------------------+------------------------------+---------------------------+
-| 0     | Design v0.2           | Whitepaper/Roadmap update   | Boundaries are explicit      | conditional-go resolved   |
-| 1     | Workspace + Schema    | Job files and data models   | path/hash/schema checks      | workspace can initialize  |
-| 2     | LangGraph Skeleton    | refs-only workflow          | FakeWorker loop runs         | build->verify->repair     |
-| 3     | WorkerAdapter         | FakeWorker/Codex interface  | attempts/diff/transcript     | worker boundary stable    |
-| 4     | Verifier              | independent quality gate    | deterministic fail/pass      | registry can trust result |
-| 5     | ContextForge Link     | evidence ledger integration | owned LLM and worker records | no black-box overclaim    |
-| 6     | Registry MVP          | approved skill registry     | hash/provenance enforced     | approved entry traceable  |
-| 7     | Offline E2E MVP       | local CLI complete loop     | key fixtures pass            | demo job fully verified   |
-| 8     | CodexWorker Pilot     | real worker integration     | sandbox/timeout/gate works   | simple real skill built   |
-| 9     | Minimal API/UI        | internal product entry      | submit/view/download works   | usable by first users     |
-| 10    | Feedback Loop         | version and learning cycle  | feedback creates repair job  | repeatable improvement    |
-+-------+-----------------------+-----------------------------+------------------------------+---------------------------+
+Design
+  -> independent review when needed
+  -> worker implementation
+  -> architect inspection
+  -> automated validation
+  -> repair if needed
+  -> approval
+  -> commit
 ```
 
-## 6. 当前最优下一步
+必须遵守：
 
-下一步不是直接写平台代码，而是执行 WP0：
+- 每个 WP 开始前写清楚 owns、non-goals、acceptance；
+- builder self-report 永远不是验收证据；
+- 涉及质量门、路线判断、真实 worker 接入时必须有独立审核；
+- 每次实现后必须跑对应测试；
+- 文档、schema、workflow、verifier、registry 的边界不允许互相偷换；
+- `.metaloop/`、`.venv/`、缓存和运行产物不进 git。
 
-1. 将 `WHITEPAPER.md` 升级为 v0.2；
-2. 新增 `docs/ARCHITECTURE.md`；
-3. 新增 `docs/WORK_PACKAGES.md`；
-4. 新增 `docs/ACCEPTANCE_PLAN.md`；
-5. 明确 `BuildContract`、`VerificationSpec`、`WorkerAdapter`、`RegistryEntry` 的第一版字段。
+## 7. 停止与重设计条件
 
-完成 WP0 后，再进入 schema 和 workspace 协议实现。
+出现以下情况时，不继续堆代码，必须回到设计：
 
+- ContextForge 被错误扩展为 shell/MCP/runtime/sandbox 总线；
+- LangGraph state 开始承载大文本或完整 transcript；
+- WorkerAdapter 无法限制 workspace 写入边界；
+- Verifier 只能靠 LLM judge 判断；
+- Registry 接受未通过 Verifier 的 package；
+- CodexWorker pilot 需要绕过 Phase 1-7 的 gate；
+- 成本、usage、replay coverage 被伪造或过度声明；
+- repair loop 只能靠人工解释，无法形成机器可读失败分类。
+
+## 8. 最短可演示路径
+
+如果目标是最快做出可演示 MVP，执行顺序为：
+
+```text
+Phase 1  Workspace + Schema
+Phase 2  LangGraph Skeleton
+Phase 3  FakeWorker
+Phase 4  Verifier
+Phase 6  Registry MVP
+Phase 7  Offline E2E MVP
+Phase 5  ContextForge Integration
+Phase 8  CodexWorker Pilot
+Phase 9  Minimal API/UI
+Phase 10 Feedback Loop
+```
+
+说明：
+
+- Phase 5 可以在 Phase 7 前后穿插，但不能改变 Phase 1-4 的边界；
+- Phase 8 不能提前；
+- Phase 9 可以先基于 FakeWorker 演示，但真实生产价值依赖 Phase 8；
+- Phase 10 是从“工厂能跑”走向“资产能沉淀”的阶段。
+
+## 9. 版本里程碑
+
+```text
+v0.1  文档和路线冻结
+v0.2  workspace + schema foundation
+v0.3  refs-only LangGraph + FakeWorker
+v0.4  independent Verifier + Registry MVP
+v0.5  offline E2E Codex Skill factory
+v0.6  ContextForge integration
+v0.7  CodexWorker pilot
+v0.8  internal API/UI
+v0.9  feedback loop
+v1.0  internal production pilot
+```
+
+v1.0 的定义：
+
+- 至少 3 类真实 Skill 需求可通过平台构建；
+- 每个 approved Skill 都有 verification report、provenance、hash 和 registry entry；
+- 失败能进入 repair 或 human review；
+- 用户可以提交需求、查看状态、下载结果；
+- 系统能区分 owned LLM replay 和 external worker boundary evidence；
+- 成本、usage、replay coverage 不做虚假承诺。
