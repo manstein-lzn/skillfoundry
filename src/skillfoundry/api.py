@@ -301,6 +301,7 @@ class SkillFoundryAPI:
         """Render a quiet internal HTML page for jobs and registry entries."""
 
         jobs = [self._job_summary(path.name) for path in self._job_dirs()]
+        frontdesk_jobs = [self._frontdesk_job_summary(path.name) for path in self._frontdesk_job_dirs()]
         registry_entries = self.query_registry()["entries"]
         return "\n".join(
             [
@@ -317,11 +318,12 @@ class SkillFoundryAPI:
                 "    main { max-width: 1120px; margin: 0 auto; padding: 24px; }",
                 "    section { margin-block: 24px; }",
                 "    h1 { font-size: 22px; margin: 0; font-weight: 650; letter-spacing: 0; }",
-                "    h2 { font-size: 16px; margin: 0 0 12px; font-weight: 650; letter-spacing: 0; }",
+                "    h2 { font-size: 18px; margin: 0 0 12px; font-weight: 650; letter-spacing: 0; }",
+                "    h3 { font-size: 15px; margin: 0 0 8px; font-weight: 650; letter-spacing: 0; }",
                 "    form { display: grid; gap: 10px; max-width: 760px; }",
                 "    label { display: grid; gap: 4px; font-size: 13px; color: #43515a; }",
                 "    input, textarea, select { font: inherit; border: 1px solid #c7ced3; border-radius: 6px; padding: 8px 10px; background: white; color: #172026; }",
-                "    textarea { min-height: 110px; resize: vertical; }",
+                "    textarea { min-height: 150px; resize: vertical; }",
                 "    button { width: fit-content; border: 1px solid #172026; border-radius: 6px; padding: 8px 12px; background: #172026; color: white; font: inherit; cursor: pointer; }",
                 "    table { width: 100%; border-collapse: collapse; background: white; }",
                 "    th, td { border-bottom: 1px solid #dbe0e3; padding: 9px 10px; text-align: left; vertical-align: top; font-size: 14px; }",
@@ -330,21 +332,41 @@ class SkillFoundryAPI:
                 "    a:hover { text-decoration: underline; }",
                 "    .muted { color: #667780; }",
                 "    .links { display: flex; gap: 12px; flex-wrap: wrap; }",
+                "    .panel { background: white; border: 1px solid #dbe0e3; border-radius: 8px; padding: 16px; }",
+                "    .grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.8fr); gap: 18px; align-items: start; }",
+                "    .status { display: inline-flex; width: fit-content; border-radius: 999px; padding: 4px 9px; background: #e8f1f8; color: #075985; font-size: 13px; font-weight: 650; }",
+                "    .soft { background: #eef1f3; color: #43515a; }",
+                "    .danger { background: #fdecec; color: #991b1b; }",
+                "    .success { background: #e9f7ef; color: #166534; }",
+                "    .stack { display: grid; gap: 12px; }",
+                "    .small { font-size: 13px; }",
+                "    @media (max-width: 760px) { main { padding: 14px; } .grid { grid-template-columns: 1fr; } }",
                 "  </style>",
                 "</head>",
                 "<body>",
-                "  <header><h1>SkillFoundry</h1></header>",
+                "  <header><h1>SkillFoundry Codex Skill 工厂</h1></header>",
                 "  <main>",
-                "    <section>",
-                "      <h2>Front Desk Clarification</h2>",
-                '      <form method="post" action="/frontdesk/jobs">',
-                '        <label>Job ID <input name="job_id" autocomplete="off"></label>',
-                '        <label>Message <textarea name="message" required></textarea></label>',
-                '        <button type="submit">Run Front Desk Round</button>',
-                "      </form>",
+                '    <section class="grid">',
+                '      <div class="panel stack">',
+                "        <h2>描述你想要的 Skill</h2>",
+                '        <form method="post" action="/frontdesk/jobs">',
+                '          <label>需求 <textarea name="message" required placeholder="例如：我想要一个 Codex Skill，帮助研发团队根据 pytest 失败日志定位问题，并给出修复建议。"></textarea></label>',
+                '          <button type="submit">开始对话</button>',
+                "        </form>",
+                "      </div>",
+                '      <div class="panel stack">',
+                "        <h2>当前会话</h2>",
+                self._frontdesk_table_html(frontdesk_jobs),
+                "      </div>",
                 "    </section>",
-                "    <section>",
-                "      <h2>Offline Factory Job</h2>",
+                '    <section class="panel">',
+                "      <h2>已交付资产</h2>",
+                self._registry_table_html(registry_entries),
+                "    </section>",
+                '    <section class="panel">',
+                "      <details>",
+                "      <summary>内部调试</summary>",
+                "      <h2>离线工厂</h2>",
                 '      <form method="post" action="/jobs">',
                 '        <label>Job ID <input name="job_id" autocomplete="off"></label>',
                 '        <label>Worker Mode <select name="worker_mode">'
@@ -355,20 +377,108 @@ class SkillFoundryAPI:
                 + "</select></label>",
                 '        <label>Attempt Limit <input name="attempt_limit" inputmode="numeric" value="2"></label>',
                 '        <label>Requirement <textarea name="requirement" required></textarea></label>',
-                "        <button type=\"submit\">Create Job</button>",
+                "        <button type=\"submit\">运行离线闭环</button>",
                 "      </form>",
-                "    </section>",
-                "    <section>",
-                "      <h2>Jobs</h2>",
+                "      <h2>离线 Job</h2>",
                 self._jobs_table_html(jobs),
-                "    </section>",
-                "    <section>",
-                "      <h2>Registry</h2>",
-                self._registry_table_html(registry_entries),
+                "      </details>",
                 "    </section>",
                 "  </main>",
                 "</body>",
                 "</html>",
+            ]
+        )
+
+    def render_frontdesk_job_html(self, job_id: str) -> str:
+        """Render one user-facing Front Desk conversation page."""
+
+        payload = self.get_frontdesk_job(job_id)
+        state = payload.get("state")
+        state_map = state if isinstance(state, Mapping) else {}
+        job_root = self._require_job_root(job_id)
+        workspace = JobWorkspace(root=job_root, job_id=job_id)
+        frontdesk = FrontDeskWorkspace(workspace)
+        turns = read_conversation_turns(frontdesk)
+        elicitation = payload.get("latest_elicitation_report")
+        elicitation_map = elicitation if isinstance(elicitation, Mapping) else {}
+        questions = payload.get("next_questions")
+        question_list = questions if isinstance(questions, list) else []
+        readiness = str(state_map.get("readiness") or "new_conversation")
+        next_action = str(state_map.get("next_action") or payload.get("status") or "elicit")
+        return "\n".join(
+            [
+                "<!doctype html>",
+                '<html lang="zh-CN">',
+                "<head>",
+                '  <meta charset="utf-8">',
+                '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+                "  <title>SkillFoundry 需求澄清</title>",
+                "  <style>",
+                "    :root { color-scheme: light; font-family: system-ui, sans-serif; color: #172026; background: #f6f7f8; }",
+                "    body { margin: 0; }",
+                "    header { background: #172026; color: white; padding: 16px 24px; }",
+                "    main { max-width: 1120px; margin: 0 auto; padding: 24px; display: grid; gap: 18px; }",
+                "    h1 { font-size: 22px; margin: 0; font-weight: 650; letter-spacing: 0; }",
+                "    h2 { font-size: 17px; margin: 0 0 10px; font-weight: 650; letter-spacing: 0; }",
+                "    h3 { font-size: 14px; margin: 0 0 8px; font-weight: 650; letter-spacing: 0; }",
+                "    a { color: #075985; text-decoration: none; } a:hover { text-decoration: underline; }",
+                "    .grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr); gap: 18px; align-items: start; }",
+                "    .panel { background: white; border: 1px solid #dbe0e3; border-radius: 8px; padding: 16px; }",
+                "    .stack { display: grid; gap: 12px; }",
+                "    .bubble { border: 1px solid #dbe0e3; border-radius: 8px; padding: 10px 12px; background: #fbfcfd; }",
+                "    .question { border-left: 3px solid #075985; padding: 10px 12px; background: #f4f8fb; }",
+                "    .muted { color: #667780; }",
+                "    .small { font-size: 13px; }",
+                "    .status { display: inline-flex; width: fit-content; border-radius: 999px; padding: 4px 9px; background: #e8f1f8; color: #075985; font-size: 13px; font-weight: 650; }",
+                "    .success { background: #e9f7ef; color: #166534; }",
+                "    .danger { background: #fdecec; color: #991b1b; }",
+                "    textarea { min-height: 130px; resize: vertical; font: inherit; border: 1px solid #c7ced3; border-radius: 6px; padding: 8px 10px; }",
+                "    form { display: grid; gap: 10px; }",
+                "    button { width: fit-content; border: 1px solid #172026; border-radius: 6px; padding: 8px 12px; background: #172026; color: white; font: inherit; cursor: pointer; }",
+                "    dl { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px 12px; margin: 0; }",
+                "    dt { color: #667780; } dd { margin: 0; overflow-wrap: anywhere; }",
+                "    ul { margin: 0; padding-left: 20px; }",
+                "    @media (max-width: 760px) { main { padding: 14px; } .grid { grid-template-columns: 1fr; } dl { grid-template-columns: 1fr; } }",
+                "  </style>",
+                "</head>",
+                "<body>",
+                "  <header><h1>SkillFoundry 需求澄清</h1></header>",
+                "  <main>",
+                '    <div><a href="/">返回首页</a></div>',
+                '    <section class="grid">',
+                '      <div class="panel stack">',
+                "        <h2>对话</h2>",
+                self._conversation_html(turns),
+                self._questions_html(question_list, readiness=readiness, next_action=next_action),
+                self._frontdesk_answer_form_html(job_id, readiness=readiness, next_action=next_action),
+                "      </div>",
+                '      <aside class="panel stack">',
+                "        <h2>交付状态</h2>",
+                self._frontdesk_status_html(readiness, next_action),
+                self._frontdesk_understanding_html(elicitation_map),
+                self._frontdesk_artifact_refs_html(state_map),
+                "      </aside>",
+                "    </section>",
+                "  </main>",
+                "</body>",
+                "</html>",
+            ]
+        )
+
+    def render_error_html(self, *, title: str, message: str, status: int) -> str:
+        return "\n".join(
+            [
+                "<!doctype html>",
+                '<html lang="zh-CN">',
+                "<head>",
+                '  <meta charset="utf-8">',
+                '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+                f"  <title>{escape(title)}</title>",
+                "  <style>body{font-family:system-ui,sans-serif;background:#f6f7f8;color:#172026;margin:0}main{max-width:760px;margin:0 auto;padding:24px}.panel{background:white;border:1px solid #dbe0e3;border-radius:8px;padding:16px}a{color:#075985}</style>",
+                "</head>",
+                "<body><main>",
+                f'<section class="panel"><h1>{escape(title)}</h1><p>{escape(message)}</p><p><a href="/">返回首页</a></p><p>HTTP {status}</p></section>',
+                "</main></body></html>",
             ]
         )
 
@@ -446,6 +556,9 @@ class SkillFoundryAPI:
                 return self._json_response(created, status=201)
 
             if method == "GET" and len(route) == 3 and route[:2] == ["frontdesk", "jobs"]:
+                if _wants_html(headers):
+                    html = self.render_frontdesk_job_html(route[2]).encode("utf-8")
+                    return APIHTTPResult(200, "text/html; charset=utf-8", html)
                 return self._json_response(self.get_frontdesk_job(route[2]))
 
             if method == "POST" and len(route) == 4 and route[:2] == ["frontdesk", "jobs"] and route[3] == "messages":
@@ -465,6 +578,9 @@ class SkillFoundryAPI:
                 raise APIError(400, "unsafe_path", "request path contains an unsafe segment")
             raise APIError(404, "not_found", "route not found")
         except APIError as exc:
+            if _wants_html(headers):
+                html = self.render_error_html(title=exc.code, message=exc.message, status=exc.status).encode("utf-8")
+                return APIHTTPResult(exc.status, "text/html; charset=utf-8", html)
             return self._json_response(exc.to_dict(), status=exc.status)
 
     def _resolve_registry_path(self, registry_path: str | Path | None) -> Path:
@@ -628,6 +744,44 @@ class SkillFoundryAPI:
         except json.JSONDecodeError:
             return None
         return ensure_json_compatible(payload) if isinstance(payload, dict) else None  # type: ignore[return-value]
+
+    def _frontdesk_job_dirs(self) -> list[Path]:
+        candidates: list[Path] = []
+        for path in sorted(self._runs_root_resolved.iterdir(), key=lambda item: item.name):
+            if not path.is_dir() or path.is_symlink():
+                continue
+            if not JOB_ID_RE.fullmatch(path.name):
+                continue
+            if (path / FRONTDESK_CONVERSATION_REF).is_file():
+                candidates.append(path)
+        return candidates
+
+    def _frontdesk_job_summary(self, job_id: str) -> dict[str, JsonValue]:
+        try:
+            job_root = self._require_job_root(job_id)
+            workspace = JobWorkspace(root=job_root, job_id=job_id)
+            frontdesk = FrontDeskWorkspace(workspace)
+            state = self._read_frontdesk_state(frontdesk)
+            turns = read_conversation_turns(frontdesk)
+        except APIError:
+            state = None
+            turns = []
+        latest = self._read_optional_json_ref(
+            JobWorkspace(root=self._job_root(job_id), job_id=job_id),
+            state.latest_elicitation_report_ref if state is not None else None,
+        )
+        current_understanding = latest.get("current_understanding") if isinstance(latest, Mapping) else None
+        return ensure_json_compatible(
+            {
+                "job_id": job_id,
+                "readiness": state.readiness if state is not None else "unknown",
+                "next_action": state.next_action if state is not None else "unknown",
+                "clarification_round": state.clarification_round if state is not None else 0,
+                "turn_count": len(turns),
+                "current_understanding": current_understanding if isinstance(current_understanding, str) else "",
+                "links": {"self": f"/frontdesk/jobs/{job_id}"},
+            }
+        )  # type: ignore[return-value]
 
     def _job_payload(
         self,
@@ -830,6 +984,129 @@ class SkillFoundryAPI:
             ]
         )
 
+    def _frontdesk_table_html(self, jobs: list[dict[str, JsonValue]]) -> str:
+        if not jobs:
+            return '<p class="muted">暂无会话。</p>'
+        rows = []
+        for job in jobs:
+            job_id = str(job["job_id"])
+            label, cls = _frontdesk_status_label(str(job.get("readiness") or ""), str(job.get("next_action") or ""))
+            rows.append(
+                "        <tr>"
+                f'<td><a href="/frontdesk/jobs/{escape(job_id)}">打开</a></td>'
+                f'<td><span class="status {escape(cls)}">{escape(label)}</span></td>'
+                f"<td>{escape(str(job.get('clarification_round') or 0))}</td>"
+                f"<td>{escape(_truncate(str(job.get('current_understanding') or ''), 90))}</td>"
+                "</tr>"
+            )
+        return "\n".join(
+            [
+                "      <table>",
+                "        <thead><tr><th>会话</th><th>状态</th><th>轮次</th><th>当前理解</th></tr></thead>",
+                "        <tbody>",
+                *rows,
+                "        </tbody>",
+                "      </table>",
+            ]
+        )
+
+    def _conversation_html(self, turns: list[ConversationTurn]) -> str:
+        if not turns:
+            return '<p class="muted">暂无对话。</p>'
+        rows = []
+        for turn in turns:
+            role = "你" if turn.role == "user" else turn.role
+            rows.append(
+                '<div class="bubble">'
+                f'<div class="small muted">{escape(role)}</div>'
+                f"<div>{escape(turn.content)}</div>"
+                "</div>"
+            )
+        return "\n".join(rows)
+
+    def _questions_html(self, questions: list[Any], *, readiness: str, next_action: str) -> str:
+        if readiness == "frozen" or next_action == "route_to_build":
+            return '<div class="bubble"><strong>需求已经冻结。</strong><div class="small muted">下一步可以进入 Skill 构建和验收。</div></div>'
+        if next_action == "human_review":
+            return '<div class="bubble"><strong>需要人工审核。</strong><div class="small muted">当前需求涉及风险、权限或不可自动判断的边界。</div></div>'
+        if next_action == "reject":
+            return '<div class="bubble"><strong>需求已拒绝。</strong><div class="small muted">当前需求不可安全或可行地交付。</div></div>'
+        if next_action == "fail_closed":
+            return '<div class="bubble"><strong>澄清失败。</strong><div class="small muted">模型输出或系统边界校验未通过。</div></div>'
+        if not questions:
+            return '<p class="muted">等待下一轮问题。</p>'
+        rows = ["<div class=\"stack\"><h3>需要你确认</h3>"]
+        for question in questions:
+            if not isinstance(question, Mapping):
+                continue
+            rows.append(
+                '<div class="question">'
+                f"<strong>{escape(str(question.get('text') or ''))}</strong>"
+                f"<div class=\"small muted\">{escape(str(question.get('reason') or ''))}</div>"
+                "</div>"
+            )
+        rows.append("</div>")
+        return "\n".join(rows)
+
+    def _frontdesk_answer_form_html(self, job_id: str, *, readiness: str, next_action: str) -> str:
+        if readiness in {"frozen", "human_review_required", "rejected", "failed"}:
+            return ""
+        if next_action not in {"ask_user", "elicit"}:
+            return ""
+        return "\n".join(
+            [
+                f'<form method="post" action="/frontdesk/jobs/{escape(job_id)}/messages">',
+                '  <label>你的回答 <textarea name="message" required></textarea></label>',
+                "  <button type=\"submit\">继续对话</button>",
+                "</form>",
+            ]
+        )
+
+    def _frontdesk_status_html(self, readiness: str, next_action: str) -> str:
+        label, cls = _frontdesk_status_label(readiness, next_action)
+        return "\n".join(
+            [
+                f'<span class="status {escape(cls)}">{escape(label)}</span>',
+                "<dl>",
+                f"<dt>阶段</dt><dd>{escape(readiness)}</dd>",
+                f"<dt>下一步</dt><dd>{escape(next_action)}</dd>",
+                "</dl>",
+            ]
+        )
+
+    def _frontdesk_understanding_html(self, elicitation: Mapping[str, Any]) -> str:
+        understanding = str(elicitation.get("current_understanding") or "")
+        missing = elicitation.get("missing_fields")
+        risks = elicitation.get("risk_flags")
+        parts = ["<div>", "<h3>当前理解</h3>"]
+        understanding_html = escape(understanding) if understanding else '<span class="muted">暂无。</span>'
+        parts.append(f"<p>{understanding_html}</p>")
+        if isinstance(missing, list) and missing:
+            parts.append("<h3>缺失信息</h3><ul>")
+            parts.extend(f"<li>{escape(str(item))}</li>" for item in missing)
+            parts.append("</ul>")
+        if isinstance(risks, list) and risks:
+            parts.append("<h3>风险提示</h3><ul>")
+            parts.extend(f"<li>{escape(str(item))}</li>" for item in risks)
+            parts.append("</ul>")
+        parts.append("</div>")
+        return "\n".join(parts)
+
+    def _frontdesk_artifact_refs_html(self, state: Mapping[str, Any]) -> str:
+        refs = [
+            ("规格", state.get("skill_spec_ref")),
+            ("验收标准", state.get("acceptance_criteria_ref")),
+            ("验证规格", state.get("verification_spec_ref")),
+            ("冻结清单", state.get("freeze_manifest_ref")),
+            ("澄清报告", state.get("latest_elicitation_report_ref")),
+            ("审核报告", state.get("latest_audit_report_ref")),
+        ]
+        rows = []
+        for label, ref in refs:
+            ref_html = escape(str(ref)) if ref else '<span class="muted">未生成</span>'
+            rows.append(f"<dt>{escape(label)}</dt><dd>{ref_html}</dd>")
+        return "\n".join(["<div><h3>内部证据</h3><dl>", *rows, "</dl></div>"])
+
     def _registry_table_html(self, entries: JsonValue) -> str:
         if not isinstance(entries, list) or not entries:
             return '<p class="muted">No registry entries.</p>'
@@ -933,6 +1210,34 @@ def _header(headers: Mapping[str, str] | None, name: str) -> str:
 
 def _query_bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _wants_html(headers: Mapping[str, str] | None) -> bool:
+    accept = _header(headers, "accept")
+    if not accept:
+        return False
+    return "text/html" in accept and "application/json" not in accept
+
+
+def _frontdesk_status_label(readiness: str, next_action: str) -> tuple[str, str]:
+    if readiness == "frozen" or next_action == "route_to_build":
+        return "需求已确定", "success"
+    if readiness == "needs_clarification" or next_action == "ask_user":
+        return "等待你补充", ""
+    if readiness == "human_review_required" or next_action == "human_review":
+        return "需要人工审核", "soft"
+    if readiness == "rejected" or next_action == "reject":
+        return "无法交付", "danger"
+    if readiness == "failed" or next_action == "fail_closed":
+        return "系统已停止", "danger"
+    return "澄清中", "soft"
+
+
+def _truncate(text: str, limit: int) -> str:
+    stripped = " ".join(text.split())
+    if len(stripped) <= limit:
+        return stripped
+    return stripped[: max(0, limit - 1)] + "…"
 
 
 __all__ = [
