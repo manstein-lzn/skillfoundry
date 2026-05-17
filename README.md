@@ -59,6 +59,7 @@ README.md                  # 项目入口说明
 WHITEPAPER.md              # 项目白皮书
 docs/ROADMAP.md            # 分阶段路线
 docs/ROADMAP_EXECUTION_PLAN.md # 可直接执行的分阶段 Roadmap
+docs/FRONT_DESK_AGENT_ROADMAP.md # WP13-WP17 真实 LLM 需求澄清层路线
 docs/ARCHITECTURE.md       # v0.2 架构边界
 docs/WORK_PACKAGES.md      # WP0-WP10 工作包
 docs/ACCEPTANCE_PLAN.md    # 验收计划
@@ -115,5 +116,6 @@ LangGraph 编排
 1. 启动受控内部 beta：选择少量真实 Skill 需求，使用离线 worker 和可选 CodexWorker pilot 分批试运行。
 2. 每批运行前执行完整测试和健康检查，运行后输出 observability report 和失败分类。
 3. 收集用户反馈，验证 WP11 的 repair/version/quarantine/rollback 是否足够支撑真实维护。
-4. 用运行数据决定是否进入下一阶段：继续 Python 主体、引入 SQLite registry、选择性增加 Rust 高性能/安全内核，或增强真实 worker 调度。
-5. 在完成 auth、tenant、queue、audit、monitoring、deployment、secrets、incident response 之前，不对外宣称生产级平台。
+4. 按 [docs/FRONT_DESK_AGENT_ROADMAP.md](docs/FRONT_DESK_AGENT_ROADMAP.md) 实现真实 LLM 需求澄清层：Requirements Elicitor、Spec Auditor、FrontDeskFreezeGate、Acceptance Criteria 到 QA/Verifier 的桥接。
+5. 用运行数据决定是否进入下一阶段：继续 Python 主体、引入 SQLite registry、选择性增加 Rust 高性能/安全内核，或增强真实 worker 调度。
+6. 在完成 auth、tenant、queue、audit、monitoring、deployment、secrets、incident response 之前，不对外宣称生产级平台。
