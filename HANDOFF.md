@@ -6,7 +6,7 @@
 
 当前主线已经完成 Front Desk core-need clarification refactor，并通过 MetaLoop 验证和独立 reviewer 审查。
 
-重要更新：SkillFoundry 目前没有线上用户、外部兼容性承诺或生产数据迁移负担。后续可以基于新版 ContextForge Goal Harness 重新设计技术实现；旧 WP0-WP17 代码和文档是 v0 原型与知识资产，不是 v2 技术约束。v2 基线见 `docs/SKILLFOUNDRY_V2_BASELINE.md`。
+重要更新：SkillFoundry 目前没有线上用户、外部兼容性承诺或生产数据迁移负担。后续可以基于新版 ContextForge Goal Harness 重新设计技术实现；旧 WP0-WP17 代码和文档是 v0 原型与知识资产，不是 v2 技术约束。v2 技术重建当前执行源是 `docs/CONTEXTFORGE_GOAL_HARNESS_REBUILD_PLAN.md`，前提说明见 `docs/SKILLFOUNDRY_V2_BASELINE.md`。
 
 核心行为现在是：
 
@@ -92,10 +92,12 @@ Core Need Discovery
   - 项目入口、开发环境、submodule 初始化方式。
 - `docs/SKILLFOUNDRY_V2_BASELINE.md`
   - v2 重建基线：保留 SkillFoundry agent 协作思想，围绕新版 ContextForge Goal Harness 重建技术骨架。
+- `docs/CONTEXTFORGE_GOAL_HARNESS_REBUILD_PLAN.md`
+  - v2 技术重建当前执行源，已合入第三方 `gpt-5.5 xhigh` reviewer 审查意见。
 - `docs/CONTEXTFORGE_AGENT_EXOSKELETON_PRODUCT_VISION.md`
   - SkillFoundry 作为 ContextForge Agent Exoskeleton Runtime 第一个产品化应用的长期愿景。
 - `docs/DEVELOPMENT_ROADMAP.md`
-  - 当前权威路线图。
+  - v0/WP0-WP17 能力基线和产品经验输入；不再约束 v2 模块边界。
 - `docs/FRONT_DESK_CORE_NEED_REFACTOR.md`
   - Front Desk 需求澄清层重构路线和当前落地状态。
 - `docs/FRONT_DESK_ROADMAP_AUDIT.md`
@@ -145,7 +147,16 @@ uv run --extra test pytest -q
 .venv/bin/python -m pytest -q
 ```
 
-2. 若要继续 Phase A，优先做：
+2. 若要继续 v2 重建，优先做 `docs/CONTEXTFORGE_GOAL_HARNESS_REBUILD_PLAN.md` 的 Phase 1：
+
+- 新增 `src/skillfoundry/contracts.py`。
+- 新增 `tests/test_contracts.py`。
+- 实现 `FrozenSkillSpec -> GoalContract`。
+- 实现 `Build node -> AgentNodeContract`。
+- 实现 `VerificationSpec / AcceptanceCoverage -> VerificationGate`。
+- 只生成 contract artifacts，不迁移 graph、Front Desk、API/UI、real Codex 或 live provider。
+
+3. 若要继续旧 Phase A 原型路线，优先做：
 
 - 更强的 conversation summary / redaction / retention。
 - 真正聚合 live provider usage/token/cost，而不是只记录 usage unavailable reason。
