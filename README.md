@@ -6,6 +6,8 @@ SkillFoundry，中文名“技能铸造厂”，是一个基于 **LangGraph + Co
 
 ## 项目定位
 
+> v2 基线说明：当前 SkillFoundry 没有线上兼容性负担。旧 WP0-WP17 代码和文档是 v0 原型与知识资产，不是后续技术实现约束。后续实现将以新版 ContextForge Goal Harness 为外骨骼重建技术骨架。详见 [docs/SKILLFOUNDRY_V2_BASELINE.md](docs/SKILLFOUNDRY_V2_BASELINE.md)。
+
 ContextForge 是上下文运行时与证据账本。它负责 **SkillFoundry 自有 LLM 调用** 前后的上下文纪律：
 
 - PromptView / PromptBlock
@@ -64,6 +66,9 @@ docs/ROADMAP_EXECUTION_PLAN.md # 历史执行路线，WP17 后不再作为当前
 docs/FRONT_DESK_AGENT_ROADMAP.md # WP13-WP17 设计形成文档，状态已由当前 roadmap 覆盖
 docs/FRONT_DESK_ROADMAP_AUDIT.md # 独立 gpt-5.5 xhigh 架构审核结论
 docs/FRONT_DESK_CORE_NEED_REFACTOR.md # Phase A 需求澄清层重构执行路线
+docs/CONTEXTFORGE_AGENT_EXOSKELETON_PRODUCT_VISION.md # ContextForge Goal Harness 产品愿景
+docs/SKILLFOUNDRY_V2_BASELINE.md # v2 重建基线：保留思想，重建实现
+docs/archive/agent-briefs/ # 旧 WP0-WP17 agent brief 归档
 docs/DEVELOPMENT_ROADMAP_AUDIT.md # 当前 roadmap 的独立审核记录
 docs/ARCHITECTURE.md       # v0.2 架构边界
 docs/WORK_PACKAGES.md      # WP0-WP10 工作包
@@ -91,11 +96,18 @@ uv run --extra test pytest -q
 uv run --default-index https://mirrors.aliyun.com/pypi/simple/ --extra test pytest -q
 ```
 
+如果当前机器还没有安装 `uv`，但 checkout 已经包含可用 `.venv`，可以先用现有虚拟环境验证：
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
 若不用 `uv`，需要先安装 submodule：
 
 ```bash
 python -m pip install -e third_party/contextforge
 python -m pip install -e ".[test]"
+python -m pytest -q
 ```
 
 ## 白皮书
@@ -116,7 +128,7 @@ python -m pip install -e ".[test]"
 
 当前权威开发路线图见 [docs/DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)。历史分阶段技术路线见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
-如果要交给第三方 Agent 或工程师逐阶段执行，只以 [docs/DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md) 作为当前执行源，并参考 [docs/DEVELOPMENT_ROADMAP_AUDIT.md](docs/DEVELOPMENT_ROADMAP_AUDIT.md) 理解独立审核意见。[docs/ROADMAP_EXECUTION_PLAN.md](docs/ROADMAP_EXECUTION_PLAN.md)、[docs/FRONT_DESK_AGENT_ROADMAP.md](docs/FRONT_DESK_AGENT_ROADMAP.md) 和 [docs/FRONT_DESK_ROADMAP_AUDIT.md](docs/FRONT_DESK_ROADMAP_AUDIT.md) 只用于理解历史设计与 WP13-WP17 的形成过程，不再代表当前待办状态。
+如果要交给第三方 Agent 或工程师逐阶段执行，只以 [docs/DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md) 和 [HANDOFF.md](HANDOFF.md) 作为当前执行源，并参考 [docs/DEVELOPMENT_ROADMAP_AUDIT.md](docs/DEVELOPMENT_ROADMAP_AUDIT.md) 理解独立审核意见。[docs/ROADMAP.md](docs/ROADMAP.md)、[docs/ROADMAP_EXECUTION_PLAN.md](docs/ROADMAP_EXECUTION_PLAN.md)、[docs/FRONT_DESK_AGENT_ROADMAP.md](docs/FRONT_DESK_AGENT_ROADMAP.md) 和 [docs/FRONT_DESK_ROADMAP_AUDIT.md](docs/FRONT_DESK_ROADMAP_AUDIT.md) 只用于理解历史设计与 WP13-WP17 的形成过程，不再代表当前待办状态。
 
 当前推荐路线是：
 

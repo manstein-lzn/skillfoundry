@@ -6,6 +6,8 @@
 
 当前主线已经完成 Front Desk core-need clarification refactor，并通过 MetaLoop 验证和独立 reviewer 审查。
 
+重要更新：SkillFoundry 目前没有线上用户、外部兼容性承诺或生产数据迁移负担。后续可以基于新版 ContextForge Goal Harness 重新设计技术实现；旧 WP0-WP17 代码和文档是 v0 原型与知识资产，不是 v2 技术约束。v2 基线见 `docs/SKILLFOUNDRY_V2_BASELINE.md`。
+
 核心行为现在是：
 
 ```text
@@ -88,6 +90,10 @@ Core Need Discovery
 
 - `README.md`
   - 项目入口、开发环境、submodule 初始化方式。
+- `docs/SKILLFOUNDRY_V2_BASELINE.md`
+  - v2 重建基线：保留 SkillFoundry agent 协作思想，围绕新版 ContextForge Goal Harness 重建技术骨架。
+- `docs/CONTEXTFORGE_AGENT_EXOSKELETON_PRODUCT_VISION.md`
+  - SkillFoundry 作为 ContextForge Agent Exoskeleton Runtime 第一个产品化应用的长期愿景。
 - `docs/DEVELOPMENT_ROADMAP.md`
   - 当前权威路线图。
 - `docs/FRONT_DESK_CORE_NEED_REFACTOR.md`
@@ -101,6 +107,12 @@ Core Need Discovery
 
 ```bash
 uv run --extra test pytest -q
+```
+
+若本机未安装 `uv`，但 checkout 已经包含可用 `.venv`，可用等价本地验证：
+
+```bash
+.venv/bin/python -m pytest -q
 ```
 
 结果：
@@ -125,6 +137,12 @@ review: approved
 ```bash
 git submodule update --init --recursive
 uv run --extra test pytest -q
+```
+
+没有 `uv` 时可先用：
+
+```bash
+.venv/bin/python -m pytest -q
 ```
 
 2. 若要继续 Phase A，优先做：
