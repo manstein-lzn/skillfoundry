@@ -17,12 +17,15 @@ from .frontdesk_schema import (
     FeasibilityReport,
     FreezeManifest,
     FrontDeskConfig,
+    PlanReviewRecord,
+    SolutionPlan,
     SpecAuditReport,
 )
 from .frontdesk_workspace import (
     FRONTDESK_BUDGET_REF,
     FRONTDESK_CLARIFICATION_SUMMARY_REF,
     FRONTDESK_CONVERSATION_REF,
+    FRONTDESK_RISK_REPORT_REF,
     FrontDeskWorkspace,
     read_conversation_turns,
     write_elicitation_report,
@@ -73,6 +76,10 @@ FREEZE_GATE_RESULT_REF = "frontdesk/freeze_gate_result.json"
 FREEZE_MANIFEST_REF = "frontdesk/freeze_manifest.json"
 FRONTDESK_ACCEPTANCE_CRITERIA_REF = "frontdesk/acceptance_criteria.yaml"
 FRONTDESK_DRAFT_SKILL_SPEC_REF = "frontdesk/draft_skill_spec.yaml"
+FRONTDESK_CORE_NEED_BRIEF_REF = "frontdesk/core_need_brief.json"
+FRONTDESK_SOLUTION_PLAN_REF = "frontdesk/solution_plan.json"
+FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF = "frontdesk/solution_plan.md"
+PLAN_REVIEW_REF_TEMPLATE = "frontdesk/plan_review_{sequence:03d}.json"
 ROOT_SKILL_SPEC_REF = "skill_spec.yaml"
 ROOT_ACCEPTANCE_CRITERIA_REF = "acceptance_criteria.yaml"
 ROOT_VERIFICATION_SPEC_REF = "verification_spec.yaml"
@@ -694,9 +701,40 @@ class FrontDeskFreezeGate:
             blocker_code="invalid_draft_skill_spec",
             missing_code="missing_draft_skill_spec",
         )
+        risk_report = _load_json_mapping_artifact(
+            frontdesk.workspace,
+            FRONTDESK_RISK_REPORT_REF,
+            blocking_reasons,
+            blocker_code="invalid_risk_report",
+            missing_code="missing_risk_report",
+        )
+        solution_plan = _load_schema_artifact(
+            frontdesk.workspace,
+            FRONTDESK_SOLUTION_PLAN_REF,
+            SolutionPlan,
+            blocking_reasons,
+            blocker_code="invalid_solution_plan",
+            missing_code="missing_solution_plan",
+        )
+        plan_review_ref = PLAN_REVIEW_REF_TEMPLATE.format(sequence=sequence)
+        plan_review = _load_schema_artifact(
+            frontdesk.workspace,
+            plan_review_ref,
+            PlanReviewRecord,
+            blocking_reasons,
+            blocker_code="invalid_plan_review_record",
+            missing_code="missing_plan_review_record",
+        )
         conversation_turns = _load_conversation_for_gate(frontdesk, blocking_reasons)
 
         if loaded_config is not None:
+            _evaluate_plan_review_approval(
+                frontdesk.workspace,
+                blocking_reasons,
+                solution_plan=solution_plan,
+                plan_review=plan_review,
+                plan_review_ref=plan_review_ref,
+            )
             _evaluate_frontdesk_reports(
                 blocking_reasons,
                 config=loaded_config,
@@ -704,6 +742,14 @@ class FrontDeskFreezeGate:
                 elicitation_ref=elicitation_ref,
                 audit_report=audit_report,
                 audit_ref=audit_ref,
+                feasibility_report=feasibility_report,
+            )
+            _evaluate_risk_privacy_and_budget(
+                blocking_reasons,
+                config=loaded_config,
+                risk_report=risk_report,
+                acceptance_criteria=acceptance_criteria,
+                audit_report=audit_report,
                 feasibility_report=feasibility_report,
             )
         _evaluate_acceptance_criteria(blocking_reasons, acceptance_criteria)
@@ -1743,6 +1789,59 @@ def _load_yaml_mapping_artifact(
     return payload
 
 
+def _load_json_mapping_artifact(
+    workspace: JobWorkspace,
+    ref: str,
+    blocking_reasons: list[dict[str, JsonValue]],
+    *,
+    blocker_code: str,
+    missing_code: str,
+) -> Mapping[str, Any] | None:
+    try:
+        path = workspace.resolve_path(ref, must_exist=True)
+    except (OSError, ValueError) as exc:
+        _add_blocker(
+            blocking_reasons,
+            missing_code,
+            f"{ref} is missing or unsafe: {exc}",
+            route=FREEZE_GATE_DECISION_ASK_USER,
+            details={"ref": ref, "exception_type": type(exc).__name__},
+        )
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        _add_blocker(
+            blocking_reasons,
+            blocker_code,
+            f"{ref} is invalid JSON: {exc}",
+            route=FREEZE_GATE_DECISION_ASK_USER,
+            details={"ref": ref, "exception_type": type(exc).__name__},
+        )
+        return None
+    if not isinstance(payload, Mapping):
+        _add_blocker(
+            blocking_reasons,
+            blocker_code,
+            f"{ref} must contain a JSON object",
+            route=FREEZE_GATE_DECISION_ASK_USER,
+            details={"ref": ref, "payload_type": type(payload).__name__},
+        )
+        return None
+    try:
+        ensure_json_compatible(dict(payload))
+    except SchemaValidationError as exc:
+        _add_blocker(
+            blocking_reasons,
+            blocker_code,
+            f"{ref} is not JSON-compatible: {exc}",
+            route=FREEZE_GATE_DECISION_ASK_USER,
+            details={"ref": ref, "exception_type": type(exc).__name__},
+        )
+        return None
+    return payload
+
+
 def _load_conversation_for_gate(
     frontdesk: FrontDeskWorkspace,
     blocking_reasons: list[dict[str, JsonValue]],
@@ -1941,6 +2040,278 @@ def _evaluate_frontdesk_reports(
                 route=FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED,
                 details={"human_review_reasons": list(feasibility_report.human_review_reasons)},
             )
+
+
+_SENSITIVITY_RANK = {
+    "public": 0,
+    "internal": 1,
+    "confidential": 2,
+    "restricted": 3,
+}
+
+_HIGH_RISK_FLAG_KEYWORDS = (
+    "credential",
+    "secret",
+    "token",
+    "password",
+    "pii",
+    "privacy",
+    "confidential",
+    "restricted",
+    "unsafe",
+    "external_api",
+    "network",
+    "production_write",
+)
+
+
+def _evaluate_risk_privacy_and_budget(
+    blocking_reasons: list[dict[str, JsonValue]],
+    *,
+    config: FrontDeskConfig,
+    risk_report: Mapping[str, Any] | None,
+    acceptance_criteria: AcceptanceCriteriaSet | None,
+    audit_report: SpecAuditReport | None,
+    feasibility_report: FeasibilityReport | None,
+) -> None:
+    if risk_report is None:
+        return
+
+    redaction_status = str(risk_report.get("redaction_status") or "").strip()
+    if redaction_status != "complete":
+        _add_blocker(
+            blocking_reasons,
+            "redaction_not_complete",
+            "frontdesk risk report redaction_status must be complete before freeze",
+            route=FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED,
+            details={"redaction_status": redaction_status or None, "ref": FRONTDESK_RISK_REPORT_REF},
+        )
+
+    sensitivity = _max_data_sensitivity(risk_report, acceptance_criteria)
+    if sensitivity in {"confidential", "restricted"} and not config.risk_policy_ref:
+        _add_blocker(
+            blocking_reasons,
+            "sensitive_data_requires_risk_policy",
+            "confidential or restricted data requires an explicit risk_policy_ref before freeze",
+            route=FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED,
+            details={"data_sensitivity": sensitivity, "ref": FRONTDESK_RISK_REPORT_REF},
+        )
+
+    risk_flags = _string_list(risk_report.get("risk_flags"))
+    high_risk_flags = [flag for flag in risk_flags if _is_high_risk_flag(flag)]
+    if high_risk_flags and not config.risk_policy_ref:
+        _add_blocker(
+            blocking_reasons,
+            "high_risk_flags_require_human_or_policy",
+            "high-risk flags require human review or an explicit risk_policy_ref before freeze",
+            route=FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED,
+            details={"risk_flags": high_risk_flags, "ref": FRONTDESK_RISK_REPORT_REF},
+        )
+
+    permissions = risk_report.get("permissions")
+    if isinstance(permissions, Mapping):
+        risky_permissions = sorted(
+            key
+            for key, value in permissions.items()
+            if bool(value)
+            and str(key)
+            in {
+                "external_api",
+                "network",
+                "credentials",
+                "secrets",
+                "filesystem_read",
+                "filesystem_write",
+                "production_write",
+            }
+        )
+        if risky_permissions and not config.risk_policy_ref:
+            _add_blocker(
+                blocking_reasons,
+                "risky_permissions_require_policy",
+                "external, credential, filesystem, or production permissions require risk_policy_ref",
+                route=FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED,
+                details={"permissions": risky_permissions, "ref": FRONTDESK_RISK_REPORT_REF},
+            )
+
+    provider_usage = risk_report.get("provider_usage")
+    if isinstance(provider_usage, Mapping):
+        _evaluate_provider_usage_budget(blocking_reasons, config=config, provider_usage=provider_usage)
+
+    if audit_report is not None and audit_report.risk_score >= 0.80 and not config.risk_policy_ref:
+        _add_blocker(
+            blocking_reasons,
+            "audit_risk_score_requires_human_or_policy",
+            "high audit risk_score requires human review or explicit risk policy",
+            route=FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED,
+            details={"risk_score": audit_report.risk_score},
+        )
+    if feasibility_report is not None and feasibility_report.risk_score >= 0.80 and not config.risk_policy_ref:
+        _add_blocker(
+            blocking_reasons,
+            "feasibility_risk_score_requires_human_or_policy",
+            "high feasibility risk_score requires human review or explicit risk policy",
+            route=FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED,
+            details={"risk_score": feasibility_report.risk_score},
+        )
+
+
+def _evaluate_plan_review_approval(
+    workspace: JobWorkspace,
+    blocking_reasons: list[dict[str, JsonValue]],
+    *,
+    solution_plan: SolutionPlan | None,
+    plan_review: PlanReviewRecord | None,
+    plan_review_ref: str,
+) -> None:
+    if solution_plan is None or plan_review is None:
+        return
+    if solution_plan.core_need_brief_ref != FRONTDESK_CORE_NEED_BRIEF_REF:
+        _add_blocker(
+            blocking_reasons,
+            "solution_plan_core_need_ref_mismatch",
+            "solution plan must reference the canonical core need brief",
+            route=FREEZE_GATE_DECISION_ASK_USER,
+            details={
+                "core_need_brief_ref": solution_plan.core_need_brief_ref,
+                "expected_core_need_brief_ref": FRONTDESK_CORE_NEED_BRIEF_REF,
+            },
+        )
+    if solution_plan.markdown_ref != FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF:
+        _add_blocker(
+            blocking_reasons,
+            "solution_plan_markdown_ref_mismatch",
+            "solution plan must reference the canonical review markdown",
+            route=FREEZE_GATE_DECISION_ASK_USER,
+            details={
+                "markdown_ref": solution_plan.markdown_ref,
+                "expected_markdown_ref": FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF,
+            },
+        )
+    if plan_review.solution_plan_ref != FRONTDESK_SOLUTION_PLAN_REF:
+        _add_blocker(
+            blocking_reasons,
+            "plan_review_solution_plan_ref_mismatch",
+            "plan review must reference the canonical solution plan",
+            route=FREEZE_GATE_DECISION_ASK_USER,
+            details={
+                "solution_plan_ref": plan_review.solution_plan_ref,
+                "expected_solution_plan_ref": FRONTDESK_SOLUTION_PLAN_REF,
+                "ref": plan_review_ref,
+            },
+        )
+    if plan_review.decision != "approve":
+        _add_blocker(
+            blocking_reasons,
+            "solution_plan_not_approved",
+            "frontdesk freeze requires an approved solution plan review record",
+            route=FREEZE_GATE_DECISION_ASK_USER,
+            details={"decision": plan_review.decision, "ref": plan_review_ref},
+        )
+    if plan_review.source_hash is None:
+        _add_blocker(
+            blocking_reasons,
+            "plan_review_source_hash_missing",
+            "plan review record must include the reviewed solution_plan.json hash",
+            route=FREEZE_GATE_DECISION_ASK_USER,
+            details={"ref": plan_review_ref},
+        )
+        return
+    try:
+        actual_hash = sha256_file(workspace.resolve_path(FRONTDESK_SOLUTION_PLAN_REF, must_exist=True))
+    except (OSError, ValueError) as exc:
+        _add_blocker(
+            blocking_reasons,
+            "solution_plan_hash_unavailable",
+            f"cannot hash reviewed solution plan: {exc}",
+            route=FREEZE_GATE_DECISION_ASK_USER,
+            details={"ref": FRONTDESK_SOLUTION_PLAN_REF, "exception_type": type(exc).__name__},
+        )
+        return
+    if actual_hash != plan_review.source_hash:
+        _add_blocker(
+            blocking_reasons,
+            "plan_review_source_hash_mismatch",
+            "plan review source_hash does not match solution_plan.json",
+            route=FREEZE_GATE_DECISION_ASK_USER,
+            details={"expected": plan_review.source_hash, "actual": actual_hash, "ref": plan_review_ref},
+        )
+
+
+def _evaluate_provider_usage_budget(
+    blocking_reasons: list[dict[str, JsonValue]],
+    *,
+    config: FrontDeskConfig,
+    provider_usage: Mapping[str, Any],
+) -> None:
+    model_call_count = provider_usage.get("model_call_count")
+    if isinstance(model_call_count, int) and not isinstance(model_call_count, bool):
+        if model_call_count > config.max_frontdesk_model_calls:
+            _add_blocker(
+                blocking_reasons,
+                "frontdesk_model_call_budget_exceeded",
+                "frontdesk provider model_call_count exceeds max_frontdesk_model_calls",
+                route=FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED,
+                details={
+                    "model_call_count": model_call_count,
+                    "max_frontdesk_model_calls": config.max_frontdesk_model_calls,
+                },
+            )
+
+    total_tokens = provider_usage.get("total_tokens")
+    if isinstance(total_tokens, int) and not isinstance(total_tokens, bool):
+        if total_tokens > config.max_total_tokens:
+            _add_blocker(
+                blocking_reasons,
+                "frontdesk_token_budget_exceeded",
+                "frontdesk provider total_tokens exceeds max_total_tokens",
+                route=FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED,
+                details={"total_tokens": total_tokens, "max_total_tokens": config.max_total_tokens},
+            )
+
+    cost = provider_usage.get("cost_usd")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        if float(cost) > config.max_provider_cost_usd:
+            _add_blocker(
+                blocking_reasons,
+                "frontdesk_cost_budget_exceeded",
+                "frontdesk provider cost_usd exceeds max_provider_cost_usd",
+                route=FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED,
+                details={"cost_usd": float(cost), "max_provider_cost_usd": config.max_provider_cost_usd},
+            )
+
+    usage_available = provider_usage.get("usage_available")
+    unavailable_reason = provider_usage.get("usage_unavailable_reason")
+    if usage_available is False and not (isinstance(unavailable_reason, str) and unavailable_reason.strip()):
+        _add_blocker(
+            blocking_reasons,
+            "frontdesk_usage_unavailable_reason_missing",
+            "provider usage may be unavailable only when usage_unavailable_reason is recorded",
+            route=FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED,
+            details={"provider_usage": "usage_available=false"},
+        )
+
+
+def _max_data_sensitivity(
+    risk_report: Mapping[str, Any],
+    acceptance_criteria: AcceptanceCriteriaSet | None,
+) -> str:
+    values = [str(risk_report.get("data_sensitivity") or "public")]
+    if acceptance_criteria is not None:
+        values.extend(criterion.data_sensitivity for criterion in acceptance_criteria.criteria)
+    valid = [value for value in values if value in _SENSITIVITY_RANK]
+    return max(valid or ["public"], key=lambda value: _SENSITIVITY_RANK[value])
+
+
+def _is_high_risk_flag(flag: str) -> bool:
+    normalized = flag.strip().lower().replace("-", "_").replace(" ", "_")
+    return any(keyword in normalized for keyword in _HIGH_RISK_FLAG_KEYWORDS)
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _evaluate_acceptance_criteria(
@@ -2194,6 +2565,12 @@ def _write_frozen_inputs_and_manifest(
         [
             FRONTDESK_CONVERSATION_REF,
             FRONTDESK_CLARIFICATION_SUMMARY_REF,
+            FRONTDESK_BUDGET_REF,
+            FRONTDESK_RISK_REPORT_REF,
+            FRONTDESK_CORE_NEED_BRIEF_REF,
+            FRONTDESK_SOLUTION_PLAN_REF,
+            FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF,
+            PLAN_REVIEW_REF_TEMPLATE.format(sequence=round_index),
             elicitation_ref,
             audit_ref,
             FEASIBILITY_REPORT_REF,

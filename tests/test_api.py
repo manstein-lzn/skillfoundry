@@ -240,3 +240,12 @@ def test_frontdesk_question_html_preserves_rich_inline_options(tmp_path):
     assert "围绕项目沉淀背景、架构、决策和当前进展" in html
     assert ">每日增量摘要：" in html
     assert "A. A." not in html
+
+
+def test_frontdesk_submit_script_serializes_plan_review_fields(tmp_path):
+    api = make_api(tmp_path)
+    script = api._submit_feedback_script()
+
+    assert "new FormData(form)" in script
+    assert "payload[key] = String(value)" in script
+    assert "textarea[name=\\\"message\\\"]" not in script

@@ -14,7 +14,7 @@ from typing import Any, Mapping
 
 import fcntl
 
-from .acceptance import ACCEPTANCE_COVERAGE_RESULT_REF
+from .acceptance import ACCEPTANCE_COVERAGE_RESULT_REF, MANUAL_ACCEPTANCE_RECORD_REF
 from .schema import (
     ArtifactManifest,
     ExecutionReport,
@@ -746,7 +746,14 @@ def _workspace_root_has_acceptance_criteria(workspace_root: Path | None) -> bool
 
 def _acceptance_coverage_provenance_refs(provenance: Mapping[str, Any]) -> dict[str, JsonValue]:
     refs: dict[str, JsonValue] = {}
-    for key in ("acceptance_criteria", "coverage_plan", "qa_report", "verification_result", "package"):
+    for key in (
+        "acceptance_criteria",
+        "coverage_plan",
+        "qa_report",
+        "verification_result",
+        "manual_acceptance_record",
+        "package",
+    ):
         value = provenance.get(key)
         if not isinstance(value, Mapping):
             continue
@@ -1022,6 +1029,65 @@ def _check_acceptance_coverage_against_entry(
     actual_result_id = payload.get("result_id")
     if expected_result_id is not None and actual_result_id != expected_result_id:
         failures.append(f"acceptance_coverage_result.result_id: expected {expected_result_id}, got {actual_result_id!r}")
+    _check_manual_acceptance_record_against_coverage(entry, workspace_root, payload, failures)
+
+
+def _check_manual_acceptance_record_against_coverage(
+    entry: RegistryEntry,
+    workspace_root: Path,
+    coverage_payload: Mapping[str, Any],
+    failures: list[str],
+) -> None:
+    items = coverage_payload.get("items")
+    if not isinstance(items, list):
+        return
+    manual_items = [
+        item
+        for item in items
+        if isinstance(item, Mapping)
+        and item.get("priority") == "must"
+        and item.get("status") == "manual_only"
+    ]
+    if not manual_items:
+        return
+
+    provenance_ref = _nested_str(
+        entry.provenance,
+        ("acceptance_coverage_result", "provenance", "manual_acceptance_record", "ref"),
+    )
+    ref = provenance_ref or MANUAL_ACCEPTANCE_RECORD_REF
+    try:
+        path = resolve_under_root(workspace_root, ref, must_exist=True)
+    except Exception as exc:
+        failures.append(f"manual_acceptance_record: missing or unsafe ref {ref!r}: {exc}")
+        return
+
+    expected_hash = _nested_str(
+        entry.provenance,
+        ("acceptance_coverage_result", "provenance", "manual_acceptance_record", "sha256"),
+    )
+    if expected_hash is None:
+        failures.append("manual_acceptance_record.sha256: missing from acceptance coverage provenance")
+    actual_hash = _hash_file_or_failure(path, "manual_acceptance_record_hash", failures)
+    if expected_hash is not None and actual_hash is not None and actual_hash != expected_hash:
+        failures.append(f"manual_acceptance_record_hash: expected {expected_hash}, got {actual_hash}")
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        failures.append(f"manual_acceptance_record: invalid JSON: {exc}")
+        return
+    if not isinstance(payload, Mapping):
+        failures.append("manual_acceptance_record: expected JSON object")
+        return
+    if payload.get("decision") != "approved":
+        failures.append("manual_acceptance_record.decision: expected approved")
+    covered = payload.get("covered_criterion_ids")
+    covered_ids = {str(item) for item in covered} if isinstance(covered, list) else set()
+    for item in manual_items:
+        criterion_id = item.get("criterion_id")
+        if isinstance(criterion_id, str) and criterion_id not in covered_ids:
+            failures.append(f"manual_acceptance_record.covered_criterion_ids: missing {criterion_id}")
 
 
 def _hash_package_dir(package_dir: Path) -> tuple[str, list[str]]:
@@ -1079,7 +1145,7 @@ def _latest_execution_report_ref(workspace: JobWorkspace) -> str | None:
     return sorted(candidates)[-1][1]
 
 
-def _nested_str(payload: Mapping[str, Any], path: tuple[str, str]) -> str | None:
+def _nested_str(payload: Mapping[str, Any], path: tuple[str, ...]) -> str | None:
     current: Any = payload
     for key in path:
         if not isinstance(current, Mapping):

@@ -40,16 +40,27 @@ AUDIT_DECISIONS = frozenset({"approved", "needs_more_clarification", "infeasible
 ROUTING_RECOMMENDATIONS = frozenset(
     {"reuse_existing", "prompt_only", "rag", "script_required", "codex_worker", "human_review"}
 )
+CORE_NEED_READINESS = frozenset({"needs_core_need_input", "core_need_ready", "human_review_required", "rejected"})
+FRONTDESK_PHASES = frozenset(
+    {"core_need_discovery", "solution_planning", "user_review", "freeze", "complete", "failed"}
+)
+SOLUTION_PLAN_STATUSES = frozenset({"draft", "awaiting_user_review", "revision_requested", "approved"})
+PLAN_REVIEW_DECISIONS = frozenset({"approve", "request_revision", "reject", "human_review"})
 FRONTDESK_STAGES = frozenset(
     {
         "front_desk",
         "new_conversation",
+        "discover_core_need",
         "elicit",
         "validate_elicitation_output",
+        "plan_solution",
         "audit",
         "validate_audit_output",
         "deterministic_readiness_gate",
         "ask_user",
+        "await_user_plan_review",
+        "revise_plan",
+        "freeze_approved_plan",
         "freeze_spec",
         "freeze_manifest_written",
         "route_to_build",
@@ -61,8 +72,14 @@ FRONTDESK_STAGES = frozenset(
 FRONTDESK_READINESS = frozenset(
     {
         "new_conversation",
+        "needs_core_need_input",
+        "core_need_ready",
         "needs_clarification",
         "ready_for_audit",
+        "plan_draft_ready",
+        "awaiting_plan_review",
+        "plan_revision_requested",
+        "plan_approved",
         "approved",
         "infeasible",
         "human_review_required",
@@ -74,12 +91,17 @@ FRONTDESK_READINESS = frozenset(
 FRONTDESK_NEXT_ACTIONS = frozenset(
     {
         "none",
+        "discover_core_need",
         "elicit",
         "validate_elicitation_output",
+        "plan_solution",
         "audit",
         "validate_audit_output",
         "deterministic_readiness_gate",
         "ask_user",
+        "await_user_plan_review",
+        "revise_plan",
+        "freeze_approved_plan",
         "freeze_spec",
         "freeze_manifest_written",
         "route_to_build",
@@ -265,6 +287,183 @@ class ElicitationReport(SchemaModel):
         _require_str_list(self.assumptions, "assumptions")
         _require_ref(self.conversation_ref, "conversation_ref")
         _require_positive_int(self.round_index, "round_index")
+
+
+@dataclass
+class CoreNeedBrief(SchemaModel):
+    problem_statement: str
+    target_user: str
+    usage_moment: str
+    desired_outcome: str
+    success_signal: str
+    current_workaround: str = ""
+    non_goals: list[str] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
+    risk_flags: list[str] = field(default_factory=list)
+    confidence_score: float = 0.0
+    source_turn_ids: list[str] = field(default_factory=list)
+    schema_version: str = "skillfoundry.core_need_brief.v1"
+
+    def validate(self) -> None:
+        super().validate()
+        for field_name in (
+            "problem_statement",
+            "target_user",
+            "usage_moment",
+            "desired_outcome",
+            "success_signal",
+        ):
+            _require_non_empty_str(getattr(self, field_name), field_name)
+        _require_string(self.current_workaround, "current_workaround")
+        _require_str_list(self.non_goals, "non_goals")
+        _require_str_list(self.assumptions, "assumptions")
+        _require_str_list(self.risk_flags, "risk_flags")
+        _require_score(self.confidence_score, "confidence_score")
+        _require_str_list(self.source_turn_ids, "source_turn_ids")
+
+
+@dataclass
+class CoreNeedQuestion(SchemaModel):
+    question_id: str
+    text: str
+    reason: str
+    priority: str = "must"
+    answer_type: str = "free_text"
+    options: list[str] = field(default_factory=list)
+    blocks_core_need: bool = True
+    schema_version: str = "skillfoundry.core_need_question.v1"
+
+    def validate(self) -> None:
+        super().validate()
+        _require_non_empty_str(self.question_id, "question_id")
+        _require_non_empty_str(self.text, "text")
+        _require_non_empty_str(self.reason, "reason")
+        _require_enum(self.priority, "priority", QUESTION_PRIORITIES)
+        _require_enum(self.answer_type, "answer_type", QUESTION_ANSWER_TYPES)
+        _require_str_list(self.options, "options")
+        _require_bool(self.blocks_core_need, "blocks_core_need")
+
+
+@dataclass
+class CoreNeedDiscoveryReport(SchemaModel):
+    readiness: str = "needs_core_need_input"
+    current_understanding: str = ""
+    core_need_brief: CoreNeedBrief | None = None
+    next_questions: list[CoreNeedQuestion] = field(default_factory=list)
+    decision_ledger_ref: str | None = None
+    summary_ref: str | None = None
+    round_index: int = 1
+    schema_version: str = "skillfoundry.core_need_discovery_report.v1"
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> Self:
+        if not isinstance(payload, Mapping):
+            raise SchemaValidationError("CoreNeedDiscoveryReport payload must be a JSON object")
+        _reject_unknown_fields(cls, payload)
+        data = dict(payload)
+        if isinstance(data.get("core_need_brief"), Mapping):
+            data["core_need_brief"] = CoreNeedBrief.from_dict(data["core_need_brief"])
+        if "next_questions" in data:
+            if not isinstance(data["next_questions"], list):
+                raise SchemaValidationError("next_questions must be a list")
+            data["next_questions"] = [CoreNeedQuestion.from_dict(item) for item in data["next_questions"]]
+        instance = cls(**data)
+        instance.validate()
+        return instance
+
+    def validate(self) -> None:
+        super().validate()
+        _require_enum(self.readiness, "readiness", CORE_NEED_READINESS)
+        _require_string(self.current_understanding, "current_understanding")
+        if self.core_need_brief is not None:
+            if not isinstance(self.core_need_brief, CoreNeedBrief):
+                raise SchemaValidationError("core_need_brief must be a CoreNeedBrief")
+            self.core_need_brief.validate()
+        if not isinstance(self.next_questions, list):
+            raise SchemaValidationError("next_questions must be a list")
+        for index, question in enumerate(self.next_questions):
+            if not isinstance(question, CoreNeedQuestion):
+                raise SchemaValidationError(f"next_questions[{index}] must be a CoreNeedQuestion")
+            question.validate()
+        _require_optional_ref(self.decision_ledger_ref, "decision_ledger_ref")
+        _require_optional_ref(self.summary_ref, "summary_ref")
+        _require_positive_int(self.round_index, "round_index")
+        if self.readiness == "core_need_ready" and self.core_need_brief is None:
+            raise SchemaValidationError("core_need_ready requires core_need_brief")
+
+
+@dataclass
+class SolutionPlan(SchemaModel):
+    plan_id: str
+    core_need_brief_ref: str
+    summary: str
+    proposed_skill_name: str
+    target_user: str
+    user_problem: str
+    desired_outcome: str
+    approach: str
+    implementation_outline: list[str] = field(default_factory=list)
+    key_decisions: list[str] = field(default_factory=list)
+    acceptance_summary: list[str] = field(default_factory=list)
+    risks: list[str] = field(default_factory=list)
+    open_confirmation_items: list[str] = field(default_factory=list)
+    status: str = "draft"
+    draft_skill_spec_ref: str | None = "frontdesk/draft_skill_spec.yaml"
+    acceptance_criteria_ref: str | None = "frontdesk/acceptance_criteria.yaml"
+    markdown_ref: str | None = "frontdesk/solution_plan.md"
+    created_at: str = field(default_factory=utc_now)
+    schema_version: str = "skillfoundry.solution_plan.v1"
+
+    def validate(self) -> None:
+        super().validate()
+        for field_name in (
+            "plan_id",
+            "summary",
+            "proposed_skill_name",
+            "target_user",
+            "user_problem",
+            "desired_outcome",
+            "approach",
+            "created_at",
+        ):
+            _require_non_empty_str(getattr(self, field_name), field_name)
+        _require_ref(self.core_need_brief_ref, "core_need_brief_ref")
+        _require_str_list(self.implementation_outline, "implementation_outline")
+        _require_str_list(self.key_decisions, "key_decisions")
+        _require_str_list(self.acceptance_summary, "acceptance_summary")
+        _require_str_list(self.risks, "risks")
+        _require_str_list(self.open_confirmation_items, "open_confirmation_items")
+        _require_enum(self.status, "status", SOLUTION_PLAN_STATUSES)
+        _require_optional_ref(self.draft_skill_spec_ref, "draft_skill_spec_ref")
+        _require_optional_ref(self.acceptance_criteria_ref, "acceptance_criteria_ref")
+        _require_optional_ref(self.markdown_ref, "markdown_ref")
+
+
+@dataclass
+class PlanReviewRecord(SchemaModel):
+    review_id: str
+    solution_plan_ref: str
+    decision: str
+    reviewer_id: str
+    reviewer_role: str
+    reason: str
+    requested_changes: list[str] = field(default_factory=list)
+    source_hash: str | None = None
+    created_at: str = field(default_factory=utc_now)
+    schema_version: str = "skillfoundry.plan_review_record.v1"
+
+    def validate(self) -> None:
+        super().validate()
+        _require_non_empty_str(self.review_id, "review_id")
+        _require_ref(self.solution_plan_ref, "solution_plan_ref")
+        _require_enum(self.decision, "decision", PLAN_REVIEW_DECISIONS)
+        _require_non_empty_str(self.reviewer_id, "reviewer_id")
+        _require_non_empty_str(self.reviewer_role, "reviewer_role")
+        _require_non_empty_str(self.reason, "reason")
+        _require_str_list(self.requested_changes, "requested_changes")
+        if self.source_hash is not None:
+            _require_sha256(self.source_hash, "source_hash")
+        _require_non_empty_str(self.created_at, "created_at")
 
 
 @dataclass
@@ -478,8 +677,17 @@ class FreezeManifest(SchemaModel):
 class FrontDeskState(SchemaModel):
     job_id: str
     stage: str = "front_desk"
+    frontdesk_phase: str = "core_need_discovery"
     clarification_round: int = 0
+    core_need_round: int = 0
+    plan_revision_count: int = 0
     readiness: str = "new_conversation"
+    latest_core_need_report_ref: str | None = None
+    core_need_brief_ref: str | None = None
+    decision_ledger_ref: str | None = None
+    solution_plan_ref: str | None = None
+    solution_plan_markdown_ref: str | None = None
+    latest_plan_review_ref: str | None = None
     latest_elicitation_report_ref: str | None = None
     latest_audit_report_ref: str | None = None
     skill_spec_ref: str | None = None
@@ -510,9 +718,18 @@ class FrontDeskState(SchemaModel):
         super().validate()
         _require_non_empty_str(self.job_id, "job_id")
         _require_enum(self.stage, "stage", FRONTDESK_STAGES)
+        _require_enum(self.frontdesk_phase, "frontdesk_phase", FRONTDESK_PHASES)
         _require_non_negative_int(self.clarification_round, "clarification_round")
+        _require_non_negative_int(self.core_need_round, "core_need_round")
+        _require_non_negative_int(self.plan_revision_count, "plan_revision_count")
         _require_enum(self.readiness, "readiness", FRONTDESK_READINESS)
         for field_name in (
+            "latest_core_need_report_ref",
+            "core_need_brief_ref",
+            "decision_ledger_ref",
+            "solution_plan_ref",
+            "solution_plan_markdown_ref",
+            "latest_plan_review_ref",
             "latest_elicitation_report_ref",
             "latest_audit_report_ref",
             "skill_spec_ref",
@@ -532,6 +749,11 @@ class FrontDeskState(SchemaModel):
 @dataclass
 class FrontDeskConfig(SchemaModel):
     max_clarification_rounds: int = 10
+    max_core_need_rounds: int = 3
+    max_plan_revision_rounds: int = 3
+    max_questions_per_core_need_round: int = 1
+    max_open_confirmation_items: int = 3
+    max_total_frontdesk_rounds: int = 8
     min_clarity_score: float = 0.75
     min_feasibility_score: float = 0.70
     min_testability_score: float = 0.75
@@ -549,6 +771,11 @@ class FrontDeskConfig(SchemaModel):
         super().validate()
         for field_name in (
             "max_clarification_rounds",
+            "max_core_need_rounds",
+            "max_plan_revision_rounds",
+            "max_questions_per_core_need_round",
+            "max_open_confirmation_items",
+            "max_total_frontdesk_rounds",
             "max_followup_questions_per_round",
             "max_frontdesk_model_calls",
             "max_parse_repair_attempts",

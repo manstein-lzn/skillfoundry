@@ -131,7 +131,7 @@ def _approved_audit_payload():
 def test_frontdesk_api_runs_multi_round_loop_with_injected_clients(tmp_path):
     payloads = {
         "requirements_elicitor": [_needs_clarification_payload(), _ready_payload()],
-        "spec_auditor": [_approved_audit_payload(), _approved_audit_payload()],
+        "spec_auditor": [_approved_audit_payload(), _approved_audit_payload(), _approved_audit_payload()],
     }
 
     def factory(role, _job_id, _round_index):
@@ -148,13 +148,110 @@ def test_frontdesk_api_runs_multi_round_loop_with_injected_clients(tmp_path):
         "frontdesk-api-demo",
         {"message": "The input is pasted pytest failure logs. Do not read the repo automatically."},
     )
-    assert advanced["status"] == "route_to_build"
-    assert advanced["state"]["readiness"] == "frozen"
-    assert advanced["state"]["skill_spec_ref"] == "skill_spec.yaml"
+    assert advanced["status"] == "await_user_plan_review"
+    assert advanced["phase"] == "user_review"
+    assert advanced["state"]["readiness"] == "awaiting_plan_review"
+    assert advanced["state"]["solution_plan_ref"] == "frontdesk/solution_plan.json"
+    assert advanced["solution_plan"]["proposed_skill_name"] == "Pytest Failure Debugger"
+    assert {action["decision"] for action in advanced["review_actions"]} == {
+        "approve",
+        "human_review",
+        "request_revision",
+        "reject",
+    }
+
+    plan = api.handle("GET", "/frontdesk/jobs/frontdesk-api-demo/solution-plan").json()
+    assert plan["plan_id"] == "solution-plan-002"
+
+    approved = api.handle(
+        "POST",
+        "/frontdesk/jobs/frontdesk-api-demo/plan-review",
+        body={"decision": "approve", "reason": "This plan matches the desired workflow."},
+    ).json()
+    assert approved["status"] == "route_to_build"
+    assert approved["state"]["readiness"] == "frozen"
+    assert approved["state"]["skill_spec_ref"] == "skill_spec.yaml"
+    assert approved["state"]["latest_plan_review_ref"] == "frontdesk/plan_review_002.json"
 
     fetched = api.get_frontdesk_job("frontdesk-api-demo")
     assert fetched["turn_count"] == 2
     assert fetched["state"]["readiness"] == "frozen"
+
+
+def test_frontdesk_plan_review_revision_feeds_next_planning_round(tmp_path):
+    revised = _ready_payload()
+    revised["current_understanding"] = "The user wants a skill that explains pasted pytest failures for junior developers."
+    revised["draft_skill_spec"]["title"] = "Junior Pytest Failure Coach"
+    payloads = {
+        "requirements_elicitor": [_ready_payload(), revised],
+        "spec_auditor": [_approved_audit_payload(), _approved_audit_payload()],
+    }
+
+    def factory(role, _job_id, _round_index):
+        return ScriptedModelClient(payloads[role].pop(0))
+
+    api = SkillFoundryAPI(tmp_path / "runs", frontdesk_client_factory=factory)
+    created = api.create_frontdesk_job(
+        {"job_id": "frontdesk-api-revision", "message": "Build a skill from pasted pytest logs."}
+    )
+    assert created["state"]["readiness"] == "awaiting_plan_review"
+
+    revised_payload = api.handle(
+        "POST",
+        "/frontdesk/jobs/frontdesk-api-revision/plan-review",
+        body={
+            "decision": "request_revision",
+            "reason": "Make the audience junior developers and explain concepts more explicitly.",
+        },
+    ).json()
+
+    assert revised_payload["status"] == "await_user_plan_review"
+    assert revised_payload["state"]["readiness"] == "awaiting_plan_review"
+    assert revised_payload["state"]["plan_revision_count"] == 1
+    assert revised_payload["turn_count"] == 2
+    assert revised_payload["solution_plan"]["proposed_skill_name"] == "Junior Pytest Failure Coach"
+
+
+def test_frontdesk_plan_revision_limit_persists_human_review_state(tmp_path):
+    revised = _ready_payload()
+    revised["draft_skill_spec"]["title"] = "Revised Pytest Helper"
+    payloads = {
+        "requirements_elicitor": [_ready_payload(), revised],
+        "spec_auditor": [_approved_audit_payload(), _approved_audit_payload()],
+    }
+
+    def factory(role, _job_id, _round_index):
+        return ScriptedModelClient(payloads[role].pop(0))
+
+    api = SkillFoundryAPI(tmp_path / "runs", frontdesk_client_factory=factory)
+    created = api.create_frontdesk_job({"job_id": "frontdesk-revision-limit", "message": "Build a pytest helper."})
+    assert created["state"]["readiness"] == "awaiting_plan_review"
+
+    budget_path = tmp_path / "runs" / "frontdesk-revision-limit" / "frontdesk" / "budget.json"
+    budget = FrontDeskConfig.from_json(budget_path.read_text(encoding="utf-8"))
+    budget.max_plan_revision_rounds = 1
+    budget_path.write_text(budget.to_json(), encoding="utf-8")
+
+    first_revision = api.handle(
+        "POST",
+        "/frontdesk/jobs/frontdesk-revision-limit/plan-review",
+        body={"decision": "request_revision", "reason": "First revision."},
+    ).json()
+    assert first_revision["state"]["readiness"] == "awaiting_plan_review"
+    assert first_revision["state"]["plan_revision_count"] == 1
+
+    exceeded = api.handle(
+        "POST",
+        "/frontdesk/jobs/frontdesk-revision-limit/plan-review",
+        body={"decision": "request_revision", "reason": "Second revision should hit the limit."},
+    ).json()
+    assert exceeded["state"]["readiness"] == "human_review_required"
+    assert exceeded["state"]["next_action"] == "human_review"
+    assert exceeded["state"]["plan_revision_count"] == 2
+
+    fetched = api.get_frontdesk_job("frontdesk-revision-limit")
+    assert fetched["state"]["readiness"] == "human_review_required"
+    assert fetched["state"]["plan_revision_count"] == 2
 
 
 def test_frontdesk_api_requires_live_key_without_injected_client(tmp_path, monkeypatch):

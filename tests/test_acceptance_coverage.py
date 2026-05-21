@@ -221,6 +221,22 @@ def read_json(workspace, ref: str):
     return json.loads(workspace.resolve_path(ref, must_exist=True).read_text(encoding="utf-8"))
 
 
+def write_manual_acceptance_record(workspace, criterion_ids: list[str], *, decision: str = "approved") -> None:
+    payload = {
+        "schema_version": "skillfoundry.manual_acceptance_record.v1",
+        "reviewer_id": "qa-reviewer-001",
+        "reviewer_role": "qa_lead",
+        "decision": decision,
+        "reason": "Manual acceptance reviewed the listed must criteria.",
+        "covered_criterion_ids": criterion_ids,
+        "source_hash": sha256_file(workspace.resolve_path("acceptance_criteria.yaml", must_exist=True)),
+        "created_at": "2026-05-21T00:00:00Z",
+    }
+    path = workspace.resolve_path("qa/manual_acceptance_record.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+
 def result_item(result, criterion_id: str):
     return next(item for item in result.items if item.criterion_id == criterion_id)
 
@@ -392,9 +408,16 @@ def test_manual_only_must_criterion_requires_manual_authority_metadata(tmp_path)
     )
     _plan, present_result = plan_and_evaluate(with_authority)
 
-    assert present_result.passed is True
-    assert present_result.must_manual_only == 1
-    assert result_item(present_result, "AC-MANUAL").status == "manual_only"
+    assert present_result.passed is False
+    assert result_item(present_result, "AC-MANUAL").status == "uncovered"
+
+    write_manual_acceptance_record(with_authority, ["AC-MANUAL"])
+    _plan, approved_result = plan_and_evaluate(with_authority)
+
+    assert approved_result.passed is True
+    assert approved_result.must_manual_only == 1
+    assert result_item(approved_result, "AC-MANUAL").status == "manual_only"
+    assert result_item(approved_result, "AC-MANUAL").evidence_refs == ["qa/manual_acceptance_record.json"]
 
 
 def test_llm_only_must_criterion_cannot_be_registry_approved(tmp_path):
@@ -492,6 +515,43 @@ def test_registry_accepts_passed_coverage_result_and_stores_hash_provenance(tmp_
     assert provenance["result_id"] == coverage.result_id
     assert provenance["sha256"] == sha256_file(workspace.resolve_path(ACCEPTANCE_COVERAGE_RESULT_REF, must_exist=True))
     assert registry.verify_entry(entry).valid is True
+
+
+def test_registry_verifies_manual_acceptance_record_for_manual_only_must_criteria(tmp_path):
+    workspace, _verification, _qa = make_verified_qa_workspace(
+        tmp_path,
+        job_id="acceptance-registry-manual",
+        criteria=[
+            criterion(
+                "AC-MANUAL",
+                test_method="manual_check",
+                evidence_kind="human_note",
+                verifier_check_id=None,
+                manual_authority="human-qa-lead",
+            )
+        ],
+    )
+    write_manual_acceptance_record(workspace, ["AC-MANUAL"])
+    _plan, coverage = plan_and_evaluate(workspace)
+    assert coverage.passed is True
+
+    registry = LocalSkillRegistry(tmp_path / "registry-manual.json")
+    entry = registry.add_verified(workspace, version="1.0.0")
+    provenance = entry.provenance["acceptance_coverage_result"]["provenance"]["manual_acceptance_record"]
+    assert provenance["ref"] == "qa/manual_acceptance_record.json"
+    assert provenance["sha256"] == sha256_file(workspace.resolve_path("qa/manual_acceptance_record.json", must_exist=True))
+    assert registry.verify_entry(entry).valid is True
+
+    record_path = workspace.resolve_path("qa/manual_acceptance_record.json", must_exist=True)
+    payload = json.loads(record_path.read_text(encoding="utf-8"))
+    payload["decision"] = "rejected"
+    record_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+    report = registry.verify_entry(entry)
+
+    assert report.valid is False
+    assert any("manual_acceptance_record_hash" in failure for failure in report.failures)
+    assert any("manual_acceptance_record.decision" in failure for failure in report.failures)
 
 
 def test_registry_verify_fails_after_acceptance_coverage_result_tampering(tmp_path):

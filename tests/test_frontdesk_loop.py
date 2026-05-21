@@ -14,11 +14,14 @@ from skillfoundry import (
     FrontDeskLoop,
     FrontDeskLoopResult,
     FrontDeskState,
+    PlanReviewRecord,
     SchemaValidationError,
     append_conversation_turn,
     initialize_frontdesk_workspace,
     initialize_job_workspace,
     run_frontdesk_round,
+    sha256_file,
+    write_frontdesk_artifact,
 )
 from skillfoundry.frontdesk import RequirementsElicitationResult, RequirementsElicitor, SpecAuditor
 
@@ -228,6 +231,35 @@ def read_json(workspace, ref):
     return json.loads(workspace.resolve_path(ref, must_exist=True).read_text(encoding="utf-8"))
 
 
+def approve_solution_plan(workspace, frontdesk, state):
+    plan_hash = sha256_file(workspace.resolve_path("frontdesk/solution_plan.json", must_exist=True))
+    review_ref = "frontdesk/plan_review_001.json"
+    write_frontdesk_artifact(
+        frontdesk,
+        "plan_review_001.json",
+        PlanReviewRecord(
+            review_id="plan-review-001",
+            solution_plan_ref="frontdesk/solution_plan.json",
+            decision="approve",
+            reviewer_id="test-user",
+            reviewer_role="requesting_user",
+            reason="Approved for test freeze.",
+            source_hash=plan_hash,
+        ),
+    )
+    payload = state.to_dict()
+    payload.update(
+        {
+            "stage": "freeze_approved_plan",
+            "frontdesk_phase": "freeze",
+            "readiness": "plan_approved",
+            "next_action": "freeze_approved_plan",
+            "latest_plan_review_ref": review_ref,
+        }
+    )
+    return FrontDeskState.from_dict(payload)
+
+
 def test_frontdesk_loop_api_is_exported():
     assert skillfoundry.FrontDeskLoop is FrontDeskLoop
     assert skillfoundry.FrontDeskLoopResult is FrontDeskLoopResult
@@ -264,31 +296,65 @@ def test_clear_need_materializes_audits_and_freezes(tmp_path):
         auditor_client=ScriptedModelClient(payload=approved_audit_payload()),
     )
 
-    assert result.status == FRONTDESK_LOOP_STATUS_ROUTE_TO_BUILD
-    assert result.state.readiness == "frozen"
-    assert result.state.next_action == "route_to_build"
+    assert result.status == "await_user_plan_review"
+    assert result.state.readiness == "awaiting_plan_review"
+    assert result.state.next_action == "await_user_plan_review"
     assert result.state.latest_elicitation_report_ref == "frontdesk/elicitation_report_001.json"
-    assert result.state.latest_audit_report_ref == "frontdesk/spec_audit_report_001.json"
-    assert result.state.skill_spec_ref == "skill_spec.yaml"
-    assert result.state.acceptance_criteria_ref == "acceptance_criteria.yaml"
-    assert result.state.verification_spec_ref == "verification_spec.yaml"
-    assert result.state.freeze_gate_result_ref == "frontdesk/freeze_gate_result.json"
-    assert result.state.freeze_manifest_ref == "frontdesk/freeze_manifest.json"
+    assert result.state.latest_audit_report_ref is None
+    assert result.state.core_need_brief_ref == "frontdesk/core_need_brief.json"
+    assert result.state.solution_plan_ref == "frontdesk/solution_plan.json"
+    assert result.state.solution_plan_markdown_ref == "frontdesk/solution_plan.md"
     assert result.materialized_artifact_refs == {
         "draft_skill_spec": "frontdesk/draft_skill_spec.yaml",
         "acceptance_criteria": "frontdesk/acceptance_criteria.yaml",
+        "core_need_report": "frontdesk/core_need_report_001.json",
+        "core_need_brief": "frontdesk/core_need_brief.json",
+        "decision_ledger": "frontdesk/decision_ledger.json",
+        "solution_plan": "frontdesk/solution_plan.json",
+        "solution_plan_markdown": "frontdesk/solution_plan.md",
     }
-    assert result.frozen_artifact_refs["skill_spec"] == "skill_spec.yaml"
     assert workspace.resolve_path("frontdesk/draft_skill_spec.yaml", must_exist=True).is_file()
     assert workspace.resolve_path("frontdesk/acceptance_criteria.yaml", must_exist=True).is_file()
-    assert workspace.resolve_path("frontdesk/spec_audit_report_001.json", must_exist=True).is_file()
-    assert workspace.resolve_path("frontdesk/freeze_gate_result.json", must_exist=True).is_file()
-    assert workspace.resolve_path("frontdesk/freeze_manifest.json", must_exist=True).is_file()
+    assert workspace.resolve_path("frontdesk/solution_plan.json", must_exist=True).is_file()
+    plan_markdown = workspace.resolve_path("frontdesk/solution_plan.md", must_exist=True).read_text(encoding="utf-8")
+    for heading in (
+        "## 1. Core Problem",
+        "## 4. Inputs And Outputs",
+        "## 5. Assumptions",
+        "## 6. Non-Goals",
+        "## 7. Permissions And Safety",
+        "## 8. Acceptance Criteria",
+        "## 9. Technical Route",
+    ):
+        assert heading in plan_markdown
+    assert not workspace.resolve_path("frontdesk/spec_audit_report_001.json").exists()
+    assert not workspace.resolve_path("frontdesk/freeze_gate_result.json").exists()
     criteria = AcceptanceCriteriaSet.read_yaml_file(
         workspace.resolve_path("frontdesk/acceptance_criteria.yaml", must_exist=True)
     )
     assert criteria.job_id == workspace.job_id
     assert criteria.criteria[0].id == "AC-001"
+
+    approved_state = approve_solution_plan(workspace, frontdesk, result.state)
+    freeze_result = run_frontdesk_round(
+        frontdesk,
+        state=approved_state,
+        auditor_client=ScriptedModelClient(payload=approved_audit_payload()),
+    )
+    assert freeze_result.status == FRONTDESK_LOOP_STATUS_ROUTE_TO_BUILD
+    assert freeze_result.state.readiness == "frozen"
+    assert freeze_result.state.next_action == "route_to_build"
+    assert freeze_result.state.latest_audit_report_ref == "frontdesk/spec_audit_report_001.json"
+    assert freeze_result.state.latest_plan_review_ref == "frontdesk/plan_review_001.json"
+    assert freeze_result.state.skill_spec_ref == "skill_spec.yaml"
+    assert freeze_result.state.acceptance_criteria_ref == "acceptance_criteria.yaml"
+    assert freeze_result.state.verification_spec_ref == "verification_spec.yaml"
+    assert freeze_result.state.freeze_gate_result_ref == "frontdesk/freeze_gate_result.json"
+    assert freeze_result.state.freeze_manifest_ref == "frontdesk/freeze_manifest.json"
+    assert freeze_result.frozen_artifact_refs["skill_spec"] == "skill_spec.yaml"
+    assert workspace.resolve_path("frontdesk/spec_audit_report_001.json", must_exist=True).is_file()
+    assert workspace.resolve_path("frontdesk/freeze_gate_result.json", must_exist=True).is_file()
+    assert workspace.resolve_path("frontdesk/freeze_manifest.json", must_exist=True).is_file()
 
 
 def test_auditor_approved_but_freeze_gate_blocks_routes_to_ask_user(tmp_path):
@@ -301,10 +367,20 @@ def test_auditor_approved_but_freeze_gate_blocks_routes_to_ask_user(tmp_path):
         auditor_client=ScriptedModelClient(payload=low_score_audit),
     )
 
-    assert result.state.readiness == "needs_clarification"
-    assert result.state.next_action == "ask_user"
-    assert result.state.freeze_gate_result_ref == "frontdesk/freeze_gate_result.json"
-    assert result.frozen_artifact_refs == {}
+    assert result.state.readiness == "awaiting_plan_review"
+    assert result.state.next_action == "await_user_plan_review"
+    assert result.state.freeze_gate_result_ref is None
+
+    approved_state = approve_solution_plan(workspace, frontdesk, result.state)
+    freeze_result = run_frontdesk_round(
+        frontdesk,
+        state=approved_state,
+        auditor_client=ScriptedModelClient(payload=low_score_audit),
+    )
+    assert freeze_result.state.readiness == "needs_clarification"
+    assert freeze_result.state.next_action == "ask_user"
+    assert freeze_result.state.freeze_gate_result_ref == "frontdesk/freeze_gate_result.json"
+    assert freeze_result.frozen_artifact_refs == {}
     assert not workspace.resolve_path("frontdesk/freeze_manifest.json").exists()
     gate_result = read_json(workspace, "frontdesk/freeze_gate_result.json")
     assert gate_result["decision"] == "ask_user"
@@ -320,11 +396,18 @@ def test_high_risk_audit_routes_to_human_review(tmp_path):
         auditor_client=ScriptedModelClient(payload=human_review_audit_payload()),
     )
 
-    assert result.status == FRONTDESK_LOOP_STATUS_HUMAN_REVIEW
-    assert result.state.readiness == "human_review_required"
-    assert result.state.next_action == "human_review"
-    assert result.state.human_review_required is True
-    assert result.state.freeze_gate_result_ref == "frontdesk/freeze_gate_result.json"
+    assert result.status == "await_user_plan_review"
+    approved_state = approve_solution_plan(workspace, frontdesk, result.state)
+    freeze_result = run_frontdesk_round(
+        frontdesk,
+        state=approved_state,
+        auditor_client=ScriptedModelClient(payload=human_review_audit_payload()),
+    )
+    assert freeze_result.status == FRONTDESK_LOOP_STATUS_HUMAN_REVIEW
+    assert freeze_result.state.readiness == "human_review_required"
+    assert freeze_result.state.next_action == "human_review"
+    assert freeze_result.state.human_review_required is True
+    assert freeze_result.state.freeze_gate_result_ref == "frontdesk/freeze_gate_result.json"
     gate_result = read_json(workspace, "frontdesk/freeze_gate_result.json")
     assert gate_result["decision"] == "human_review_required"
     assert not workspace.resolve_path("frontdesk/freeze_manifest.json").exists()

@@ -9,7 +9,7 @@ description = "Workspace and schema foundation for SkillFoundry."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "contextforge @ file:///home/mansteinl/contextforge",
+  "contextforge==0.1.0",
   "langgraph>=0.2.0",
   "PyYAML>=6.0",
 ]
@@ -24,6 +24,14 @@ test = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.uv.sources]
+contextforge = { path = "third_party/contextforge", editable = true }
+
+[[tool.uv.index]]
+name = "tuna"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

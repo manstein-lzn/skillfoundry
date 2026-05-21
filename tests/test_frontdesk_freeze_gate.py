@@ -14,7 +14,9 @@ from skillfoundry import (
     FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED,
     FrontDeskFreezeGate,
     LockedInputTamperError,
+    PlanReviewRecord,
     SkillFoundryContextAdapter,
+    SolutionPlan,
     SpecAuditReport,
     append_conversation_turn,
     initialize_frontdesk_workspace,
@@ -38,9 +40,25 @@ def make_freezable_frontdesk_workspace(
     feasibility_report=None,
     elicitation_report=None,
     draft_skill_spec=None,
+    risk_report=None,
 ):
     workspace = initialize_job_workspace(tmp_path / "runs", job_id)
     frontdesk = initialize_frontdesk_workspace(workspace)
+    write_frontdesk_artifact(
+        frontdesk,
+        "risk_report.json",
+        risk_report
+        or {
+            "schema_version": "skillfoundry.frontdesk_risk_report.v1",
+            "risk_flags": [],
+            "redaction_status": "complete",
+            "data_sensitivity": "internal",
+            "provider_usage": {
+                "usage_available": False,
+                "usage_unavailable_reason": "Fixture frontdesk run does not expose aggregate provider usage.",
+            },
+        },
+    )
     append_conversation_turn(
         frontdesk,
         ConversationTurn(
@@ -80,6 +98,51 @@ def make_freezable_frontdesk_workspace(
     write_feasibility_report(
         frontdesk,
         feasibility_report or feasible_report(),
+    )
+    write_frontdesk_artifact(
+        frontdesk,
+        "core_need_brief.json",
+        {
+            "schema_version": "skillfoundry.core_need_brief.v1",
+            "problem_statement": "The user wants a weekly update writer from pasted notes.",
+            "target_user": "internal team member",
+            "usage_moment": "when preparing a weekly status update",
+            "desired_outcome": "a Markdown status update with completed work, blockers, and next steps",
+            "success_signal": "The output contains completed work, blockers, and next steps.",
+            "confidence_score": 0.9,
+        },
+    )
+    plan = SolutionPlan(
+        plan_id="solution-plan-001",
+        core_need_brief_ref="frontdesk/core_need_brief.json",
+        summary="The user wants a weekly update writer from pasted notes.",
+        proposed_skill_name="Weekly Update Writer",
+        target_user="internal team member",
+        user_problem="Manual weekly status writing is repetitive.",
+        desired_outcome="Markdown weekly update.",
+        approach="Create a local Codex Skill from pasted notes only.",
+        implementation_outline=["Read pasted notes.", "Write Markdown status update.", "Verify against fixture output."],
+        key_decisions=["No external systems are read."],
+        acceptance_summary=["The output contains completed work, blockers, and next steps."],
+        risks=[],
+        open_confirmation_items=[],
+        status="awaiting_user_review",
+    )
+    write_frontdesk_artifact(frontdesk, "solution_plan.json", plan)
+    write_frontdesk_artifact(frontdesk, "solution_plan.md", "# Solution Plan\n\nWeekly Update Writer\n")
+    plan_hash = sha256_file(workspace.resolve_path("frontdesk/solution_plan.json", must_exist=True))
+    write_frontdesk_artifact(
+        frontdesk,
+        "plan_review_001.json",
+        PlanReviewRecord(
+            review_id="plan-review-001",
+            solution_plan_ref="frontdesk/solution_plan.json",
+            decision="approve",
+            reviewer_id="test-user",
+            reviewer_role="requesting_user",
+            reason="Approved for freeze.",
+            source_hash=plan_hash,
+        ),
     )
     return workspace, frontdesk
 
@@ -191,6 +254,12 @@ def test_freeze_gate_freezes_approved_spec_and_writes_manifest_and_locked_record
     assert result.next_action == "route_to_build"
 
     for ref in (
+        "frontdesk/budget.json",
+        "frontdesk/risk_report.json",
+        "frontdesk/core_need_brief.json",
+        "frontdesk/solution_plan.json",
+        "frontdesk/solution_plan.md",
+        "frontdesk/plan_review_001.json",
         "skill_spec.yaml",
         "acceptance_criteria.yaml",
         "verification_spec.yaml",
@@ -209,6 +278,12 @@ def test_freeze_gate_freezes_approved_spec_and_writes_manifest_and_locked_record
     assert freeze_manifest["elicitation_report_ref"] == "frontdesk/elicitation_report_001.json"
     assert freeze_manifest["spec_audit_report_ref"] == "frontdesk/spec_audit_report_001.json"
     for ref in (
+        "frontdesk/budget.json",
+        "frontdesk/risk_report.json",
+        "frontdesk/core_need_brief.json",
+        "frontdesk/solution_plan.json",
+        "frontdesk/solution_plan.md",
+        "frontdesk/plan_review_001.json",
         "skill_spec.yaml",
         "acceptance_criteria.yaml",
         "verification_spec.yaml",
@@ -264,6 +339,17 @@ def test_freeze_gate_blocks_when_auditor_not_approved_and_does_not_overwrite_roo
     assert gate_result["blocking_reasons"]
 
 
+def test_freeze_gate_blocks_without_approved_solution_plan_review(tmp_path):
+    workspace, frontdesk = make_freezable_frontdesk_workspace(tmp_path)
+    workspace.resolve_path("frontdesk/plan_review_001.json", must_exist=True).unlink()
+
+    result = FrontDeskFreezeGate().evaluate_and_freeze(frontdesk, round_index=1)
+
+    assert result.decision == FREEZE_GATE_DECISION_ASK_USER
+    assert "missing_plan_review_record" in reason_codes(result)
+    assert not workspace.resolve_path("frontdesk/freeze_manifest.json").exists()
+
+
 def test_freeze_gate_blocks_when_score_thresholds_are_not_met(tmp_path):
     audit = approved_audit_report(clarity_score=0.6, testability_score=0.5)
     workspace, frontdesk = make_freezable_frontdesk_workspace(tmp_path, audit_report=audit)
@@ -302,6 +388,83 @@ def test_freeze_gate_blocks_when_must_criterion_uses_only_llm_judge(tmp_path):
 
     assert result.decision == FREEZE_GATE_DECISION_ASK_USER
     assert "must_criterion_llm_judge_only" in reason_codes(result)
+    assert not workspace.resolve_path("frontdesk/freeze_manifest.json").exists()
+
+
+def test_freeze_gate_blocks_when_redaction_is_not_complete(tmp_path):
+    workspace, frontdesk = make_freezable_frontdesk_workspace(
+        tmp_path,
+        risk_report={
+            "schema_version": "skillfoundry.frontdesk_risk_report.v1",
+            "risk_flags": [],
+            "redaction_status": "not_started",
+            "data_sensitivity": "internal",
+        },
+    )
+
+    result = FrontDeskFreezeGate().evaluate_and_freeze(frontdesk, round_index=1)
+
+    assert result.decision == FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED
+    assert "redaction_not_complete" in reason_codes(result)
+    assert not workspace.resolve_path("frontdesk/freeze_manifest.json").exists()
+
+
+def test_freeze_gate_routes_confidential_data_without_policy_to_human_review(tmp_path):
+    criterion = sample_criterion(data_sensitivity="confidential")
+    workspace, frontdesk = make_freezable_frontdesk_workspace(tmp_path, criterion=criterion)
+
+    result = FrontDeskFreezeGate().evaluate_and_freeze(frontdesk, round_index=1)
+
+    assert result.decision == FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED
+    assert "sensitive_data_requires_risk_policy" in reason_codes(result)
+    assert not workspace.resolve_path("frontdesk/freeze_manifest.json").exists()
+
+
+def test_freeze_gate_blocks_when_frontdesk_budget_evidence_is_exceeded(tmp_path):
+    workspace, frontdesk = make_freezable_frontdesk_workspace(
+        tmp_path,
+        risk_report={
+            "schema_version": "skillfoundry.frontdesk_risk_report.v1",
+            "risk_flags": [],
+            "redaction_status": "complete",
+            "data_sensitivity": "internal",
+            "provider_usage": {
+                "usage_available": True,
+                "model_call_count": 999,
+                "total_tokens": 999_999,
+                "cost_usd": 999.0,
+            },
+        },
+    )
+
+    result = FrontDeskFreezeGate().evaluate_and_freeze(frontdesk, round_index=1)
+
+    assert result.decision == FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED
+    codes = reason_codes(result)
+    assert "frontdesk_model_call_budget_exceeded" in codes
+    assert "frontdesk_token_budget_exceeded" in codes
+    assert "frontdesk_cost_budget_exceeded" in codes
+    assert not workspace.resolve_path("frontdesk/freeze_manifest.json").exists()
+
+
+def test_freeze_gate_blocks_when_usage_unavailable_reason_is_missing(tmp_path):
+    workspace, frontdesk = make_freezable_frontdesk_workspace(
+        tmp_path,
+        risk_report={
+            "schema_version": "skillfoundry.frontdesk_risk_report.v1",
+            "risk_flags": [],
+            "redaction_status": "complete",
+            "data_sensitivity": "internal",
+            "provider_usage": {
+                "usage_available": False,
+            },
+        },
+    )
+
+    result = FrontDeskFreezeGate().evaluate_and_freeze(frontdesk, round_index=1)
+
+    assert result.decision == FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED
+    assert "frontdesk_usage_unavailable_reason_missing" in reason_codes(result)
     assert not workspace.resolve_path("frontdesk/freeze_manifest.json").exists()
 
 

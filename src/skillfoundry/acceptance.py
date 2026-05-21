@@ -31,6 +31,7 @@ ACCEPTANCE_COVERAGE_PLAN_VERSION = "skillfoundry.acceptance.coverage_plan.v1"
 ACCEPTANCE_COVERAGE_RESULT_VERSION = "skillfoundry.acceptance.coverage_result.v1"
 ACCEPTANCE_COVERAGE_PLAN_REF = "qa/acceptance_coverage_plan.json"
 ACCEPTANCE_COVERAGE_RESULT_REF = "qa/acceptance_coverage_result.json"
+MANUAL_ACCEPTANCE_RECORD_REF = "qa/manual_acceptance_record.json"
 
 ACCEPTANCE_CRITERIA_REF = "acceptance_criteria.yaml"
 QA_REPORT_REF = "qa/quality_report.json"
@@ -357,6 +358,10 @@ class AcceptanceCoverageEvaluator:
 
         qa_report, qa_report_ref, qa_report_hash = _read_json_evidence(job_workspace, QA_REPORT_REF)
         verifier_result, verifier_result_ref, verifier_result_hash = _read_verifier_result(job_workspace)
+        manual_record, manual_record_ref, manual_record_hash = _read_json_evidence(
+            job_workspace,
+            MANUAL_ACCEPTANCE_RECORD_REF,
+        )
         package_hash, package_failures = _hash_package(job_workspace)
         plan_hash = sha256_file(job_workspace.resolve_path(plan_ref, must_exist=True))
 
@@ -366,6 +371,9 @@ class AcceptanceCoverageEvaluator:
                 item,
                 qa_report=qa_report,
                 verifier_result=verifier_result,
+                manual_acceptance_record=manual_record,
+                manual_acceptance_record_ref=manual_record_ref,
+                acceptance_criteria_hash=coverage_plan.acceptance_criteria_hash,
             )
             for item in coverage_plan.items
         ]
@@ -434,6 +442,12 @@ class AcceptanceCoverageEvaluator:
                     "result_id": verifier_result.result_id if verifier_result is not None else None,
                     "passed": verifier_result.passed if verifier_result is not None else None,
                     "present": verifier_result is not None,
+                },
+                "manual_acceptance_record": {
+                    "ref": manual_record_ref,
+                    "sha256": manual_record_hash,
+                    "decision": manual_record.get("decision") if isinstance(manual_record, Mapping) else None,
+                    "present": manual_record is not None,
                 },
                 "package": {
                     "ref": "package",
@@ -589,6 +603,9 @@ def _evaluate_plan_item(
     *,
     qa_report: Mapping[str, Any] | None,
     verifier_result: VerificationResult | None,
+    manual_acceptance_record: Mapping[str, Any] | None,
+    manual_acceptance_record_ref: str | None,
+    acceptance_criteria_hash: str,
 ) -> AcceptanceCoverageResultItem:
     if item.coverage_mode == COVERAGE_MODE_UNCOVERED:
         return _result_item(
@@ -601,21 +618,11 @@ def _evaluate_plan_item(
         )
 
     if item.coverage_mode == COVERAGE_MODE_MANUAL_AUTHORITY:
-        if item.manual_authority:
-            return _result_item(
-                item,
-                status=COVERAGE_RESULT_STATUS_MANUAL_ONLY,
-                passed=True,
-                evidence_refs=[],
-                failures=[],
-            )
-        return _result_item(
+        return _evaluate_manual_authority(
             item,
-            status=COVERAGE_RESULT_STATUS_UNCOVERED,
-            passed=False,
-            evidence_refs=[],
-            failures=["manual_authority metadata is required for manual-only coverage"],
-            uncovered_reason=item.uncovered_reason or "manual_authority_missing",
+            manual_acceptance_record=manual_acceptance_record,
+            manual_acceptance_record_ref=manual_acceptance_record_ref,
+            acceptance_criteria_hash=acceptance_criteria_hash,
         )
 
     if item.coverage_mode == COVERAGE_MODE_VERIFIER_CHECK:
@@ -673,6 +680,57 @@ def _evaluate_verifier_check(
         passed=passed,
         evidence_refs=_dedupe(evidence_refs),
         failures=[] if passed else [str(check.get("message") or "verifier check failed")],
+    )
+
+
+def _evaluate_manual_authority(
+    item: AcceptanceCoveragePlanItem,
+    *,
+    manual_acceptance_record: Mapping[str, Any] | None,
+    manual_acceptance_record_ref: str | None,
+    acceptance_criteria_hash: str,
+) -> AcceptanceCoverageResultItem:
+    if not item.manual_authority:
+        return _result_item(
+            item,
+            status=COVERAGE_RESULT_STATUS_UNCOVERED,
+            passed=False,
+            evidence_refs=[],
+            failures=["manual_authority metadata is required for manual-only coverage"],
+            uncovered_reason=item.uncovered_reason or "manual_authority_missing",
+        )
+    if manual_acceptance_record is None:
+        return _result_item(
+            item,
+            status=COVERAGE_RESULT_STATUS_UNCOVERED,
+            passed=False,
+            evidence_refs=[MANUAL_ACCEPTANCE_RECORD_REF],
+            failures=["manual acceptance record is required for manual-only must criteria"],
+            uncovered_reason="manual_acceptance_record_missing",
+        )
+
+    failures: list[str] = []
+    if manual_acceptance_record.get("decision") != "approved":
+        failures.append("manual acceptance record decision must be approved")
+    for field_name in ("reviewer_id", "reviewer_role", "reason", "created_at"):
+        value = manual_acceptance_record.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            failures.append(f"manual acceptance record {field_name} is required")
+    covered_ids = manual_acceptance_record.get("covered_criterion_ids")
+    if not isinstance(covered_ids, list) or item.criterion_id not in {str(value) for value in covered_ids}:
+        failures.append(f"manual acceptance record does not cover criterion {item.criterion_id}")
+    source_hash = manual_acceptance_record.get("source_hash")
+    if source_hash != acceptance_criteria_hash:
+        failures.append("manual acceptance record source_hash does not match acceptance criteria hash")
+
+    passed = not failures
+    return _result_item(
+        item,
+        status=COVERAGE_RESULT_STATUS_MANUAL_ONLY if passed else COVERAGE_RESULT_STATUS_UNCOVERED,
+        passed=passed,
+        evidence_refs=[manual_acceptance_record_ref or MANUAL_ACCEPTANCE_RECORD_REF],
+        failures=failures,
+        uncovered_reason=None if passed else "manual_acceptance_record_invalid",
     )
 
 

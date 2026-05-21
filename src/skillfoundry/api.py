@@ -16,7 +16,7 @@ from uuid import uuid4
 import zipfile
 
 from .frontdesk_loop import FrontDeskLoopResult, run_frontdesk_round
-from .frontdesk_schema import ConversationTurn, FrontDeskConfig, FrontDeskState
+from .frontdesk_schema import ConversationTurn, FrontDeskConfig, FrontDeskState, PlanReviewRecord
 from .frontdesk_workspace import (
     FRONTDESK_BUDGET_REF,
     FRONTDESK_CONVERSATION_REF,
@@ -29,7 +29,7 @@ from .frontdesk_workspace import (
 from .live_llm import DEFAULT_FRONTDESK_MODEL, OpenAIChatCompletionsClient
 from .offline import OfflineWorkerMode, build_offline, read_final_report
 from .registry import APPROVAL_APPROVED, LocalSkillRegistry, QUARANTINE_NONE
-from .schema import JsonValue, RegistryEntry, ensure_json_compatible
+from .schema import JsonValue, RegistryEntry, ensure_json_compatible, sha256_file
 from .security import PathSecurityError, assert_under_root, resolve_under_root, validate_relative_path
 from .workspace import JOB_ID_RE, JobWorkspace, initialize_job_workspace
 
@@ -39,6 +39,10 @@ FRONTDESK_API_VERSION = "skillfoundry.api.frontdesk.v1"
 DEFAULT_SERVE_HOST = "127.0.0.1"
 DEFAULT_SERVE_PORT = 8765
 FRONTDESK_STATE_REF = "frontdesk/state.json"
+FRONTDESK_CORE_NEED_BRIEF_REF = "frontdesk/core_need_brief.json"
+FRONTDESK_SOLUTION_PLAN_REF = "frontdesk/solution_plan.json"
+FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF = "frontdesk/solution_plan.md"
+PLAN_REVIEW_REF_TEMPLATE = "frontdesk/plan_review_{sequence:03d}.json"
 FrontDeskClientFactory = Callable[[str, str, int], Any]
 
 
@@ -204,6 +208,134 @@ class SkillFoundryAPI:
         result = self._run_frontdesk_round(frontdesk, state=state)
         return self._frontdesk_payload(safe_job_id, result=result)
 
+    def review_frontdesk_plan(self, job_id: str, payload: Mapping[str, Any]) -> dict[str, JsonValue]:
+        """Record a user plan review decision and advance the Front Desk state."""
+
+        if not isinstance(payload, Mapping):
+            raise APIError(400, "invalid_json", "request body must be a JSON object")
+        safe_job_id = self._validate_job_id(job_id)
+        decision = payload.get("decision")
+        if decision not in {"approve", "request_revision", "reject", "human_review"}:
+            raise APIError(
+                400,
+                "invalid_plan_review_decision",
+                "decision must be approve, request_revision, reject, or human_review",
+            )
+
+        job_root = self._require_job_root(safe_job_id)
+        workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
+        frontdesk = FrontDeskWorkspace(workspace)
+        state = self._read_frontdesk_state(frontdesk)
+        if state is None or state.solution_plan_ref is None:
+            raise APIError(409, "solution_plan_missing", "frontdesk solution plan is not ready for review")
+        if state.readiness not in {"awaiting_plan_review", "plan_revision_requested"}:
+            raise APIError(409, "plan_review_not_available", "frontdesk job is not awaiting plan review")
+
+        round_index = _frontdesk_report_index(state.latest_elicitation_report_ref) or max(1, state.clarification_round)
+        plan_ref = state.solution_plan_ref
+        plan_path = workspace.resolve_path(plan_ref, must_exist=True)
+        reason = str(payload.get("reason") or payload.get("message") or "User reviewed the solution plan.").strip()
+        requested_changes = _coerce_string_list(payload.get("requested_changes"))
+        if decision == "request_revision" and not requested_changes and reason:
+            requested_changes = [reason]
+        review = PlanReviewRecord(
+            review_id=f"plan-review-{round_index:03d}",
+            solution_plan_ref=plan_ref,
+            decision=decision,
+            reviewer_id=str(payload.get("reviewer_id") or "api-user"),
+            reviewer_role=str(payload.get("reviewer_role") or "requesting_user"),
+            reason=reason,
+            requested_changes=requested_changes,
+            source_hash=sha256_file(plan_path),
+        )
+        review_ref = PLAN_REVIEW_REF_TEMPLATE.format(sequence=round_index)
+        write_frontdesk_artifact(frontdesk, review_ref, review)
+
+        if decision == "approve":
+            approved_state = _copy_frontdesk_state(
+                state,
+                stage="freeze_approved_plan",
+                frontdesk_phase="freeze",
+                readiness="plan_approved",
+                next_action="freeze_approved_plan",
+                latest_plan_review_ref=review_ref,
+                human_review_required=False,
+            )
+            write_frontdesk_artifact(frontdesk, "state.json", approved_state.to_dict())
+            result = self._run_frontdesk_round(frontdesk, state=approved_state)
+            return self._frontdesk_payload(safe_job_id, result=result)
+
+        if decision == "reject":
+            rejected_state = _copy_frontdesk_state(
+                state,
+                stage="complete",
+                frontdesk_phase="failed",
+                readiness="rejected",
+                next_action="reject",
+                latest_plan_review_ref=review_ref,
+                human_review_required=False,
+            )
+            write_frontdesk_artifact(frontdesk, "state.json", rejected_state.to_dict())
+            return self._frontdesk_payload(safe_job_id, state=rejected_state)
+
+        if decision == "human_review":
+            human_state = _copy_frontdesk_state(
+                state,
+                stage="human_review",
+                frontdesk_phase="failed",
+                readiness="human_review_required",
+                next_action="human_review",
+                latest_plan_review_ref=review_ref,
+                human_review_required=True,
+            )
+            write_frontdesk_artifact(frontdesk, "state.json", human_state.to_dict())
+            return self._frontdesk_payload(safe_job_id, state=human_state)
+
+        revision_count = state.plan_revision_count + 1
+        config = FrontDeskConfig.read_json_file(workspace.resolve_path(FRONTDESK_BUDGET_REF, must_exist=True))
+        if revision_count > config.max_plan_revision_rounds:
+            review_state = _copy_frontdesk_state(
+                state,
+                stage="human_review",
+                frontdesk_phase="failed",
+                readiness="human_review_required",
+                next_action="human_review",
+                latest_plan_review_ref=review_ref,
+                plan_revision_count=revision_count,
+                human_review_required=True,
+            )
+            write_frontdesk_artifact(frontdesk, "state.json", review_state.to_dict())
+        else:
+            turns = read_conversation_turns(frontdesk)
+            revision_text = _plan_revision_message(reason=reason, requested_changes=requested_changes)
+            append_conversation_turn(
+                frontdesk,
+                ConversationTurn(
+                    turn_id=f"turn-{len(turns) + 1:03d}",
+                    role="user",
+                    content=revision_text,
+                    metadata={
+                        "source": "api_plan_review",
+                        "plan_review_ref": review_ref,
+                        "decision": "request_revision",
+                    },
+                ),
+            )
+            review_state = _copy_frontdesk_state(
+                state,
+                stage="revise_plan",
+                frontdesk_phase="user_review",
+                readiness="plan_revision_requested",
+                next_action="plan_solution",
+                latest_plan_review_ref=review_ref,
+                plan_revision_count=revision_count,
+                human_review_required=False,
+            )
+            write_frontdesk_artifact(frontdesk, "state.json", review_state.to_dict())
+            result = self._run_frontdesk_round(frontdesk, state=review_state)
+            return self._frontdesk_payload(safe_job_id, result=result)
+        return self._frontdesk_payload(safe_job_id, state=review_state)
+
     def retry_frontdesk_job(self, job_id: str) -> dict[str, JsonValue]:
         """Retry the current Front Desk model round without appending a user turn."""
 
@@ -224,8 +356,17 @@ class SkillFoundryAPI:
             state = FrontDeskState(
                 job_id=state.job_id,
                 stage="elicit",
+                frontdesk_phase=state.frontdesk_phase,
                 clarification_round=report_index,
+                core_need_round=state.core_need_round,
+                plan_revision_count=state.plan_revision_count,
                 readiness="needs_clarification",
+                latest_core_need_report_ref=state.latest_core_need_report_ref,
+                core_need_brief_ref=state.core_need_brief_ref,
+                decision_ledger_ref=state.decision_ledger_ref,
+                solution_plan_ref=state.solution_plan_ref,
+                solution_plan_markdown_ref=state.solution_plan_markdown_ref,
+                latest_plan_review_ref=state.latest_plan_review_ref,
                 latest_elicitation_report_ref=state.latest_elicitation_report_ref,
                 latest_audit_report_ref=state.latest_audit_report_ref,
                 skill_spec_ref=state.skill_spec_ref,
@@ -450,6 +591,8 @@ class SkillFoundryAPI:
         elicitation_map = elicitation if isinstance(elicitation, Mapping) else {}
         questions = payload.get("next_questions")
         question_list = questions if isinstance(questions, list) else []
+        solution_plan = payload.get("solution_plan")
+        solution_plan_map = solution_plan if isinstance(solution_plan, Mapping) else {}
         readiness = str(state_map.get("readiness") or "new_conversation")
         next_action = str(state_map.get("next_action") or payload.get("status") or "elicit")
         return "\n".join(
@@ -511,6 +654,7 @@ class SkillFoundryAPI:
                 "        <h2>对话</h2>",
                 self._conversation_html(turns, workspace=workspace, state=state_map),
                 self._questions_html(question_list, readiness=readiness, next_action=next_action),
+                self._solution_plan_review_html(job_id, solution_plan_map, readiness=readiness),
                 self._frontdesk_answer_form_html(job_id, readiness=readiness, next_action=next_action),
                 "      </div>",
                 '      <aside class="panel stack">',
@@ -623,6 +767,37 @@ class SkillFoundryAPI:
                     return APIHTTPResult(200, "text/html; charset=utf-8", html)
                 return self._json_response(self.get_frontdesk_job(route[2]))
 
+            if method == "GET" and len(route) == 4 and route[:2] == ["frontdesk", "jobs"] and route[3] == "core-need":
+                safe_job_id = self._validate_job_id(route[2])
+                job_root = self._require_job_root(safe_job_id)
+                workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
+                core_need = self._read_optional_json_ref(workspace, FRONTDESK_CORE_NEED_BRIEF_REF)
+                if core_need is None:
+                    raise APIError(404, "core_need_not_found", "core need brief is not available")
+                return self._json_response(core_need)
+
+            if method == "GET" and len(route) == 4 and route[:2] == ["frontdesk", "jobs"] and route[3] == "solution-plan":
+                safe_job_id = self._validate_job_id(route[2])
+                job_root = self._require_job_root(safe_job_id)
+                workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
+                solution_plan = self._read_optional_json_ref(workspace, FRONTDESK_SOLUTION_PLAN_REF)
+                if solution_plan is None:
+                    raise APIError(404, "solution_plan_not_found", "solution plan is not available")
+                return self._json_response(solution_plan)
+
+            if method == "POST" and len(route) == 4 and route[:2] == ["frontdesk", "jobs"] and route[3] == "plan-review":
+                content_type = _header(headers, "content-type")
+                payload = self._parse_body(body, content_type=content_type)
+                result = self.review_frontdesk_plan(route[2], payload)
+                if content_type.startswith("application/x-www-form-urlencoded"):
+                    return APIHTTPResult(
+                        303,
+                        "text/plain; charset=utf-8",
+                        b"",
+                        headers=(("Location", f"/frontdesk/jobs/{result['job_id']}"),),
+                    )
+                return self._json_response(result)
+
             if method == "POST" and len(route) == 4 and route[:2] == ["frontdesk", "jobs"] and route[3] == "messages":
                 content_type = _header(headers, "content-type")
                 payload = self._parse_body(body, content_type=content_type)
@@ -728,8 +903,12 @@ class SkillFoundryAPI:
         *,
         state: FrontDeskState | None = None,
     ) -> FrontDeskLoopResult:
-        round_index = (state.clarification_round if state is not None else 0) + 1
-        elicitor_client = self._frontdesk_client("requirements_elicitor", frontdesk.job_id, round_index)
+        if state is not None and (state.readiness == "plan_approved" or state.next_action == "freeze_approved_plan"):
+            round_index = _frontdesk_report_index(state.latest_elicitation_report_ref) or max(1, state.clarification_round)
+            elicitor_client = None
+        else:
+            round_index = (state.clarification_round if state is not None else 0) + 1
+            elicitor_client = self._frontdesk_client("requirements_elicitor", frontdesk.job_id, round_index)
         auditor_client = self._frontdesk_client("spec_auditor", frontdesk.job_id, round_index)
         result = run_frontdesk_round(
             frontdesk,
@@ -796,15 +975,25 @@ class SkillFoundryAPI:
         latest_elicitation = self._read_optional_json_ref(workspace, state.latest_elicitation_report_ref if state else None)
         latest_audit = self._read_optional_json_ref(workspace, state.latest_audit_report_ref if state else None)
         latest_failure = self._read_optional_json_ref(workspace, result.failure_ref if result is not None else None)
+        core_need_brief = self._read_optional_json_ref(workspace, state.core_need_brief_ref if state else None)
+        solution_plan = self._read_optional_json_ref(workspace, state.solution_plan_ref if state else None)
+        latest_plan_review = self._read_optional_json_ref(workspace, state.latest_plan_review_ref if state else None)
         questions = _active_frontdesk_questions(state, latest_elicitation, turn_count=len(turns))
+        review_actions = _frontdesk_review_actions(state)
         payload: dict[str, Any] = {
             "schema_version": FRONTDESK_API_VERSION,
             "job_id": job_id,
             "status": result.status if result is not None else (state.next_action if state else "new_conversation"),
+            "phase": state.frontdesk_phase if state is not None else "core_need_discovery",
             "state": state.to_dict() if state is not None else None,
             "conversation_ref": FRONTDESK_CONVERSATION_REF,
             "turn_count": len(turns),
             "next_questions": questions,
+            "core_need_brief": core_need_brief,
+            "solution_plan": solution_plan,
+            "solution_plan_markdown_ref": state.solution_plan_markdown_ref if state is not None else None,
+            "latest_plan_review": latest_plan_review,
+            "review_actions": review_actions,
             "latest_elicitation_report": latest_elicitation,
             "latest_audit_report": latest_audit,
             "latest_failure": latest_failure,
@@ -812,6 +1001,9 @@ class SkillFoundryAPI:
             "links": {
                 "self": f"/frontdesk/jobs/{job_id}",
                 "messages": f"/frontdesk/jobs/{job_id}/messages",
+                "core_need": f"/frontdesk/jobs/{job_id}/core-need",
+                "solution_plan": f"/frontdesk/jobs/{job_id}/solution-plan",
+                "plan_review": f"/frontdesk/jobs/{job_id}/plan-review",
             },
         }
         return ensure_json_compatible(payload)  # type: ignore[return-value]
@@ -1213,6 +1405,32 @@ class SkillFoundryAPI:
             ]
         )
 
+    def _solution_plan_review_html(self, job_id: str, solution_plan: Mapping[str, Any], *, readiness: str) -> str:
+        if readiness not in {"awaiting_plan_review", "plan_revision_requested"} or not solution_plan:
+            return ""
+        summary = escape(str(solution_plan.get("summary") or ""))
+        approach = escape(str(solution_plan.get("approach") or ""))
+        name = escape(str(solution_plan.get("proposed_skill_name") or "方案"))
+        return "\n".join(
+            [
+                '<section class="question">',
+                f"<h3>{name}</h3>",
+                f"<p>{summary}</p>",
+                f"<p>{approach}</p>",
+                f'<form method="post" action="/frontdesk/jobs/{escape(job_id)}/plan-review">',
+                '  <input type="hidden" name="decision" value="approve">',
+                '  <input type="hidden" name="reason" value="方案已确认，可以进入实现规划冻结。">',
+                "  <button type=\"submit\">批准方案</button>",
+                "</form>",
+                f'<form method="post" action="/frontdesk/jobs/{escape(job_id)}/plan-review">',
+                '  <input type="hidden" name="decision" value="request_revision">',
+                '  <label>修改意见 <textarea name="reason" required placeholder="说明哪里需要改，Front Desk 会据此重新澄清或修订方案。"></textarea></label>',
+                "  <button type=\"submit\">请求修改</button>",
+                "</form>",
+                "</section>",
+            ]
+        )
+
     def _question_options_html(self, options: Any) -> str:
         if not isinstance(options, list) or not options:
             return ""
@@ -1262,6 +1480,9 @@ class SkillFoundryAPI:
 
     def _frontdesk_artifact_refs_html(self, state: Mapping[str, Any]) -> str:
         refs = [
+            ("核心需求", state.get("core_need_brief_ref")),
+            ("方案文档", state.get("solution_plan_markdown_ref")),
+            ("方案确认", state.get("latest_plan_review_ref")),
             ("规格", state.get("skill_spec_ref")),
             ("验收标准", state.get("acceptance_criteria_ref")),
             ("验证规格", state.get("verification_spec_ref")),
@@ -1304,8 +1525,15 @@ class SkillFoundryAPI:
                 "  if (!isFrontDesk) return;",
                 "  event.preventDefault();",
                 "  var payload = {};",
-                "  var message = form.querySelector('[name=\"message\"]');",
-                "  if (message) { payload.message = message.value || ''; }",
+                "  var formData = new FormData(form);",
+                "  formData.forEach(function (value, key) {",
+                "    if (Object.prototype.hasOwnProperty.call(payload, key)) {",
+                "      if (!Array.isArray(payload[key])) payload[key] = [payload[key]];",
+                "      payload[key].push(String(value));",
+                "    } else {",
+                "      payload[key] = String(value);",
+                "    }",
+                "  });",
                 "  fetch(action, {",
                 "    method: 'POST',",
                 "    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },",
@@ -1451,6 +1679,12 @@ def _wants_html(headers: Mapping[str, str] | None) -> bool:
 def _frontdesk_status_label(readiness: str, next_action: str) -> tuple[str, str]:
     if readiness == "frozen" or next_action == "route_to_build":
         return "需求已确定", "success"
+    if readiness == "awaiting_plan_review" or next_action == "await_user_plan_review":
+        return "等待确认方案", ""
+    if readiness == "plan_revision_requested":
+        return "等待修订方案", ""
+    if readiness == "plan_approved" or next_action == "freeze_approved_plan":
+        return "正在冻结方案", "soft"
     if next_action == "elicit":
         return "等待重试", "soft"
     if readiness == "needs_clarification" or next_action == "ask_user":
@@ -1467,6 +1701,12 @@ def _frontdesk_status_label(readiness: str, next_action: str) -> tuple[str, str]
 def _frontdesk_status_description(readiness: str, next_action: str) -> str:
     if readiness == "frozen" or next_action == "route_to_build":
         return "已经形成可进入构建阶段的 Skill 需求规格。"
+    if readiness == "awaiting_plan_review" or next_action == "await_user_plan_review":
+        return "系统已经整理出核心需求和方案，请确认、要求修改或拒绝。"
+    if readiness == "plan_revision_requested":
+        return "系统记录了你的修改意见，下一轮会围绕方案修订继续。"
+    if readiness == "plan_approved" or next_action == "freeze_approved_plan":
+        return "方案已经确认，系统正在做确定性审核和冻结。"
     if next_action == "elicit":
         return "上次模型调用没有完成，已保留你的回答，可以重试生成下一步。"
     if readiness == "needs_clarification" or next_action == "ask_user":
@@ -1498,6 +1738,54 @@ def _active_frontdesk_questions(
         return []
     questions = latest_elicitation.get("next_questions")
     return questions if isinstance(questions, list) else []
+
+
+def _copy_frontdesk_state(state: FrontDeskState, **overrides: Any) -> FrontDeskState:
+    payload = state.to_dict()
+    payload.update(overrides)
+    return FrontDeskState.from_dict(payload)
+
+
+def _coerce_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _plan_revision_message(*, reason: str, requested_changes: list[str]) -> str:
+    lines = [
+        "Plan review requested changes.",
+        f"Reason: {reason}",
+    ]
+    if requested_changes:
+        lines.append("Requested changes:")
+        lines.extend(f"- {item}" for item in requested_changes)
+    return "\n".join(lines)
+
+
+def _frontdesk_review_actions(state: FrontDeskState | None) -> list[dict[str, JsonValue]]:
+    if state is None or state.readiness not in {"awaiting_plan_review", "plan_revision_requested"}:
+        return []
+    return [
+        {"decision": "approve", "label": "Approve plan", "method": "POST", "href": f"/frontdesk/jobs/{state.job_id}/plan-review"},
+        {
+            "decision": "request_revision",
+            "label": "Request revision",
+            "method": "POST",
+            "href": f"/frontdesk/jobs/{state.job_id}/plan-review",
+        },
+        {"decision": "reject", "label": "Reject", "method": "POST", "href": f"/frontdesk/jobs/{state.job_id}/plan-review"},
+        {
+            "decision": "human_review",
+            "label": "Request human review",
+            "method": "POST",
+            "href": f"/frontdesk/jobs/{state.job_id}/plan-review",
+        },
+    ]
 
 
 def _frontdesk_report_index(ref: str | None) -> int | None:
