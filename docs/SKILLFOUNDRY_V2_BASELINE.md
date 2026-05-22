@@ -187,20 +187,30 @@ requirement fixture
 docs/archive/agent-briefs/
 ```
 
-## 当前第一步状态
+## 当前状态
 
-本阶段只做仓库入口和依赖对齐：
-
-- `third_party/contextforge` 指向新版 ContextForge Goal Harness 主线。
-- 根目录 `AGENT_BRIEF_WP*.md` 已归档。
-- 本文固定 v2 基线判断。
-
-后续真正代码重建应从 `contracts.py` 开始：
+本文只固定 v2 基线前提：
 
 ```text
-FrozenSkillSpec -> GoalContract
-Build node -> AgentNodeContract
-VerificationSpec / AcceptanceCoverage -> VerificationGate
+保留 SkillFoundry 的产品思想和 agent 协作边界。
+基于 ContextForge Goal Harness 重建技术实现。
+不要背旧 WP0-WP17 的模块兼容债。
 ```
 
-在这条 contract bridge 跑通前，不建议继续 patch 旧 `src/skillfoundry/context.py`。
+当前 phase、已完成/未完成状态、下一工作包和验收门以 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md` 为准，不以本文为执行源。
+
+截至 2026-05-22，仓库已经超过最初的“只做入口和依赖对齐”阶段：
+
+- `third_party/contextforge` 已指向新版 ContextForge Goal Harness 主线。
+- 根目录 `AGENT_BRIEF_WP*.md` 已归档。
+- `src/skillfoundry/contracts.py` 的 contract bridge 已存在。
+- offline Goal Harness build/verified runtime、workers v2、graph v2、Front Desk v2 slices、verification bridge 和 registry evidence gate 已存在。
+- graph v2 repair route 已能执行 Goal Harness-backed repair，并在 repair 后重新经过 verifier、acceptance coverage、ContextForge bridge 和 registry gate。
+
+当前仍不能说 v2 重构已经完成。下一阶段不再是“从 `contracts.py` 开始”，而是按 canonical 重构蓝图继续：
+
+1. 让 `graph_v2.py` 成为唯一产品 build / verify / repair / registry 主骨架。
+2. 补齐 API/UI 对 repair、human-review 和 registry evidence 的摘要体验。
+3. 隔离或退役旧 `graph.py`、legacy prompt/context/worker 路径。
+
+在这条 v2 product path 收敛前，仍不建议把新上下文能力继续堆到旧 `src/skillfoundry/context.py`。
