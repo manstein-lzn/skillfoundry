@@ -15,6 +15,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 from uuid import uuid4
 import zipfile
 
+from contextforge import ContextLedger, LedgerRecordNotFound
+
 from .contracts import BUILD_NODE_CONTRACT_REF, GOAL_CONTRACT_REF, VERIFICATION_GATE_REF
 from .frontdesk_loop import FrontDeskLoopResult, run_frontdesk_round
 from .frontdesk_schema import ConversationTurn, FrontDeskConfig, FrontDeskState, PlanReviewRecord
@@ -480,6 +482,7 @@ class SkillFoundryAPI:
                 contextforge_verification_ref_status["error_code"] = contextforge_verification_read.error_code
         final_report = self._try_read_report(safe_job_id)
         registry_entry = self._approved_registry_entry_for_report(safe_job_id, final_report) if final_report else None
+        ledger_summary = self._contextforge_ledger_summary(workspace, runtime_result, graph_state)
 
         payload = {
             "schema_version": "skillfoundry.api.contextforge_status.v1",
@@ -516,9 +519,12 @@ class SkillFoundryAPI:
             },
             "cache": {
                 "cache_plan_id": _nested_json_str(runtime_result, ("ids", "cache_plan_id")),
-                "cache_telemetry_status": "unavailable",
+                **ledger_summary["cache"],
                 "raw_prompt_included": False,
             },
+            "worker": ledger_summary["worker"],
+            "usage": ledger_summary["usage"],
+            "model_calls": ledger_summary["model_calls"],
             "frontdesk_v2": {
                 "governance": self._frontdesk_v2_governance_summary(workspace),
             },
@@ -1194,6 +1200,160 @@ class SkillFoundryAPI:
         except OSError:
             payload["error_code"] = "unreadable"
         return ensure_json_compatible(payload)  # type: ignore[return-value]
+
+    def _contextforge_ledger_summary(
+        self,
+        workspace: JobWorkspace,
+        runtime_result: Mapping[str, Any] | None,
+        graph_state: Mapping[str, Any] | None,
+    ) -> dict[str, dict[str, JsonValue] | list[dict[str, JsonValue]]]:
+        summary = _empty_contextforge_ledger_summary()
+        cache_plan_id = _nested_json_str(runtime_result, ("ids", "cache_plan_id"))
+        worker_run_id = (
+            _nested_json_str(graph_state, ("contextforge", "last_worker_run_id"))
+            or _nested_json_str(runtime_result, ("ids", "worker_run_id"))
+        )
+        try:
+            ledger_path = workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF, must_exist=True)
+        except Exception:
+            return summary
+        if not ledger_path.is_file():
+            summary["cache"]["ledger_status"] = "unavailable"
+            summary["worker"]["ledger_status"] = "unavailable"
+            summary["usage"]["ledger_status"] = "unavailable"
+            return summary
+
+        try:
+            ledger = ContextLedger.connect(ledger_path)
+        except Exception:
+            _mark_contextforge_ledger_unavailable(summary, "ContextForge ledger could not be opened.")
+            return summary
+        try:
+            if cache_plan_id:
+                try:
+                    cache_plan = ledger.get_prompt_cache_plan(cache_plan_id)
+                except LedgerRecordNotFound:
+                    summary["cache"]["ledger_status"] = "missing_cache_plan"
+                except Exception:
+                    _mark_contextforge_ledger_unavailable(summary, "ContextForge cache plan evidence is unreadable.")
+                    return summary
+                else:
+                    summary["cache"].update(
+                        {
+                            "ledger_status": "available",
+                            "cache_telemetry_status": cache_plan.cache_telemetry_status,
+                            "expected_cacheable_tokens": cache_plan.expected_cacheable_tokens,
+                            "actual_cached_tokens": cache_plan.actual_cached_tokens,
+                            "stable_prefix_token_estimate": cache_plan.stable_prefix_token_estimate,
+                            "dynamic_suffix_token_estimate": cache_plan.dynamic_suffix_token_estimate,
+                            "stable_prefix_message_count": cache_plan.stable_prefix_message_count,
+                            "cache_break_reason": cache_plan.cache_break_reason,
+                        }
+                    )
+            if not worker_run_id:
+                return summary
+            try:
+                worker_run = ledger.get_worker_run(worker_run_id)
+            except LedgerRecordNotFound:
+                summary["worker"]["ledger_status"] = "missing_worker_run"
+                return summary
+            except Exception:
+                _mark_contextforge_ledger_unavailable(summary, "ContextForge worker run evidence is unreadable.")
+                return summary
+
+            usage_summary = _json_mapping(worker_run.usage_summary)
+            summary["worker"].update(
+                {
+                    "ledger_status": "available",
+                    "worker_run_id": worker_run.worker_run_id,
+                    "worker_kind": worker_run.worker_kind,
+                    "worker_name": worker_run.worker_name,
+                    "status": worker_run.status,
+                    "failure_class": worker_run.failure_class,
+                    "final_output_ref": worker_run.final_output_ref,
+                    "prompt_view_count": len(worker_run.prompt_view_ids),
+                    "model_call_count": len(worker_run.model_call_ids),
+                    "tool_call_count": len(worker_run.tool_call_ids),
+                    "artifact_count": len(worker_run.artifact_ids),
+                    "worker_self_report_is_not_acceptance": (
+                        worker_run.metadata.get("worker_self_report_is_not_acceptance") is True
+                    ),
+                }
+            )
+            if summary["cache"].get("ledger_status") != "available":
+                summary["cache"].update(
+                    {
+                        "cache_telemetry_status": usage_summary.get("cache_telemetry_status", "unavailable"),
+                        "expected_cacheable_tokens": usage_summary.get("expected_cacheable_tokens"),
+                    }
+                )
+            usage_id = _json_str(usage_summary.get("usage_id"))
+            model_call_summaries: list[dict[str, JsonValue]] = []
+            for model_call_id in worker_run.model_call_ids:
+                try:
+                    model_call = ledger.get_model_call(model_call_id)
+                except LedgerRecordNotFound:
+                    model_call_summaries.append(_missing_model_call_summary(model_call_id))
+                    continue
+                except Exception:
+                    model_call_summaries.append(_unreadable_model_call_summary(model_call_id))
+                    continue
+                if usage_id is None:
+                    usage_id = model_call.usage_id
+                model_call_summaries.append(
+                    {
+                        "model_call_id": model_call.id,
+                        "prompt_view_id": model_call.prompt_view_id,
+                        "provider": model_call.envelope.provider,
+                        "model": model_call.envelope.model,
+                        "success": model_call.error is None,
+                        "usage_id": model_call.usage_id,
+                        "usage_unavailable_reason": model_call.usage_unavailable_reason,
+                        "replay_bundle_ref": model_call.replay_bundle_ref,
+                        "error_type": model_call.error.error_type if model_call.error is not None else None,
+                    }
+                )
+            summary["model_calls"] = model_call_summaries
+            summary["usage"].update(
+                {
+                    "ledger_status": "available",
+                    "provider": usage_summary.get("provider"),
+                    "model": usage_summary.get("model"),
+                    "usage_id": usage_id,
+                    "usage_available": bool(usage_summary.get("usage_available") is True or usage_id),
+                    "usage_unavailable_reason": usage_summary.get("usage_unavailable_reason"),
+                }
+            )
+            if usage_id:
+                try:
+                    usage_record = ledger.get_usage_record(usage_id)
+                except LedgerRecordNotFound:
+                    summary["usage"]["ledger_status"] = "missing_usage_record"
+                    summary["usage"]["usage_available"] = False
+                    summary["usage"]["usage_unavailable_reason"] = "usage record referenced by worker run is missing"
+                except Exception:
+                    summary["usage"]["ledger_status"] = "unavailable"
+                    summary["usage"]["usage_available"] = False
+                    summary["usage"]["usage_unavailable_reason"] = "ContextForge usage evidence is unreadable."
+                else:
+                    summary["usage"].update(
+                        {
+                            "ledger_status": "available",
+                            "usage_available": True,
+                            "provider": usage_record.provider,
+                            "model": usage_record.model,
+                            "input_tokens": usage_record.input_tokens,
+                            "cached_input_tokens": usage_record.cached_input_tokens,
+                            "output_tokens": usage_record.output_tokens,
+                            "cost_usd": usage_record.cost_usd,
+                            "latency_ms": usage_record.latency_ms,
+                            "cache_telemetry_status": usage_record.cache_telemetry_status,
+                            "usage_unavailable_reason": None,
+                        }
+                    )
+        finally:
+            ledger.close()
+        return summary
 
     def _frontdesk_v2_governance_summary(self, workspace: JobWorkspace) -> dict[str, JsonValue] | None:
         payload = self._read_optional_json_ref(workspace, FRONTDESK_V2_GOVERNANCE_REPORT_REF)
@@ -1909,6 +2069,93 @@ def _frontdesk_status_description(readiness: str, next_action: str) -> str:
 
 def _json_mapping(value: Any) -> dict[str, JsonValue]:
     return ensure_json_compatible(value) if isinstance(value, Mapping) else {}  # type: ignore[return-value]
+
+
+def _empty_contextforge_ledger_summary() -> dict[str, dict[str, JsonValue] | list[dict[str, JsonValue]]]:
+    return {
+        "cache": {
+            "ledger_status": "unavailable",
+            "cache_telemetry_status": "unavailable",
+            "expected_cacheable_tokens": None,
+            "actual_cached_tokens": None,
+            "stable_prefix_token_estimate": None,
+            "dynamic_suffix_token_estimate": None,
+            "stable_prefix_message_count": None,
+            "cache_break_reason": None,
+        },
+        "worker": {
+            "ledger_status": "unavailable",
+            "worker_run_id": None,
+            "worker_kind": None,
+            "worker_name": None,
+            "status": None,
+            "failure_class": None,
+            "final_output_ref": None,
+            "prompt_view_count": 0,
+            "model_call_count": 0,
+            "tool_call_count": 0,
+            "artifact_count": 0,
+            "worker_self_report_is_not_acceptance": True,
+        },
+        "usage": {
+            "ledger_status": "unavailable",
+            "usage_available": False,
+            "usage_id": None,
+            "provider": None,
+            "model": None,
+            "input_tokens": None,
+            "cached_input_tokens": None,
+            "output_tokens": None,
+            "cost_usd": None,
+            "latency_ms": None,
+            "cache_telemetry_status": "unavailable",
+            "usage_unavailable_reason": "ContextForge ledger usage evidence is unavailable.",
+        },
+        "model_calls": [],
+    }
+
+
+def _mark_contextforge_ledger_unavailable(
+    summary: dict[str, dict[str, JsonValue] | list[dict[str, JsonValue]]],
+    reason: str,
+) -> None:
+    for section in ("cache", "worker", "usage"):
+        value = summary.get(section)
+        if isinstance(value, dict):
+            value["ledger_status"] = "unavailable"
+    usage = summary.get("usage")
+    if isinstance(usage, dict):
+        usage["usage_available"] = False
+        usage["usage_unavailable_reason"] = reason
+    summary["model_calls"] = []
+
+
+def _missing_model_call_summary(model_call_id: str) -> dict[str, JsonValue]:
+    return {
+        "model_call_id": model_call_id,
+        "prompt_view_id": None,
+        "provider": None,
+        "model": None,
+        "success": False,
+        "usage_id": None,
+        "usage_unavailable_reason": "model call record referenced by worker run is missing",
+        "replay_bundle_ref": None,
+        "error_type": "missing_model_call_record",
+    }
+
+
+def _unreadable_model_call_summary(model_call_id: str) -> dict[str, JsonValue]:
+    return {
+        "model_call_id": model_call_id,
+        "prompt_view_id": None,
+        "provider": None,
+        "model": None,
+        "success": False,
+        "usage_id": None,
+        "usage_unavailable_reason": "model call record referenced by worker run is unreadable",
+        "replay_bundle_ref": None,
+        "error_type": "unreadable_model_call_record",
+    }
 
 
 def _json_str(value: Any) -> str | None:

@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from io import BytesIO
 import json
+import sqlite3
 import zipfile
+
+from contextforge import ModelResponse, UsageDraft
 
 import skillfoundry
 from skillfoundry import (
     APPROVAL_APPROVED,
     CONTEXTFORGE_VERIFICATION_RESULT_REF,
+    GOAL_RUNTIME_LEDGER_REF,
+    OWNED_LLM_WORKER_OUTPUT_SCHEMA_VERSION,
     OfflineWorkerMode,
+    OwnedLLMSkillBuilderWorker,
     SkillFoundryAPI,
     initialize_frontdesk_workspace,
     initialize_job_workspace,
@@ -23,6 +29,43 @@ REQ_TEXT = """# API pytest skill
 Build a local SkillFoundry package that exposes the offline factory through a
 minimal internal API and lets a reviewer download only approved packages.
 """
+
+API_OWNED_SKILL = """---
+name: api-owned-status-skill
+description: API status fixture for owned LLM Goal Harness usage.
+---
+
+# API Owned Status Skill
+"""
+
+
+class ScriptedAPIModelClient:
+    def invoke(self, messages, model, params, tools=None):
+        payload = {
+            "schema_version": OWNED_LLM_WORKER_OUTPUT_SCHEMA_VERSION,
+            "skill_markdown": API_OWNED_SKILL,
+            "reference_files": [],
+            "script_files": [],
+            "test_files": [],
+        }
+        return (
+            ModelResponse(
+                text=json.dumps(payload, sort_keys=True),
+                raw_response_artifact_ref=None,
+                finish_reason="stop",
+                metadata={"scripted_api_status": True},
+            ),
+            None,
+            UsageDraft(
+                input_tokens=120,
+                cached_input_tokens=90,
+                cache_telemetry_status="reported",
+                output_tokens=30,
+                cost_usd=0.0123,
+                latency_ms=456,
+                provider_payload={"raw_provider_payload": "must-not-leak"},
+            ),
+        )
 
 
 def make_api(tmp_path) -> SkillFoundryAPI:
@@ -106,10 +149,163 @@ def test_get_job_contextforge_status_exposes_v2_refs_without_raw_content(tmp_pat
     assert payload["refs"]["goal_contract"]["exists"] is True
     assert payload["refs"]["goal_runtime_result"]["exists"] is True
     assert payload["cache"]["cache_plan_id"] == result.runtime_result["ids"]["cache_plan_id"]
+    assert payload["cache"]["ledger_status"] == "available"
+    assert payload["cache"]["cache_telemetry_status"] == result.harness_result.compiled_context.cache_plan.cache_telemetry_status
+    assert payload["cache"]["expected_cacheable_tokens"] == (
+        result.harness_result.compiled_context.cache_plan.expected_cacheable_tokens
+    )
+    assert payload["worker"]["worker_run_id"] == result.harness_result.worker_run.worker_run_id
+    assert payload["worker"]["worker_kind"] == "fake_model"
+    assert payload["worker"]["status"] == "completed"
+    assert payload["worker"]["model_call_count"] == 0
+    assert payload["usage"]["usage_available"] is False
     assert payload["status"]["verification"]["status"] == "passed"
     assert payload["raw_context_included"] is False
     assert payload["cache"]["raw_prompt_included"] is False
     assert "Offline Goal Harness Skill" not in body_text
+
+
+def test_get_job_contextforge_status_exposes_owned_llm_usage_without_raw_payload(tmp_path):
+    workspace = initialize_job_workspace(tmp_path / "runs", "api-v2-owned-status")
+    result = run_offline_goal_harness(
+        workspace,
+        created_at="2026-05-22T00:00:00Z",
+        worker_factory=lambda worker_workspace: OwnedLLMSkillBuilderWorker(
+            worker_workspace,
+            client=ScriptedAPIModelClient(),
+            provider="scripted",
+            model="api-status-model",
+        ),
+    )
+    api = make_api(tmp_path)
+
+    response = api.handle("GET", "/jobs/api-v2-owned-status/contextforge")
+    payload = response_json(response)
+    body_text = response.body.decode("utf-8")
+
+    assert response.status == 200
+    assert payload["worker"]["worker_run_id"] == result.harness_result.worker_run.worker_run_id
+    assert payload["worker"]["worker_kind"] == "llm"
+    assert payload["worker"]["model_call_count"] == 1
+    assert payload["worker"]["prompt_view_count"] >= 1
+    assert payload["model_calls"][0]["provider"] == "scripted"
+    assert payload["model_calls"][0]["model"] == "api-status-model"
+    assert payload["model_calls"][0]["success"] is True
+    assert payload["model_calls"][0]["replay_bundle_ref"].startswith("artifact:")
+    assert payload["usage"]["usage_available"] is True
+    assert payload["usage"]["provider"] == "scripted"
+    assert payload["usage"]["model"] == "api-status-model"
+    assert payload["usage"]["input_tokens"] == 120
+    assert payload["usage"]["cached_input_tokens"] == 90
+    assert payload["usage"]["output_tokens"] == 30
+    assert payload["usage"]["cost_usd"] == 0.0123
+    assert payload["usage"]["latency_ms"] == 456
+    assert payload["usage"]["cache_telemetry_status"] == "reported"
+    assert payload["cache"]["raw_prompt_included"] is False
+    assert "API Owned Status Skill" not in body_text
+    assert "raw_provider_payload" not in body_text
+    assert "scripted_api_status" not in body_text
+
+
+def test_get_job_contextforge_status_corrupt_ledger_degrades_without_verification_fallback(tmp_path):
+    workspace = initialize_job_workspace(tmp_path / "runs", "api-v2-corrupt-ledger")
+    run_offline_goal_harness(workspace, created_at="2026-05-22T00:00:00Z")
+    workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF, must_exist=True).write_text("not a sqlite database", encoding="utf-8")
+    workspace.resolve_path(CONTEXTFORGE_VERIFICATION_RESULT_REF).write_text("{invalid-json", encoding="utf-8")
+    api = make_api(tmp_path)
+
+    response = api.handle("GET", "/jobs/api-v2-corrupt-ledger/contextforge")
+    payload = response_json(response)
+
+    assert response.status == 200
+    assert payload["cache"]["ledger_status"] == "unavailable"
+    assert payload["worker"]["ledger_status"] == "unavailable"
+    assert payload["usage"]["ledger_status"] == "unavailable"
+    assert payload["model_calls"] == []
+    assert payload["status"]["verification"]["status"] == "invalid"
+    assert payload["status"]["verification"]["passed"] is False
+
+
+def test_get_job_contextforge_status_missing_ledger_table_degrades_to_unavailable(tmp_path):
+    workspace = initialize_job_workspace(tmp_path / "runs", "api-v2-missing-ledger-table")
+    run_offline_goal_harness(workspace, created_at="2026-05-22T00:00:00Z")
+    ledger_path = workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF, must_exist=True)
+    connection = sqlite3.connect(ledger_path)
+    try:
+        connection.execute("DROP TABLE worker_runs")
+        connection.commit()
+    finally:
+        connection.close()
+    api = make_api(tmp_path)
+
+    response = api.handle("GET", "/jobs/api-v2-missing-ledger-table/contextforge")
+    payload = response_json(response)
+
+    assert response.status == 200
+    assert payload["worker"]["ledger_status"] == "unavailable"
+    assert payload["usage"]["ledger_status"] == "unavailable"
+    assert payload["model_calls"] == []
+    assert payload["status"]["verification"]["status"] == "passed"
+
+
+def test_get_job_contextforge_status_missing_model_call_uses_allowlisted_shape(tmp_path):
+    workspace = initialize_job_workspace(tmp_path / "runs", "api-v2-missing-model-call")
+    result = run_offline_goal_harness(
+        workspace,
+        created_at="2026-05-22T00:00:00Z",
+        worker_factory=lambda worker_workspace: OwnedLLMSkillBuilderWorker(
+            worker_workspace,
+            client=ScriptedAPIModelClient(),
+            provider="scripted",
+            model="api-status-model",
+        ),
+    )
+    worker_payload = result.harness_result.worker_run.to_dict()
+    worker_payload["model_call_ids"] = ["missing-model-call"]
+    worker_json = json.dumps(worker_payload, sort_keys=True)
+    connection = sqlite3.connect(workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF, must_exist=True))
+    try:
+        connection.execute(
+            "UPDATE worker_runs SET payload_json = ?, payload_bytes = ? WHERE id = ?",
+            (
+                worker_json,
+                len(worker_json.encode("utf-8")),
+                result.harness_result.worker_run.worker_run_id,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    api = make_api(tmp_path)
+
+    response = api.handle("GET", "/jobs/api-v2-missing-model-call/contextforge")
+    payload = response_json(response)
+
+    assert response.status == 200
+    allowed_keys = {
+        "model_call_id",
+        "prompt_view_id",
+        "provider",
+        "model",
+        "success",
+        "usage_id",
+        "usage_unavailable_reason",
+        "replay_bundle_ref",
+        "error_type",
+    }
+    assert set(payload["model_calls"][0]) <= allowed_keys
+    assert payload["model_calls"][0] == {
+        "model_call_id": "missing-model-call",
+        "prompt_view_id": None,
+        "provider": None,
+        "model": None,
+        "success": False,
+        "usage_id": None,
+        "usage_unavailable_reason": "model call record referenced by worker run is missing",
+        "replay_bundle_ref": None,
+        "error_type": "missing_model_call_record",
+    }
+    assert "status" not in payload["model_calls"][0]
 
 
 def test_get_job_contextforge_status_includes_frontdesk_v2_governance(tmp_path):
