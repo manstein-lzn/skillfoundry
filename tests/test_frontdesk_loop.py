@@ -1,15 +1,22 @@
 import json
 
 import pytest
+from contextforge import ContextLedger
 from contextforge.schema import ModelResponse
 
 import skillfoundry
 from skillfoundry import (
     AcceptanceCriteriaSet,
     ConversationTurn,
+    FRONTDESK_CORE_NEED_REPORT_REF,
+    FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF,
+    FRONTDESK_CORE_NEED_RUNTIME_STATE_REF,
+    FRONTDESK_GOAL_RUNTIME_LEDGER_REF,
     FRONTDESK_LOOP_STATUS_FAIL_CLOSED,
     FRONTDESK_LOOP_STATUS_HUMAN_REVIEW,
     FRONTDESK_LOOP_STATUS_ROUTE_TO_BUILD,
+    FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF,
+    FRONTDESK_SOLUTION_PLAN_RUNTIME_STATE_REF,
     FRONTDESK_SPEC_AUDIT_RUNTIME_RESULT_REF,
     FRONTDESK_SPEC_AUDIT_RUNTIME_STATE_REF,
     FrontDeskConfig,
@@ -357,6 +364,63 @@ def test_clear_need_materializes_audits_and_freezes(tmp_path):
     assert workspace.resolve_path("frontdesk/spec_audit_report_001.json", must_exist=True).is_file()
     assert workspace.resolve_path("frontdesk/freeze_gate_result.json", must_exist=True).is_file()
     assert workspace.resolve_path("frontdesk/freeze_manifest.json", must_exist=True).is_file()
+
+
+def test_default_planning_round_uses_goal_harness_without_raw_conversation(tmp_path):
+    marker = "RAW_FRONTDESK_MARKER_SHOULD_NOT_ENTER_PROMPTS"
+    workspace, frontdesk = make_frontdesk_workspace(
+        tmp_path,
+        user_content=f"Create a governed status-update skill. {marker}",
+    )
+
+    result = run_frontdesk_round(frontdesk)
+
+    assert result.status == "await_user_plan_review"
+    assert result.state.readiness == "awaiting_plan_review"
+    assert result.state.next_action == "await_user_plan_review"
+    assert result.state.latest_core_need_report_ref == FRONTDESK_CORE_NEED_REPORT_REF
+    assert result.state.latest_elicitation_report_ref == "frontdesk/elicitation_report_001.json"
+    assert result.state.solution_plan_ref == "frontdesk/solution_plan.json"
+    assert result.materialized_artifact_refs["core_need_runtime_result"] == FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF
+    assert result.materialized_artifact_refs["solution_plan_runtime_result"] == FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF
+    assert workspace.resolve_path(FRONTDESK_GOAL_RUNTIME_LEDGER_REF, must_exist=True).is_file()
+    assert workspace.resolve_path(FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF, must_exist=True).is_file()
+    assert workspace.resolve_path(FRONTDESK_CORE_NEED_RUNTIME_STATE_REF, must_exist=True).is_file()
+    assert workspace.resolve_path(FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF, must_exist=True).is_file()
+    assert workspace.resolve_path(FRONTDESK_SOLUTION_PLAN_RUNTIME_STATE_REF, must_exist=True).is_file()
+    assert workspace.resolve_path("frontdesk/solution_plan.json", must_exist=True).is_file()
+    assert workspace.resolve_path("frontdesk/elicitation_report_001.json", must_exist=True).is_file()
+
+    core_runtime = read_json(workspace, FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF)
+    plan_runtime = read_json(workspace, FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF)
+    assert core_runtime["trust_boundaries"]["raw_conversation_included"] is False
+    assert plan_runtime["trust_boundaries"]["raw_conversation_included"] is False
+    assert plan_runtime["refs"]["solution_plan"] == "frontdesk/solution_plan.json"
+
+    elicitation = read_json(workspace, "frontdesk/elicitation_report_001.json")
+    assert elicitation["readiness_guess"] == "ready_for_audit"
+    assert elicitation["missing_fields"] == []
+    assert elicitation["known_fields"]["contextforge_runtime"]["core_need_runtime_result_ref"] == (
+        FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF
+    )
+    assert elicitation["known_fields"]["contextforge_runtime"]["solution_plan_runtime_result_ref"] == (
+        FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF
+    )
+    risk_report = read_json(workspace, "frontdesk/risk_report.json")
+    assert risk_report["redaction_status"] == "complete"
+    assert risk_report["provider_usage"]["usage_available"] is False
+
+    ledger = ContextLedger.connect(workspace.resolve_path(FRONTDESK_GOAL_RUNTIME_LEDGER_REF, must_exist=True))
+    try:
+        core_prompt, _core_blocks = ledger.get_prompt_view(core_runtime["ids"]["prompt_view_id"])
+        plan_prompt, _plan_blocks = ledger.get_prompt_view(plan_runtime["ids"]["prompt_view_id"])
+        rendered_prompt = "\n".join(message.content for message in [*core_prompt.messages, *plan_prompt.messages])
+    finally:
+        ledger.close()
+    assert marker not in rendered_prompt
+    assert marker not in json.dumps(result.to_dict(), sort_keys=True)
+    assert marker not in json.dumps(core_runtime, sort_keys=True)
+    assert marker not in json.dumps(plan_runtime, sort_keys=True)
 
 
 def test_approved_plan_without_auditor_client_uses_goal_harness_spec_auditor(tmp_path):

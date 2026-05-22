@@ -35,7 +35,16 @@ from .frontdesk import (
     RequirementsElicitor,
     SpecAuditor,
 )
-from .frontdesk_goal_runtime import run_frontdesk_spec_auditor_goal_harness
+from .frontdesk_goal_runtime import (
+    FRONTDESK_CORE_NEED_REPORT_REF as FRONTDESK_GOAL_CORE_NEED_REPORT_REF,
+    FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF,
+    FRONTDESK_CORE_NEED_RUNTIME_STATE_REF,
+    FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF,
+    FRONTDESK_SOLUTION_PLAN_RUNTIME_STATE_REF,
+    run_frontdesk_core_need_goal_harness,
+    run_frontdesk_solution_planner_goal_harness,
+    run_frontdesk_spec_auditor_goal_harness,
+)
 from .frontdesk_schema import (
     AcceptanceCriteriaSet,
     CoreNeedBrief,
@@ -213,6 +222,14 @@ class FrontDeskLoop:
             )
 
         round_index = current_state.clarification_round + 1
+        if _use_goal_harness_planning(self.elicitor, elicitor_client):
+            return self._plan_with_goal_harness(
+                frontdesk,
+                state=current_state,
+                config=config,
+                round_index=round_index,
+            )
+
         try:
             elicitation = self.elicitor.elicit(
                 frontdesk,
@@ -410,6 +427,206 @@ class FrontDeskLoop:
             materialized_artifact_refs=combined_refs,
             elicitation_report_ref=elicitation.report_ref,
             audit_report_ref=current_state.latest_audit_report_ref,
+        )
+
+    def _plan_with_goal_harness(
+        self,
+        frontdesk: FrontDeskWorkspace,
+        *,
+        state: FrontDeskState,
+        config: FrontDeskConfig,
+        round_index: int,
+    ) -> FrontDeskLoopResult:
+        try:
+            core_need = run_frontdesk_core_need_goal_harness(frontdesk)
+        except Exception as exc:
+            failure_ref = _write_loop_failure(
+                frontdesk,
+                round_index=round_index,
+                failure_type="goal_harness_core_need_exception",
+                message=str(exc),
+                details={"exception_type": type(exc).__name__},
+                artifact_refs=_artifact_refs_from_state(state),
+            )
+            failed_state = _failed_state(
+                state,
+                clarification_round=round_index,
+                latest_elicitation_report_ref=state.latest_elicitation_report_ref,
+                latest_audit_report_ref=state.latest_audit_report_ref,
+            )
+            return _failure_result(failed_state, round_index=round_index, failure_ref=failure_ref)
+        if core_need.harness_result.worker_run.status != "completed":
+            failure_ref = core_need.harness_result.worker_run.final_output_ref
+            if failure_ref is None:
+                failure_ref = _write_loop_failure(
+                    frontdesk,
+                    round_index=round_index,
+                    failure_type="goal_harness_core_need_failed",
+                    message="Front Desk Core Need Goal Harness worker did not complete.",
+                    details={
+                        "worker_status": core_need.harness_result.worker_run.status,
+                        "failure_class": core_need.harness_result.worker_run.failure_class,
+                    },
+                    artifact_refs=_artifact_refs_from_state(state),
+                )
+            failed_state = _failed_state(
+                state,
+                clarification_round=round_index,
+                latest_elicitation_report_ref=state.latest_elicitation_report_ref,
+                latest_audit_report_ref=state.latest_audit_report_ref,
+            )
+            return _failure_result(
+                failed_state,
+                round_index=round_index,
+                failure_ref=failure_ref,
+            )
+
+        try:
+            solution_plan = run_frontdesk_solution_planner_goal_harness(frontdesk)
+        except Exception as exc:
+            failure_ref = _write_loop_failure(
+                frontdesk,
+                round_index=round_index,
+                failure_type="goal_harness_solution_planner_exception",
+                message=str(exc),
+                details={"exception_type": type(exc).__name__},
+                artifact_refs=_artifact_refs_from_state(state),
+            )
+            failed_state = _failed_state(
+                state,
+                clarification_round=round_index,
+                latest_elicitation_report_ref=state.latest_elicitation_report_ref,
+                latest_audit_report_ref=state.latest_audit_report_ref,
+            )
+            return _failure_result(failed_state, round_index=round_index, failure_ref=failure_ref)
+        if solution_plan.harness_result.worker_run.status != "completed":
+            failure_ref = solution_plan.harness_result.worker_run.final_output_ref
+            if failure_ref is None:
+                failure_ref = _write_loop_failure(
+                    frontdesk,
+                    round_index=round_index,
+                    failure_type="goal_harness_solution_planner_failed",
+                    message="Front Desk Solution Planner Goal Harness worker did not complete.",
+                    details={
+                        "worker_status": solution_plan.harness_result.worker_run.status,
+                        "failure_class": solution_plan.harness_result.worker_run.failure_class,
+                    },
+                    artifact_refs={
+                        **_artifact_refs_from_state(state),
+                        "core_need_runtime_result": FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF,
+                    },
+                )
+            failed_state = _failed_state(
+                state,
+                clarification_round=round_index,
+                latest_elicitation_report_ref=state.latest_elicitation_report_ref,
+                latest_audit_report_ref=state.latest_audit_report_ref,
+            )
+            return _failure_result(
+                failed_state,
+                round_index=round_index,
+                failure_ref=failure_ref,
+            )
+
+        try:
+            core_report = CoreNeedDiscoveryReport.read_json_file(
+                frontdesk.workspace.resolve_path(FRONTDESK_GOAL_CORE_NEED_REPORT_REF, must_exist=True)
+            )
+            core_brief = CoreNeedBrief.read_json_file(
+                frontdesk.workspace.resolve_path(FRONTDESK_CORE_NEED_BRIEF_REF, must_exist=True)
+            )
+            plan = SolutionPlan.read_json_file(
+                frontdesk.workspace.resolve_path(FRONTDESK_SOLUTION_PLAN_REF, must_exist=True)
+            )
+            draft_skill_spec = SkillSpec.read_yaml_file(
+                frontdesk.workspace.resolve_path(FRONTDESK_DRAFT_SKILL_SPEC_REF, must_exist=True)
+            )
+            acceptance_criteria = AcceptanceCriteriaSet.read_yaml_file(
+                frontdesk.workspace.resolve_path(FRONTDESK_ACCEPTANCE_CRITERIA_REF, must_exist=True)
+            )
+            elicitation_report = _elicitation_report_from_goal_harness_plan(
+                core_report=core_report,
+                core_brief=core_brief,
+                plan=plan,
+                draft_skill_spec=draft_skill_spec,
+                acceptance_criteria=acceptance_criteria,
+                round_index=round_index,
+            )
+            elicitation_ref = ELICITATION_REPORT_REF_TEMPLATE.format(sequence=round_index)
+            write_frontdesk_artifact(frontdesk, elicitation_ref, elicitation_report)
+            _write_round_risk_report(
+                frontdesk,
+                round_index=round_index,
+                elicitation_report=elicitation_report,
+                audit_report=None,
+                feasibility_report=None,
+            )
+        except Exception as exc:
+            failure_ref = _write_loop_failure(
+                frontdesk,
+                round_index=round_index,
+                failure_type="invalid_goal_harness_planning_result",
+                message=str(exc),
+                details={"exception_type": type(exc).__name__},
+                artifact_refs={
+                    **_artifact_refs_from_state(state),
+                    "core_need_runtime_result": FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF,
+                    "solution_plan_runtime_result": FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF,
+                },
+            )
+            failed_state = _failed_state(
+                state,
+                clarification_round=round_index,
+                latest_elicitation_report_ref=state.latest_elicitation_report_ref,
+                latest_audit_report_ref=state.latest_audit_report_ref,
+            )
+            return _failure_result(failed_state, round_index=round_index, failure_ref=failure_ref)
+
+        artifact_refs = {
+            "core_need_runtime_result": FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF,
+            "core_need_runtime_state": FRONTDESK_CORE_NEED_RUNTIME_STATE_REF,
+            "solution_plan_runtime_result": FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF,
+            "solution_plan_runtime_state": FRONTDESK_SOLUTION_PLAN_RUNTIME_STATE_REF,
+            "core_need_report": FRONTDESK_GOAL_CORE_NEED_REPORT_REF,
+            "core_need_brief": FRONTDESK_CORE_NEED_BRIEF_REF,
+            "solution_plan": FRONTDESK_SOLUTION_PLAN_REF,
+            "solution_plan_markdown": FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF,
+            "draft_skill_spec": FRONTDESK_DRAFT_SKILL_SPEC_REF,
+            "acceptance_criteria": FRONTDESK_ACCEPTANCE_CRITERIA_REF,
+            "elicitation_report": elicitation_ref,
+        }
+        next_state = FrontDeskState(
+            job_id=frontdesk.job_id,
+            stage="await_user_plan_review",
+            frontdesk_phase="user_review",
+            clarification_round=round_index,
+            core_need_round=min(round_index, config.max_core_need_rounds),
+            plan_revision_count=state.plan_revision_count,
+            readiness="awaiting_plan_review",
+            latest_core_need_report_ref=FRONTDESK_GOAL_CORE_NEED_REPORT_REF,
+            core_need_brief_ref=FRONTDESK_CORE_NEED_BRIEF_REF,
+            decision_ledger_ref=state.decision_ledger_ref,
+            solution_plan_ref=FRONTDESK_SOLUTION_PLAN_REF,
+            solution_plan_markdown_ref=FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF,
+            latest_plan_review_ref=state.latest_plan_review_ref,
+            latest_elicitation_report_ref=elicitation_ref,
+            latest_audit_report_ref=state.latest_audit_report_ref,
+            next_action="await_user_plan_review",
+            human_review_required=False,
+            frontdesk_budget_ref=state.frontdesk_budget_ref,
+            risk_report_ref=state.risk_report_ref,
+            freeze_gate_result_ref=state.freeze_gate_result_ref,
+            freeze_manifest_ref=state.freeze_manifest_ref,
+            acceptance_coverage_plan_ref=state.acceptance_coverage_plan_ref,
+        )
+        next_state.validate()
+        return FrontDeskLoopResult(
+            state=next_state,
+            round_index=round_index,
+            status=FRONTDESK_LOOP_STATUS_AWAIT_PLAN_REVIEW,
+            materialized_artifact_refs=artifact_refs,
+            elicitation_report_ref=elicitation_ref,
+            audit_report_ref=state.latest_audit_report_ref,
         )
 
     def _audit_and_freeze_approved_plan(
@@ -620,6 +837,10 @@ class FrontDeskLoop:
             freeze_gate_result_ref=freeze.freeze_gate_result_ref,
             freeze_manifest_ref=freeze.freeze_manifest_ref,
         )
+
+
+def _use_goal_harness_planning(elicitor: RequirementsElicitor, elicitor_client: Any | None) -> bool:
+    return elicitor_client is None and type(elicitor) is RequirementsElicitor
 
 
 def _use_goal_harness_spec_auditor(auditor: SpecAuditor, auditor_client: Any | None) -> bool:
@@ -913,6 +1134,53 @@ def _materialize_core_need_and_solution_plan(
         )
         return _MaterializationResult(artifact_refs=artifact_refs, failure_ref=failure_ref)
     return _MaterializationResult(artifact_refs=artifact_refs)
+
+
+def _elicitation_report_from_goal_harness_plan(
+    *,
+    core_report: CoreNeedDiscoveryReport,
+    core_brief: CoreNeedBrief,
+    plan: SolutionPlan,
+    draft_skill_spec: SkillSpec,
+    acceptance_criteria: AcceptanceCriteriaSet,
+    round_index: int,
+) -> ElicitationReport:
+    return ElicitationReport(
+        readiness_guess="ready_for_audit",
+        current_understanding=plan.summary or core_report.current_understanding or core_brief.problem_statement,
+        known_fields={
+            "core_need": {
+                "problem_statement": core_brief.problem_statement,
+                "target_user": core_brief.target_user,
+                "usage_moment": core_brief.usage_moment,
+                "desired_outcome": core_brief.desired_outcome,
+                "success_signal": core_brief.success_signal,
+            },
+            "solution_plan": {
+                "ref": FRONTDESK_SOLUTION_PLAN_REF,
+                "proposed_skill_name": plan.proposed_skill_name,
+                "status": plan.status,
+            },
+            "contextforge_runtime": {
+                "core_need_runtime_result_ref": FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF,
+                "solution_plan_runtime_result_ref": FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF,
+            },
+        },
+        missing_fields=[],
+        risk_flags=_dedupe_strings([*core_brief.risk_flags, *plan.risks]),
+        next_questions=[],
+        draft_skill_spec=draft_skill_spec.to_dict(),
+        draft_acceptance_criteria=[criterion.to_dict() for criterion in acceptance_criteria.criteria],
+        assumptions=_dedupe_strings(
+            [
+                *core_brief.assumptions,
+                "Core need and solution plan were produced through Front Desk Goal Harness runtime artifacts.",
+                "Raw Front Desk conversation remained forbidden provenance for the planning nodes.",
+            ]
+        ),
+        conversation_ref="frontdesk/conversation.jsonl",
+        round_index=round_index,
+    )
 
 
 def _skill_spec_from_draft_payload(payload: Mapping[str, Any]) -> SkillSpec:
