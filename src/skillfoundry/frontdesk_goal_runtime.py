@@ -293,6 +293,7 @@ class FrontDeskSpecAuditorFakeWorker:
     """Deterministic worker used to prove the Spec Auditor Goal Harness boundary."""
 
     frontdesk: FrontDeskWorkspace
+    plan_review_ref: str = FRONTDESK_PLAN_REVIEW_REF
     name: str = "frontdesk-spec-auditor-deterministic-worker"
 
     kind: str = "fake_model"
@@ -348,7 +349,7 @@ class FrontDeskSpecAuditorFakeWorker:
             )
         try:
             plan_review = PlanReviewRecord.from_json(
-                self.frontdesk.workspace.resolve_path(FRONTDESK_PLAN_REVIEW_REF, must_exist=True).read_text(
+                self.frontdesk.workspace.resolve_path(self.plan_review_ref, must_exist=True).read_text(
                     encoding="utf-8"
                 )
             )
@@ -358,9 +359,9 @@ class FrontDeskSpecAuditorFakeWorker:
                 failure_class="missing_or_invalid_plan_review",
                 message="Front Desk Spec Auditor requires a valid approved plan review record before audit.",
                 attempted_changed_files=attempted_changed_files,
-                details={"plan_review_error": str(exc), "plan_review_ref": FRONTDESK_PLAN_REVIEW_REF},
+                details={"plan_review_error": str(exc), "plan_review_ref": self.plan_review_ref},
             )
-        review_failure = _plan_review_failure(self.frontdesk, plan_review)
+        review_failure = _plan_review_failure(self.frontdesk, plan_review, plan_review_ref=self.plan_review_ref)
         if review_failure is not None:
             failure_class, message, details = review_failure
             return self._fail_closed(
@@ -451,7 +452,7 @@ class FrontDeskSpecAuditorFakeWorker:
             "message": message,
             "expected_refs": {
                 "solution_plan": FRONTDESK_SOLUTION_PLAN_REF,
-                "plan_review": FRONTDESK_PLAN_REVIEW_REF,
+                "plan_review": self.plan_review_ref,
                 "draft_skill_spec": FRONTDESK_DRAFT_SKILL_SPEC_REF,
                 "acceptance_criteria": FRONTDESK_ACCEPTANCE_CRITERIA_REF,
                 "spec_audit_report": FRONTDESK_SPEC_AUDIT_REPORT_REF,
@@ -656,6 +657,7 @@ def run_frontdesk_spec_auditor_goal_harness(
     workspace: FrontDeskWorkspace | JobWorkspace,
     *,
     run_id: str | None = None,
+    plan_review_ref: str = FRONTDESK_PLAN_REVIEW_REF,
     created_at: str | None = None,
 ) -> FrontDeskSpecAuditorGoalHarnessResult:
     """Run Front Desk Spec Auditor as a ContextForge Goal Harness node."""
@@ -680,12 +682,13 @@ def run_frontdesk_spec_auditor_goal_harness(
             include_core_need=True,
             include_solution_plan=True,
             include_plan_review=True,
+            plan_review_ref=plan_review_ref,
             include_draft_outputs=True,
         )
         harness_result = GoalHarness(ContextKernel(ledger)).run_single_node(
             goal_contract,
             node_contract,
-            FrontDeskSpecAuditorFakeWorker(frontdesk),
+            FrontDeskSpecAuditorFakeWorker(frontdesk, plan_review_ref=plan_review_ref),
             graph_id=_GRAPH_ID,
             run_id=resolved_run_id,
             task_id=SPEC_AUDITOR_NODE_ID,
@@ -705,7 +708,7 @@ def run_frontdesk_spec_auditor_goal_harness(
         output_refs = {
             "core_need_brief": FRONTDESK_CORE_NEED_BRIEF_REF,
             "solution_plan": FRONTDESK_SOLUTION_PLAN_REF,
-            "plan_review": FRONTDESK_PLAN_REVIEW_REF,
+            "plan_review": plan_review_ref,
             "draft_skill_spec": FRONTDESK_DRAFT_SKILL_SPEC_REF,
             "acceptance_criteria": FRONTDESK_ACCEPTANCE_CRITERIA_REF,
         }
@@ -762,6 +765,7 @@ def _seed_frontdesk_context(
     include_core_need: bool = False,
     include_solution_plan: bool = False,
     include_plan_review: bool = False,
+    plan_review_ref: str = FRONTDESK_PLAN_REVIEW_REF,
     include_draft_outputs: bool = False,
     legacy_item_ids: bool = False,
 ) -> list[str]:
@@ -791,7 +795,7 @@ def _seed_frontdesk_context(
     if include_plan_review:
         refs.append(
             (
-                FRONTDESK_PLAN_REVIEW_REF,
+                plan_review_ref,
                 "artifact",
                 "frontdesk_plan_review",
                 ["governed_frontdesk", "plan_review"],
@@ -1012,6 +1016,8 @@ def _ref_hashes(frontdesk: FrontDeskWorkspace, refs: dict[str, str], *, require_
 def _plan_review_failure(
     frontdesk: FrontDeskWorkspace,
     plan_review: PlanReviewRecord,
+    *,
+    plan_review_ref: str,
 ) -> tuple[str, str, dict[str, JsonValue]] | None:
     if plan_review.solution_plan_ref != FRONTDESK_SOLUTION_PLAN_REF:
         return (
@@ -1032,7 +1038,7 @@ def _plan_review_failure(
         return (
             "plan_review_source_hash_missing",
             "Plan review record must include the reviewed solution_plan.json hash.",
-            {"plan_review_ref": FRONTDESK_PLAN_REVIEW_REF},
+            {"plan_review_ref": plan_review_ref},
         )
     actual_hash = sha256_file(frontdesk.workspace.resolve_path(FRONTDESK_SOLUTION_PLAN_REF, must_exist=True))
     if actual_hash != plan_review.source_hash:
@@ -1042,7 +1048,7 @@ def _plan_review_failure(
             {
                 "plan_review_source_hash": plan_review.source_hash,
                 "actual_solution_plan_hash": actual_hash,
-                "plan_review_ref": FRONTDESK_PLAN_REVIEW_REF,
+                "plan_review_ref": plan_review_ref,
             },
         )
     return None

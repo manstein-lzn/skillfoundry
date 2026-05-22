@@ -231,15 +231,15 @@ def test_frontdesk_solution_planner_output_is_user_review_draft_not_acceptance(t
     assert "acceptance_criteria" in result.runtime_result["hashes"]
 
 
-def _approved_solution_plan(frontdesk) -> None:
+def _approved_solution_plan(frontdesk, *, plan_review_ref: str = FRONTDESK_PLAN_REVIEW_REF) -> None:
     payload = json.loads(frontdesk.workspace.resolve_path(FRONTDESK_SOLUTION_PLAN_REF, must_exist=True).read_text())
     payload["status"] = "approved"
     write_frontdesk_artifact(frontdesk, FRONTDESK_SOLUTION_PLAN_REF, payload)
     write_frontdesk_artifact(
         frontdesk,
-        FRONTDESK_PLAN_REVIEW_REF,
+        plan_review_ref,
         PlanReviewRecord(
-            review_id="plan-review-001",
+            review_id=plan_review_ref.removeprefix("frontdesk/").removesuffix(".json").replace("_", "-"),
             solution_plan_ref=FRONTDESK_SOLUTION_PLAN_REF,
             decision="approve",
             reviewer_id="test-user",
@@ -319,6 +319,35 @@ def test_frontdesk_spec_auditor_writes_audit_refs_after_user_review_gate(tmp_pat
     assert "spec_audit_report" in result.runtime_result["hashes"]
     assert "feasibility_report" in result.runtime_result["hashes"]
     assert "plan_review" in result.runtime_result["hashes"]
+
+
+def test_frontdesk_spec_auditor_accepts_routed_plan_review_ref(tmp_path) -> None:
+    custom_plan_review_ref = "frontdesk/plan_review_002.json"
+    workspace, frontdesk = _frontdesk_workspace(tmp_path, seed_solution_plan=False)
+    run_frontdesk_core_need_goal_harness(frontdesk, created_at=CREATED_AT)
+    run_frontdesk_solution_planner_goal_harness(frontdesk, created_at=CREATED_AT)
+    _approved_solution_plan(frontdesk, plan_review_ref=custom_plan_review_ref)
+
+    result = run_frontdesk_spec_auditor_goal_harness(
+        frontdesk,
+        plan_review_ref=custom_plan_review_ref,
+        created_at=CREATED_AT,
+    )
+
+    assert result.harness_result.worker_run.status == "completed"
+    assert result.runtime_state["refs"]["plan_review"] == custom_plan_review_ref
+    assert result.runtime_result["refs"]["plan_review"] == custom_plan_review_ref
+    assert "plan_review" in result.runtime_result["hashes"]
+    ledger = ContextLedger.connect(workspace.resolve_path(FRONTDESK_GOAL_RUNTIME_LEDGER_REF, must_exist=True))
+    try:
+        context_view = ledger.get_context_view(result.harness_result.compiled_context.context_view.context_view_id)
+        included = set(context_view.included_item_ids)
+        assert f"{workspace.job_id}:{SPEC_AUDITOR_NODE_ID}:frontdesk_plan_review" in included
+        prompt_view, _blocks = ledger.get_prompt_view(result.harness_result.compiled_context.prompt_view.id)
+        rendered_prompt = "\n".join(message.content for message in prompt_view.messages)
+    finally:
+        ledger.close()
+    assert "plan-review-002" in rendered_prompt
 
 
 def test_frontdesk_spec_auditor_fails_closed_before_solution_plan_approval(tmp_path) -> None:

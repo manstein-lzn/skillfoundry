@@ -345,9 +345,8 @@ def _visible_context(node_id: str) -> list[dict[str, JsonValue]]:
         refs.append("frontdesk/core_need_brief.json")
     if node_id == SPEC_AUDITOR_NODE_ID:
         refs.append(_SOLUTION_PLAN_REF)
-        refs.append("frontdesk/plan_review_001.json")
         refs.extend(["frontdesk/draft_skill_spec.yaml", "frontdesk/acceptance_criteria.yaml"])
-    return [
+    selectors = [
         {
             "selector_id": f"visible-{ref.replace('/', '-').replace('.', '-')}",
             "kind": "artifact",
@@ -370,6 +369,22 @@ def _visible_context(node_id: str) -> list[dict[str, JsonValue]]:
         }
         for ref in refs
     ]
+    if node_id == SPEC_AUDITOR_NODE_ID:
+        selectors.append(
+            {
+                "selector_id": "visible-frontdesk-plan-review-tag",
+                "kind": "tag",
+                "value": "plan_review",
+                "required": False,
+                "reason": "Governed Front Desk plan review record visible to Spec Auditor when present.",
+                "metadata": {
+                    "frontdesk_context": True,
+                    "stable_prefix": True,
+                    "routed_ref": True,
+                },
+            }
+        )
+    return selectors
 
 
 def _forbidden_context() -> list[dict[str, JsonValue]]:
@@ -502,7 +517,6 @@ def _frontdesk_source_hashes(frontdesk: FrontDeskWorkspace) -> dict[str, JsonVal
         FRONTDESK_BUDGET_REF,
         "frontdesk/core_need_brief.json",
         _SOLUTION_PLAN_REF,
-        "frontdesk/plan_review_001.json",
         "frontdesk/draft_skill_spec.yaml",
         "frontdesk/acceptance_criteria.yaml",
     ]
