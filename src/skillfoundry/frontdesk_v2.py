@@ -345,6 +345,7 @@ def _visible_context(node_id: str) -> list[dict[str, JsonValue]]:
         refs.append("frontdesk/core_need_brief.json")
     if node_id == SPEC_AUDITOR_NODE_ID:
         refs.append(_SOLUTION_PLAN_REF)
+        refs.append("frontdesk/plan_review_001.json")
         refs.extend(["frontdesk/draft_skill_spec.yaml", "frontdesk/acceptance_criteria.yaml"])
     return [
         {
@@ -501,6 +502,7 @@ def _frontdesk_source_hashes(frontdesk: FrontDeskWorkspace) -> dict[str, JsonVal
         FRONTDESK_BUDGET_REF,
         "frontdesk/core_need_brief.json",
         _SOLUTION_PLAN_REF,
+        "frontdesk/plan_review_001.json",
         "frontdesk/draft_skill_spec.yaml",
         "frontdesk/acceptance_criteria.yaml",
     ]

@@ -27,6 +27,7 @@ from .frontdesk_schema import (
     CoreNeedBrief,
     CoreNeedDiscoveryReport,
     FeasibilityReport,
+    PlanReviewRecord,
     SolutionPlan,
     SpecAuditReport,
 )
@@ -67,6 +68,7 @@ FRONTDESK_SPEC_AUDIT_RUNTIME_STATE_REF = f"{FRONTDESK_V2_CONTRACT_DIR}/spec_audi
 FRONTDESK_SPEC_AUDIT_REPORT_REF = "frontdesk/spec_audit_report_001.json"
 FRONTDESK_FEASIBILITY_REPORT_REF = "frontdesk/feasibility_report.json"
 FRONTDESK_SPEC_AUDIT_FAILURE_REF = "frontdesk/spec_audit_failure_001.json"
+FRONTDESK_PLAN_REVIEW_REF = "frontdesk/plan_review_001.json"
 
 _GRAPH_ID = "skillfoundry-frontdesk-v2"
 
@@ -344,6 +346,30 @@ class FrontDeskSpecAuditorFakeWorker:
                 attempted_changed_files=attempted_changed_files,
                 details={"solution_plan_status": plan.status},
             )
+        try:
+            plan_review = PlanReviewRecord.from_json(
+                self.frontdesk.workspace.resolve_path(FRONTDESK_PLAN_REVIEW_REF, must_exist=True).read_text(
+                    encoding="utf-8"
+                )
+            )
+        except Exception as exc:
+            return self._fail_closed(
+                request,
+                failure_class="missing_or_invalid_plan_review",
+                message="Front Desk Spec Auditor requires a valid approved plan review record before audit.",
+                attempted_changed_files=attempted_changed_files,
+                details={"plan_review_error": str(exc), "plan_review_ref": FRONTDESK_PLAN_REVIEW_REF},
+            )
+        review_failure = _plan_review_failure(self.frontdesk, plan_review)
+        if review_failure is not None:
+            failure_class, message, details = review_failure
+            return self._fail_closed(
+                request,
+                failure_class=failure_class,
+                message=message,
+                attempted_changed_files=attempted_changed_files,
+                details=details,
+            )
 
         feasibility = FeasibilityReport(
             decision="feasible",
@@ -425,6 +451,7 @@ class FrontDeskSpecAuditorFakeWorker:
             "message": message,
             "expected_refs": {
                 "solution_plan": FRONTDESK_SOLUTION_PLAN_REF,
+                "plan_review": FRONTDESK_PLAN_REVIEW_REF,
                 "draft_skill_spec": FRONTDESK_DRAFT_SKILL_SPEC_REF,
                 "acceptance_criteria": FRONTDESK_ACCEPTANCE_CRITERIA_REF,
                 "spec_audit_report": FRONTDESK_SPEC_AUDIT_REPORT_REF,
@@ -652,6 +679,7 @@ def run_frontdesk_spec_auditor_goal_harness(
             created_at=timestamp,
             include_core_need=True,
             include_solution_plan=True,
+            include_plan_review=True,
             include_draft_outputs=True,
         )
         harness_result = GoalHarness(ContextKernel(ledger)).run_single_node(
@@ -677,6 +705,7 @@ def run_frontdesk_spec_auditor_goal_harness(
         output_refs = {
             "core_need_brief": FRONTDESK_CORE_NEED_BRIEF_REF,
             "solution_plan": FRONTDESK_SOLUTION_PLAN_REF,
+            "plan_review": FRONTDESK_PLAN_REVIEW_REF,
             "draft_skill_spec": FRONTDESK_DRAFT_SKILL_SPEC_REF,
             "acceptance_criteria": FRONTDESK_ACCEPTANCE_CRITERIA_REF,
         }
@@ -732,6 +761,7 @@ def _seed_frontdesk_context(
     created_at: str,
     include_core_need: bool = False,
     include_solution_plan: bool = False,
+    include_plan_review: bool = False,
     include_draft_outputs: bool = False,
     legacy_item_ids: bool = False,
 ) -> list[str]:
@@ -756,6 +786,15 @@ def _seed_frontdesk_context(
                 "artifact",
                 "frontdesk_solution_plan",
                 ["governed_frontdesk", "solution_plan"],
+            )
+        )
+    if include_plan_review:
+        refs.append(
+            (
+                FRONTDESK_PLAN_REVIEW_REF,
+                "artifact",
+                "frontdesk_plan_review",
+                ["governed_frontdesk", "plan_review"],
             )
         )
     if include_draft_outputs:
@@ -970,6 +1009,45 @@ def _ref_hashes(frontdesk: FrontDeskWorkspace, refs: dict[str, str], *, require_
     return hashes
 
 
+def _plan_review_failure(
+    frontdesk: FrontDeskWorkspace,
+    plan_review: PlanReviewRecord,
+) -> tuple[str, str, dict[str, JsonValue]] | None:
+    if plan_review.solution_plan_ref != FRONTDESK_SOLUTION_PLAN_REF:
+        return (
+            "plan_review_solution_plan_ref_mismatch",
+            "Plan review record must reference the canonical solution plan artifact.",
+            {
+                "solution_plan_ref": plan_review.solution_plan_ref,
+                "expected_solution_plan_ref": FRONTDESK_SOLUTION_PLAN_REF,
+            },
+        )
+    if plan_review.decision != "approve":
+        return (
+            "plan_review_not_approved",
+            "Spec Auditor requires an approved plan review record before audit.",
+            {"plan_review_decision": plan_review.decision},
+        )
+    if plan_review.source_hash is None:
+        return (
+            "plan_review_source_hash_missing",
+            "Plan review record must include the reviewed solution_plan.json hash.",
+            {"plan_review_ref": FRONTDESK_PLAN_REVIEW_REF},
+        )
+    actual_hash = sha256_file(frontdesk.workspace.resolve_path(FRONTDESK_SOLUTION_PLAN_REF, must_exist=True))
+    if actual_hash != plan_review.source_hash:
+        return (
+            "plan_review_source_hash_mismatch",
+            "Plan review source_hash must match the current solution_plan.json.",
+            {
+                "plan_review_source_hash": plan_review.source_hash,
+                "actual_solution_plan_hash": actual_hash,
+                "plan_review_ref": FRONTDESK_PLAN_REVIEW_REF,
+            },
+        )
+    return None
+
+
 def _draft_skill_spec_from_core_need(brief: CoreNeedBrief) -> SkillSpec:
     return SkillSpec(
         skill_id="frontdesk-governed-skill",
@@ -1100,6 +1178,7 @@ __all__ = [
     "FRONTDESK_FEASIBILITY_REPORT_REF",
     "FRONTDESK_GOAL_RUNTIME_LEDGER_REF",
     "FRONTDESK_GOAL_RUNTIME_SCHEMA_VERSION",
+    "FRONTDESK_PLAN_REVIEW_REF",
     "FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF",
     "FRONTDESK_SOLUTION_PLAN_REF",
     "FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF",

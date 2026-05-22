@@ -126,6 +126,7 @@ def test_frontdesk_v2_contracts_cover_expected_nodes(tmp_path) -> None:
     assert solution_visible["frontdesk/core_need_brief.json"] is True
     assert spec_visible["frontdesk/core_need_brief.json"] is True
     assert spec_visible["frontdesk/solution_plan.json"] is True
+    assert spec_visible["frontdesk/plan_review_001.json"] is False
     assert spec_visible["frontdesk/draft_skill_spec.yaml"] is True
     assert spec_visible["frontdesk/acceptance_criteria.yaml"] is True
 
