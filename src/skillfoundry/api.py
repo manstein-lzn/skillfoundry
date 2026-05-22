@@ -17,6 +17,7 @@ import zipfile
 
 from contextforge import ContextLedger, LedgerRecordNotFound
 
+from .acceptance import MANUAL_ACCEPTANCE_RECORD_REF
 from .contracts import BUILD_NODE_CONTRACT_REF, GOAL_CONTRACT_REF, VERIFICATION_GATE_REF
 from .frontdesk_loop import FrontDeskLoopResult, run_frontdesk_round
 from .frontdesk_schema import ConversationTurn, FrontDeskConfig, FrontDeskState, PlanReviewRecord
@@ -48,7 +49,7 @@ from .graph_v2 import GRAPH_V2_STATE_REF, run_verified_skillfoundry_v2_graph, va
 from .live_llm import DEFAULT_FRONTDESK_MODEL
 from .offline import OfflineWorkerMode, build_offline, read_final_report
 from .registry import APPROVAL_APPROVED, LocalSkillRegistry, QUARANTINE_NONE
-from .schema import JsonValue, RegistryEntry, ensure_json_compatible, sha256_file
+from .schema import JsonValue, RegistryEntry, ensure_json_compatible, sha256_file, utc_now
 from .security import PathSecurityError, assert_under_root, resolve_under_root, validate_relative_path
 from .verification_bridge import CONTEXTFORGE_VERIFICATION_RESULT_REF
 from .workspace import JOB_ID_RE, JobWorkspace, initialize_job_workspace
@@ -628,6 +629,142 @@ class SkillFoundryAPI:
             }
         return ensure_json_compatible(payload)  # type: ignore[return-value]
 
+    def get_human_review_status(self, job_id: str) -> dict[str, JsonValue]:
+        """Return the governed human-review workbench status for one job."""
+
+        safe_job_id = self._validate_job_id(job_id)
+        job_root = self._require_job_root(safe_job_id)
+        workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
+        graph_v2_state_read = self._read_optional_json_ref_status(workspace, GRAPH_V2_STATE_REF)
+        graph_v2_state = graph_v2_state_read.payload if graph_v2_state_read.valid else None
+        return ensure_json_compatible(
+            {
+                "schema_version": "skillfoundry.api.human_review_status.v1",
+                "job_id": safe_job_id,
+                "build_path": self._build_path_summary(safe_job_id),
+                "graph_v2_state_ref": GRAPH_V2_STATE_REF,
+                "graph_v2_state_valid": graph_v2_state_read.valid
+                and self._validate_optional_graph_v2_state(graph_v2_state),
+                "human_review": self._graph_v2_human_review_summary(workspace, graph_v2_state),
+                "links": {
+                    "contextforge": f"/jobs/{safe_job_id}/contextforge",
+                    "decision": f"/jobs/{safe_job_id}/human-review",
+                },
+            }
+        )  # type: ignore[return-value]
+
+    def record_human_review_decision(self, job_id: str, payload: Mapping[str, Any]) -> dict[str, JsonValue]:
+        """Record a human-review decision without bypassing verifier or registry gates."""
+
+        if not isinstance(payload, Mapping):
+            raise APIError(400, "invalid_json", "request body must be a JSON object")
+        safe_job_id = self._validate_job_id(job_id)
+        job_root = self._require_job_root(safe_job_id)
+        workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
+        graph_v2_state_read = self._read_optional_json_ref_status(workspace, GRAPH_V2_STATE_REF)
+        graph_v2_state = graph_v2_state_read.payload if graph_v2_state_read.valid else None
+        if not graph_v2_state_read.exists or not graph_v2_state_read.valid or not self._validate_optional_graph_v2_state(graph_v2_state):
+            raise APIError(409, "human_review_not_available", "valid graph v2 state is required for human review")
+        assert isinstance(graph_v2_state, dict)
+        human_review = self._graph_v2_human_review_summary(workspace, graph_v2_state)
+        if human_review.get("required") is not True:
+            raise APIError(409, "human_review_not_required", "this job is not waiting for human review")
+
+        decision = payload.get("decision")
+        if decision not in {"approve", "reject", "request_repair", "redesign"}:
+            raise APIError(
+                400,
+                "invalid_human_review_decision",
+                "decision must be approve, reject, request_repair, or redesign",
+            )
+        reviewer_id = str(payload.get("reviewer_id") or "").strip()
+        reviewer_role = str(payload.get("reviewer_role") or "").strip()
+        if not reviewer_id or not reviewer_role:
+            raise APIError(400, "human_reviewer_required", "reviewer_id and reviewer_role are required")
+        if _looks_like_agent_reviewer(reviewer_id) or _looks_like_agent_reviewer(reviewer_role):
+            raise APIError(403, "human_reviewer_required", "human review decisions require a human reviewer")
+        reason = str(payload.get("reason") or "").strip()
+        if not reason:
+            raise APIError(400, "human_review_reason_required", "reason is required")
+
+        refs = graph_v2_state.get("refs") if isinstance(graph_v2_state.get("refs"), Mapping) else {}
+        request_ref = _mapping_str(refs, "human_review_request") or "human_review/request.json"
+        request_status = self._read_optional_json_ref_status(workspace, request_ref)
+        if not request_status.exists or not request_status.valid:
+            raise APIError(409, "human_review_request_missing", "human review request artifact is missing or invalid")
+        request_hash = sha256_file(workspace.resolve_path(request_ref, must_exist=True))
+        hashes = graph_v2_state.get("hashes") if isinstance(graph_v2_state.get("hashes"), Mapping) else {}
+        expected_request_hash = _mapping_str(hashes, "human_review_request")
+        if expected_request_hash is not None and expected_request_hash != request_hash:
+            raise APIError(
+                409,
+                "human_review_request_stale",
+                "human review request hash does not match graph v2 state",
+            )
+
+        created_at = str(payload.get("created_at") or utc_now())
+        manual_record_summary: dict[str, JsonValue] | None = None
+        covered_criterion_ids = _manual_acceptance_covered_ids(payload)
+        if decision == "approve" and covered_criterion_ids:
+            manual_record_summary = self._write_manual_acceptance_record(
+                workspace,
+                reviewer_id=reviewer_id,
+                reviewer_role=reviewer_role,
+                reason=reason,
+                covered_criterion_ids=covered_criterion_ids,
+                created_at=created_at,
+            )
+
+        decision_ref = "human_review/decision.json"
+        decision_payload: dict[str, Any] = {
+            "schema_version": "skillfoundry.human_review_decision.v1",
+            "decision_id": f"{safe_job_id}:human-review-decision",
+            "job_id": safe_job_id,
+            "decision": decision,
+            "reviewer_id": reviewer_id,
+            "reviewer_role": reviewer_role,
+            "reason": reason,
+            "created_at": created_at,
+            "request_ref": request_ref,
+            "request_hash": request_hash,
+            "next_action": _human_review_decision_next_action(str(decision), manual_record_summary is not None),
+            "trust_boundaries": {
+                "human_authority_recorded": True,
+                "agent_reviewer_is_not_human_authority": True,
+                "does_not_bypass_verifier_or_registry": True,
+                "raw_prompt_included": False,
+                "raw_conversation_included": False,
+                "raw_transcript_included": False,
+                "raw_payload_included": False,
+            },
+        }
+        if manual_record_summary is not None:
+            decision_payload["manual_acceptance_record"] = manual_record_summary
+        self._write_json_workspace_ref(workspace, decision_ref, decision_payload)
+        decision_hash = sha256_file(workspace.resolve_path(decision_ref, must_exist=True))
+        self._update_graph_state_human_review_decision(
+            workspace,
+            graph_v2_state,
+            decision_ref=decision_ref,
+            decision_hash=decision_hash,
+            decision=str(decision),
+            manual_record_summary=manual_record_summary,
+        )
+        result = {
+            "schema_version": "skillfoundry.api.human_review_decision.v1",
+            "job_id": safe_job_id,
+            "decision": decision,
+            "decision_ref": decision_ref,
+            "decision_hash": decision_hash,
+            "manual_acceptance_record": manual_record_summary,
+            "human_review": self._graph_v2_human_review_summary(
+                workspace,
+                self._read_optional_json_ref(workspace, GRAPH_V2_STATE_REF),
+            ),
+            "raw_payload_included": False,
+        }
+        return ensure_json_compatible(result)  # type: ignore[return-value]
+
     def query_registry(
         self,
         *,
@@ -943,6 +1080,22 @@ class SkillFoundryAPI:
 
             if method == "GET" and len(route) == 3 and route[0] == "jobs" and route[2] == "contextforge":
                 return self._json_response(self.get_contextforge_status(route[1]))
+
+            if method == "GET" and len(route) == 3 and route[0] == "jobs" and route[2] == "human-review":
+                return self._json_response(self.get_human_review_status(route[1]))
+
+            if method == "POST" and len(route) == 3 and route[0] == "jobs" and route[2] == "human-review":
+                content_type = _header(headers, "content-type")
+                payload = self._parse_body(body, content_type=content_type)
+                result = self.record_human_review_decision(route[1], payload)
+                if content_type.startswith("application/x-www-form-urlencoded"):
+                    return APIHTTPResult(
+                        303,
+                        "text/plain; charset=utf-8",
+                        b"",
+                        headers=(("Location", f"/jobs/{result['job_id']}/human-review"),),
+                    )
+                return self._json_response(result)
 
             if method == "GET" and len(route) == 3 and route[0] == "jobs" and route[2] == "package.zip":
                 data, filename = self.download_approved_package(route[1])
@@ -1321,6 +1474,127 @@ class SkillFoundryAPI:
             payload["error_code"] = "unreadable"
         return ensure_json_compatible(payload)  # type: ignore[return-value]
 
+    def _write_json_workspace_ref(
+        self,
+        workspace: JobWorkspace,
+        ref: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        safe_ref = validate_relative_path(ref)
+        root = Path(workspace.root).resolve(strict=True)
+        path = root.joinpath(*safe_ref.parts)
+        assert_under_root(root, path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        compatible = ensure_json_compatible(dict(payload))
+        path.write_text(json.dumps(compatible, sort_keys=True, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def _write_manual_acceptance_record(
+        self,
+        workspace: JobWorkspace,
+        *,
+        reviewer_id: str,
+        reviewer_role: str,
+        reason: str,
+        covered_criterion_ids: list[str],
+        created_at: str,
+    ) -> dict[str, JsonValue]:
+        try:
+            acceptance_hash = sha256_file(workspace.resolve_path("acceptance_criteria.yaml", must_exist=True))
+        except Exception as exc:
+            raise APIError(
+                409,
+                "acceptance_criteria_missing",
+                f"acceptance_criteria.yaml is required before manual acceptance can be recorded: {exc}",
+            ) from exc
+        payload = {
+            "schema_version": "skillfoundry.manual_acceptance_record.v1",
+            "reviewer_id": reviewer_id,
+            "reviewer_role": reviewer_role,
+            "decision": "approved",
+            "reason": reason,
+            "covered_criterion_ids": covered_criterion_ids,
+            "source_hash": acceptance_hash,
+            "created_at": created_at,
+        }
+        self._write_json_workspace_ref(workspace, MANUAL_ACCEPTANCE_RECORD_REF, payload)
+        return {
+            "ref": MANUAL_ACCEPTANCE_RECORD_REF,
+            "sha256": sha256_file(workspace.resolve_path(MANUAL_ACCEPTANCE_RECORD_REF, must_exist=True)),
+            "covered_criterion_ids": covered_criterion_ids,
+        }
+
+    def _update_graph_state_human_review_decision(
+        self,
+        workspace: JobWorkspace,
+        state: Mapping[str, Any],
+        *,
+        decision_ref: str,
+        decision_hash: str,
+        decision: str,
+        manual_record_summary: Mapping[str, Any] | None,
+    ) -> None:
+        next_state = dict(state)
+        refs = dict(next_state.get("refs", {})) if isinstance(next_state.get("refs"), Mapping) else {}
+        refs["human_review_decision"] = decision_ref
+        if manual_record_summary is not None and isinstance(manual_record_summary.get("ref"), str):
+            refs["manual_acceptance_record"] = str(manual_record_summary["ref"])
+        hashes = dict(next_state.get("hashes", {})) if isinstance(next_state.get("hashes"), Mapping) else {}
+        hashes["human_review_decision"] = decision_hash
+        if manual_record_summary is not None and isinstance(manual_record_summary.get("sha256"), str):
+            hashes["manual_acceptance_record"] = str(manual_record_summary["sha256"])
+        contextforge = (
+            dict(next_state.get("contextforge", {})) if isinstance(next_state.get("contextforge"), Mapping) else {}
+        )
+        contextforge.update(
+            {
+                "human_review_decision": decision,
+                "human_review_decision_ref": decision_ref,
+                "human_review_decision_recorded": True,
+            }
+        )
+        if manual_record_summary is not None:
+            contextforge["manual_acceptance_record_ref"] = str(manual_record_summary.get("ref") or "")
+        next_state.update(
+            {
+                "refs": refs,
+                "hashes": hashes,
+                "contextforge": contextforge,
+            }
+        )
+        validate_v2_graph_state(next_state)
+        self._write_json_workspace_ref(workspace, GRAPH_V2_STATE_REF, next_state)
+
+    def _human_review_decision_summary(
+        self,
+        workspace: JobWorkspace,
+        decision_ref: str,
+    ) -> dict[str, JsonValue] | None:
+        status = self._artifact_ref_status(workspace, decision_ref)
+        if status.get("exists") is not True:
+            return None
+        read = self._read_optional_json_ref_status(workspace, decision_ref)
+        summary: dict[str, JsonValue] = {
+            "ref": decision_ref,
+            "exists": True,
+            "valid_json": read.valid,
+            "sha256": status.get("sha256"),
+        }
+        if read.error_code is not None:
+            summary["error_code"] = read.error_code
+        if read.valid and read.payload is not None:
+            manual = read.payload.get("manual_acceptance_record")
+            summary.update(
+                {
+                    "decision": _json_str(read.payload.get("decision")),
+                    "reviewer_id": _json_str(read.payload.get("reviewer_id")),
+                    "reviewer_role": _json_str(read.payload.get("reviewer_role")),
+                    "next_action": _json_str(read.payload.get("next_action")),
+                    "manual_acceptance_record": manual if isinstance(manual, Mapping) else None,
+                    "raw_payload_included": False,
+                }
+            )
+        return ensure_json_compatible(summary)  # type: ignore[return-value]
+
     def _contextforge_ledger_summary(
         self,
         workspace: JobWorkspace,
@@ -1577,8 +1851,10 @@ class SkillFoundryAPI:
         refs = state.get("refs") if isinstance(state.get("refs"), Mapping) else {}
         assert isinstance(refs, Mapping)
         request_ref = _mapping_str(refs, "human_review_request") if required else None
+        decision_ref = _mapping_str(refs, "human_review_decision") or "human_review/decision.json"
         contextforge = state.get("contextforge") if isinstance(state.get("contextforge"), Mapping) else {}
         assert isinstance(contextforge, Mapping)
+        decision = self._human_review_decision_summary(workspace, decision_ref)
         return ensure_json_compatible(
             {
                 "required": required,
@@ -1587,7 +1863,10 @@ class SkillFoundryAPI:
                 "next_route": next_route,
                 "last_verification_status": _json_str(contextforge.get("last_verification_status")),
                 "last_repair_attempt_id": _json_str(contextforge.get("last_repair_attempt_id")),
+                "request_id": _json_str(contextforge.get("human_review_request_id")),
+                "reason_code": _json_str(contextforge.get("human_review_reason_code")),
                 "request": self._artifact_ref_status(workspace, request_ref) if request_ref else None,
+                "decision": decision,
                 "raw_prompt_included": False,
                 "raw_payload_included": False,
             }
@@ -2580,6 +2859,38 @@ def _frontdesk_review_actions(state: FrontDeskState | None) -> list[dict[str, Js
             "href": f"/frontdesk/jobs/{state.job_id}/plan-review",
         },
     ]
+
+
+def _manual_acceptance_covered_ids(payload: Mapping[str, Any]) -> list[str]:
+    manual = payload.get("manual_acceptance")
+    if isinstance(manual, Mapping):
+        ids = _coerce_string_list(manual.get("covered_criterion_ids"))
+        if ids:
+            return ids
+    return _coerce_string_list(payload.get("covered_criterion_ids"))
+
+
+def _looks_like_agent_reviewer(value: str) -> bool:
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    if not normalized:
+        return True
+    blocked = {"agent", "ai", "automated", "bot", "codex", "gpt", "llm", "model", "system"}
+    parts = {part for part in normalized.split("_") if part}
+    return bool(parts & blocked)
+
+
+def _human_review_decision_next_action(decision: str, manual_acceptance_recorded: bool) -> str:
+    if decision == "approve" and manual_acceptance_recorded:
+        return "manual_acceptance_recorded_rebuild_required"
+    if decision == "approve":
+        return "approved_no_registry_bypass"
+    if decision == "reject":
+        return "reject"
+    if decision == "request_repair":
+        return "request_repair"
+    if decision == "redesign":
+        return "redesign"
+    return "human_review_recorded"
 
 
 def _frontdesk_report_index(ref: str | None) -> int | None:

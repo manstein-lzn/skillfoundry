@@ -266,7 +266,7 @@ verified offline build path 已经存在。
 | `src/skillfoundry/frontdesk_goal_runtime.py` | implemented | Core Need、Solution Planner、Spec Auditor Goal Harness slices 已存在，默认 no-key Front Desk 路径已接入；Front Desk-generated criteria 已映射到 deterministic verifier checks。 | 后续保持 raw conversation forbidden 和 approved-review/freeze gate。 |
 | `src/skillfoundry/verification_bridge.py` | implemented | SkillFoundry verifier / acceptance coverage 能桥接到 ContextForge VerificationResult，并消费 Front Desk deterministic verifier check IDs。 | 加强语义验收和 post-verifier evidence hash binding。 |
 | `src/skillfoundry/registry.py` | implemented / partial | Registry 已要求 verifier / coverage / ContextForge evidence，拒绝 self-report/stale/fabricated evidence；默认 Front Desk frozen job 可通过 graph v2 API happy path register。 | 继续覆盖 repair/human-review/manual acceptance 场景。 |
-| API/UI | implemented / partial | API 可以创建 Front Desk job、plan review，并通过 `/frontdesk/jobs/{job_id}/build` 运行 graph v2 verified build/registry happy path；ContextForge status 暴露 v2 refs/status 摘要；旧 `POST /jobs` 作为 legacy offline compatibility route 保留且默认禁用，需要 constructor flag、env var 或 CLI flag 显式开启。 | 继续完善 UI 的 registry outcome、repair/human-review route 和 evidence 摘要，并推进 legacy route 最终退役。 |
+| API/UI | implemented / partial | API 可以创建 Front Desk job、plan review，并通过 `/frontdesk/jobs/{job_id}/build` 运行 graph v2 verified build/registry happy path；ContextForge status 暴露 v2 refs/status 摘要；human-review 已有 request / decision artifact 和 API decision endpoint；旧 `POST /jobs` 作为 legacy offline compatibility route 保留且默认禁用，需要 constructor flag、env var 或 CLI flag 显式开启。 | 继续完善 UI 的 registry outcome、repair/human-review decision 和 evidence 摘要，并推进 legacy route 最终退役。 |
 | live provider / real Codex SDK thread | future opt-in | 当前不是默认路径，也不是生产承诺。 | 等离线 v2 主路径稳定后做内部 pilot，并记录 usage unavailable reason / telemetry。 |
 
 ## 3. ContextForge 当前能力边界
@@ -1101,7 +1101,7 @@ Registry 只批准当前 artifacts 与 verifier、acceptance coverage、ContextF
 
 ### Phase 7: API/UI productization
 
-状态：部分完成；Front Desk no-key 默认路径和 graph v2 build/registry happy path 已接入，repair/human-review/UI evidence 仍需收敛。
+状态：部分完成；Front Desk no-key 默认路径和 graph v2 build/registry happy path 已接入，repair evidence、human-review request/decision artifact 和 API refs-only 摘要已存在；更完整的 UI evidence 仍需收敛。
 
 要求：
 
@@ -1446,7 +1446,7 @@ ContextForge 当前不能被 SkillFoundry 宣称已经具备的能力：
 - 旧 `POST /jobs` 离线 builder 兼容路线仍存在；它已经默认 opt-in 隔离，并在 status 中标记为 `legacy_offline_compatibility`，避免新用户误用为产品主入口。
 - 旧 `graph.py`、`context.py`、`worker.py`、`llm_builder.py` 仍存在，需要隔离或退役。
 - API/UI 对 repair、human-review、registry evidence 的体验还不完整。
-- human-review 是路由和状态，不是完整运营工作台。
+- human-review 已从纯 route/status 前进到 request / decision artifacts 和 API decision endpoint；它还不是完整运营工作台或自动重新调度系统。
 - live provider / real Codex SDK thread 仍是 opt-in future pilot。
 - 生产级 auth、tenant、queue、sandbox、secrets、monitoring、deployment 都没有完成。
 
@@ -2191,7 +2191,7 @@ residual_risks:
   - SkillFoundry 仍处于 mixed migration；graph_v2 还不是唯一产品 build / verify / repair / registry route。
   - `seed_goal_harness_context()` 中 raw Front Desk conversation 仍有过渡风险；在改为默认 `prompt_include=False` 前，只能声称由 forbidden selector + leakage tests fail-closed 兜底，不能声称结构上不可能进入 prompt。
   - 审查时 Registry gate 还不是唯一首次批准点；后续实现更新已记录 registry timing test 和 graph v2 gate 收敛。
-  - Human review 当前仍是 route/status，不是完整人工审查闭环；internal pilot 前需要补 request / decision / manual authority / registry binding workbench。
+  - 审查时 Human review 仍是 route/status；后续实现更新已记录 request / decision artifact、manual acceptance record 写入和 API decision endpoint。
 status: approved for use as canonical v2 refactor execution entry; remaining items are implementation followups, not document blockers
 ```
 
@@ -2214,10 +2214,10 @@ verification:
   - tests/test_goal_harness_verified_runtime.py tests/test_graph_v2_runtime.py => 23 passed.
   - tests/test_graph_v2.py tests/test_graph_v2_runtime.py tests/test_goal_harness_verified_runtime.py tests/test_registry.py tests/test_verification_bridge.py tests/test_frontdesk_api.py tests/test_api.py => 106 passed.
   - PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_graph_v2_runtime.py tests/test_goal_harness_verified_runtime.py tests/test_goal_harness_slice.py tests/test_frontdesk_goal_runtime.py => 39 passed.
-  - full suite: .venv/bin/python -m pytest -q => 418 passed.
+  - full suite: .venv/bin/python -m pytest -q => 421 passed.
 remaining_risks:
   - SkillFoundry still has mixed migration and legacy modules; graph_v2 is the product path but old modules still exist as compatibility/historical surfaces.
-  - Human review remains route/status rather than a full workbench.
+  - Human review now has request / decision artifacts and an API decision endpoint, but remains short of a full operations workbench.
   - Live provider / real Codex SDK pilot remains future opt-in after offline canonical route, evidence UI, and human-review operations are stronger.
 ```
 
@@ -2242,4 +2242,28 @@ residual_risks:
   - Individual tamper variants for verifier hash/id and coverage hash/id are covered by shared preflight code but not each represented as separate focused tests.
   - Some final current-package validation remains in LocalSkillRegistry.add_verified(), which is acceptable because it validates before writing internally.
 status: approved for follow-up commit and push.
+```
+
+WP3 human-review workbench 实现更新：
+
+```text
+date: 2026-05-22
+scope: WP3 governed human-review request and decision slice
+implemented:
+  - canonical run_verified_skillfoundry_v2_graph() now uses a workspace-aware human-review node that writes human_review/request.json.
+  - human review request artifact records decision options, authority requirement, governed evidence refs/hashes, verification/repair status, and raw-content exclusion flags.
+  - GET /jobs/{job_id}/human-review returns refs-only request/decision status.
+  - POST /jobs/{job_id}/human-review records human_review/decision.json for approve/reject/request_repair/redesign decisions.
+  - API rejects agent-like reviewer identities/roles for human-review decisions.
+  - API rejects stale/tampered human_review/request.json before writing decision or manual acceptance artifacts.
+  - approve decisions with covered_criterion_ids can write qa/manual_acceptance_record.json for later acceptance coverage and registry evidence checks.
+trust_boundary:
+  - a human-review decision records human authority and next action only; it does not bypass verifier, acceptance coverage, ContextForge verification, or registry gate.
+remaining_risks:
+  - request/decision API exists, but richer UI/operator workflow and automatic post-decision scheduling remain future work.
+  - manual acceptance becomes authoritative only after later coverage and registry checks consume the record.
+verification:
+  - exact focused human-review gates => 4 passed.
+  - tests/test_graph_v2_runtime.py tests/test_api.py => 48 passed.
+  - full suite: .venv/bin/python -m pytest -q => 421 passed.
 ```

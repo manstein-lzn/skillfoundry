@@ -45,6 +45,14 @@ skillfoundry serve --runs-root runs --allow-legacy-offline-jobs
   repair, human-review, cache, worker, verification, and registry evidence
   summaries. It must not inline raw prompts, raw Front Desk conversation,
   worker transcripts, provider payloads, or package content.
+- `GET /jobs/<job_id>/human-review`: return the governed human-review request
+  and decision refs for one graph v2 job without inlining raw evidence.
+- `POST /jobs/<job_id>/human-review`: record a human operator decision
+  (`approve`, `reject`, `request_repair`, or `redesign`). When an approved
+  manual acceptance body includes `covered_criterion_ids`, the API writes
+  `qa/manual_acceptance_record.json` for later verifier / acceptance coverage /
+  registry checks. This endpoint records authority; it does not bypass the
+  verifier, acceptance coverage, ContextForge verification, or registry gate.
 - `GET /registry`: return approved, non-quarantined registry entries by
   default.
 - `GET /jobs/<job_id>/package.zip`: download a zip archive containing only

@@ -210,6 +210,7 @@ def build_skillfoundry_v2_graph(
     verify_node_callable: V2Node | None = None,
     repair_node_callable: V2Node | None = None,
     registry_gate_callable: V2Node | None = None,
+    human_review_node_callable: V2Node | None = None,
 ) -> StateGraph:
     """Build the v2 refs-only LangGraph spine."""
 
@@ -220,7 +221,7 @@ def build_skillfoundry_v2_graph(
     graph.add_node(V2Stage.ROUTE_AFTER_VERIFICATION.value, route_after_verification_node)
     graph.add_node(V2Stage.REPAIR_GOAL_NODE.value, repair_node_callable or repair_goal_node)
     graph.add_node(V2Stage.REGISTRY_GATE.value, registry_gate_callable or registry_gate_node)
-    graph.add_node(V2Stage.HUMAN_REVIEW.value, human_review_node)
+    graph.add_node(V2Stage.HUMAN_REVIEW.value, human_review_node_callable or human_review_node)
     graph.add_node(V2Stage.REDESIGN.value, redesign_node)
     graph.add_node(V2Stage.REJECT.value, reject_node)
     graph.add_node(V2Stage.EMIT_REPORT.value, emit_report_node)
@@ -263,6 +264,7 @@ def compile_skillfoundry_v2_graph(
     verify_node_callable: V2Node | None = None,
     repair_node_callable: V2Node | None = None,
     registry_gate_callable: V2Node | None = None,
+    human_review_node_callable: V2Node | None = None,
     checkpointer: Any | None = None,
     interrupt_before: list[str] | str | None = None,
     interrupt_after: list[str] | str | None = None,
@@ -275,6 +277,7 @@ def compile_skillfoundry_v2_graph(
         verify_node_callable=verify_node_callable,
         repair_node_callable=repair_node_callable,
         registry_gate_callable=registry_gate_callable,
+        human_review_node_callable=human_review_node_callable,
     ).compile(
         checkpointer=checkpointer,
         interrupt_before=interrupt_before,
@@ -322,6 +325,10 @@ def run_verified_skillfoundry_v2_graph(
             runs_path,
             registry_path=registry_path,
             version=version,
+            created_at=created_at,
+        ),
+        human_review_node_callable=build_human_review_node(
+            runs_path,
             created_at=created_at,
         ),
     )
@@ -846,6 +853,57 @@ def human_review_node(state: SkillFoundryV2State) -> SkillFoundryV2State:
     return _validated_update(state, update)
 
 
+def build_human_review_node(
+    runs_root: str | Path,
+    *,
+    created_at: str | None = None,
+) -> V2Node:
+    """Return a human-review node that writes a governed request artifact."""
+
+    runs_path = Path(runs_root)
+
+    def _node(state: SkillFoundryV2State) -> SkillFoundryV2State:
+        validate_v2_graph_state(state)
+        job_id = _job_id(state)
+        workspace = _graph_workspace(runs_path, job_id)
+        request_ref = "human_review/request.json"
+        request_payload = _human_review_request_payload(
+            workspace,
+            state,
+            request_ref=request_ref,
+            created_at=created_at or utc_now(),
+        )
+        workspace.resolve_path("human_review").mkdir(parents=True, exist_ok=True)
+        _write_json_ref(workspace, request_ref, request_payload)
+        refs = _merge_refs(state, human_review_request=request_ref)
+        hashes = dict(state.get("hashes", {}))
+        hashes["human_review_request"] = sha256_file(workspace.resolve_path(request_ref, must_exist=True))
+        contextforge = dict(state.get("contextforge", {})) if isinstance(state.get("contextforge"), Mapping) else {}
+        contextforge.update(
+            {
+                "human_review_request_id": str(request_payload["request_id"]),
+                "human_review_request_ref": request_ref,
+                "human_review_reason_code": str(request_payload["reason_code"]),
+            }
+        )
+        update: SkillFoundryV2State = {
+            "schema_version": _STATE_SCHEMA_VERSION,
+            "job_id": job_id,
+            "stage": V2Stage.HUMAN_REVIEW.value,
+            "status": V2Status.HUMAN_REVIEW_REQUIRED.value,
+            "attempt_count": int(state.get("attempt_count", 0)),
+            "attempt_limit": int(state.get("attempt_limit", 1)),
+            "refs": refs,
+            "hashes": hashes,
+            "contextforge": contextforge,
+            "human_review_required": True,
+            "next_route": V2Route.CONTINUE.value,
+        }
+        return _validated_update(state, update)
+
+    return _node
+
+
 def redesign_node(state: SkillFoundryV2State) -> SkillFoundryV2State:
     refs = _merge_refs(state, redesign_report="contextforge/redesign_required.json")
     update: SkillFoundryV2State = {
@@ -881,6 +939,94 @@ def emit_report_node(state: SkillFoundryV2State) -> SkillFoundryV2State:
         "next_route": V2Route.CONTINUE.value,
     }
     return _validated_update(state, update)
+
+
+def _human_review_request_payload(
+    workspace: JobWorkspace,
+    state: Mapping[str, Any],
+    *,
+    request_ref: str,
+    created_at: str,
+) -> dict[str, JsonValue]:
+    contextforge = state.get("contextforge") if isinstance(state.get("contextforge"), Mapping) else {}
+    refs = state.get("refs") if isinstance(state.get("refs"), Mapping) else {}
+    hashes = state.get("hashes") if isinstance(state.get("hashes"), Mapping) else {}
+    assert isinstance(contextforge, Mapping)
+    assert isinstance(refs, Mapping)
+    assert isinstance(hashes, Mapping)
+    evidence_refs = _human_review_evidence_refs(refs)
+    payload = {
+        "schema_version": "skillfoundry.human_review_request.v1",
+        "request_id": f"{workspace.job_id}:human-review:{int(state.get('attempt_count', 0))}",
+        "job_id": workspace.job_id,
+        "status": "open",
+        "reason_code": _human_review_reason_code(state, contextforge),
+        "created_at": created_at,
+        "request_ref": request_ref,
+        "stage": _optional_str(state.get("stage")),
+        "graph_status": _optional_str(state.get("status")),
+        "next_route": _optional_str(state.get("next_route")),
+        "attempt_count": state.get("attempt_count") if isinstance(state.get("attempt_count"), int) else None,
+        "attempt_limit": state.get("attempt_limit") if isinstance(state.get("attempt_limit"), int) else None,
+        "latest_verification_status": _optional_str(contextforge.get("last_verification_status")),
+        "latest_goal_decision": _optional_str(contextforge.get("last_goal_decision")),
+        "last_repair_attempt_id": _optional_str(contextforge.get("last_repair_attempt_id")),
+        "decision_options": ["approve", "reject", "request_repair", "redesign"],
+        "required_authority": "human_operator",
+        "evidence_refs": evidence_refs,
+        "evidence_hashes": {
+            key: value
+            for key, value in hashes.items()
+            if isinstance(key, str) and isinstance(value, str) and key in evidence_refs
+        },
+        "trust_boundaries": {
+            "human_authority_required": True,
+            "agent_reviewer_is_not_human_authority": True,
+            "worker_self_report_is_not_acceptance": True,
+            "raw_prompt_included": False,
+            "raw_conversation_included": False,
+            "raw_transcript_included": False,
+            "raw_payload_included": False,
+        },
+    }
+    compatible = ensure_json_compatible(payload)
+    if not isinstance(compatible, dict):
+        raise V2StateValidationError("human review request payload must be a JSON object")
+    return compatible  # type: ignore[return-value]
+
+
+def _human_review_evidence_refs(refs: Mapping[str, Any]) -> dict[str, str]:
+    allowed = {
+        "acceptance_coverage_result",
+        "contextforge_verification_result",
+        "goal_runtime_ledger",
+        "goal_runtime_result",
+        "repair_attempt",
+        "repair_graph_state",
+        "repair_instructions",
+        "repair_runtime_result",
+        "skillfoundry_verification_result",
+        "verified_runtime_result",
+        "verification_result",
+    }
+    result: dict[str, str] = {}
+    for key, value in refs.items():
+        if not isinstance(key, str) or key not in allowed or not isinstance(value, str) or not value:
+            continue
+        result[key] = value
+    return result
+
+
+def _human_review_reason_code(state: Mapping[str, Any], contextforge: Mapping[str, Any]) -> str:
+    verification_status = _optional_str(contextforge.get("last_verification_status"))
+    if verification_status == "failed" and _attempts_exhausted(state):
+        return "verification_failed_attempt_limit"
+    if verification_status in {"review_required", "human_acceptance_required"}:
+        return verification_status
+    goal_decision = _optional_str(contextforge.get("last_goal_decision"))
+    if goal_decision in {"escalate", "stop"}:
+        return f"goal_decision_{goal_decision}"
+    return "human_review_required"
 
 
 def _validated_update(
@@ -1417,6 +1563,7 @@ __all__ = [
     "V2StateValidationError",
     "V2Status",
     "build_goal_node",
+    "build_human_review_node",
     "build_offline_goal_harness_node",
     "build_repair_goal_harness_node",
     "build_skillfoundry_v2_graph",

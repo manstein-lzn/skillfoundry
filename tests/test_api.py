@@ -25,6 +25,7 @@ from skillfoundry import (
     write_frontdesk_artifact,
     write_frontdesk_v2_contract_artifacts,
 )
+from skillfoundry.schema import sha256_file
 
 
 REQ_TEXT = """# API pytest skill
@@ -291,6 +292,206 @@ def test_get_job_contextforge_status_exposes_repair_and_human_review_refs_withou
     assert payload["human_review"]["raw_prompt_included"] is False
     assert marker not in body_text
     assert "worker_transcript" not in body_text
+
+
+def test_human_review_decision_records_artifacts_without_raw_content(tmp_path):
+    workspace = initialize_job_workspace(tmp_path / "runs", "api-human-review-decision")
+    workspace.resolve_path("contextforge").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("human_review").mkdir(parents=True, exist_ok=True)
+    marker = "RAW_HUMAN_REVIEW_MARKER_SHOULD_NOT_LEAK"
+    workspace.resolve_path("acceptance_criteria.yaml").write_text(
+        "criteria:\n- id: AC-MANUAL\n  description: Manual check.\n",
+        encoding="utf-8",
+    )
+    request_ref = "human_review/request.json"
+    workspace.resolve_path(request_ref).write_text(
+        json.dumps(
+            {
+                "schema_version": "skillfoundry.human_review_request.v1",
+                "request_id": "api-human-review-decision:human-review:2",
+                "job_id": workspace.job_id,
+                "status": "open",
+                "reason_code": "human_acceptance_required",
+                "raw": marker,
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state = {
+        "schema_version": "skillfoundry.graph_v2_state.v1",
+        "job_id": workspace.job_id,
+        "stage": "human_review",
+        "status": "human_review_required",
+        "attempt_count": 2,
+        "attempt_limit": 2,
+        "refs": {"human_review_request": request_ref},
+        "hashes": {"human_review_request": sha256_file(workspace.resolve_path(request_ref, must_exist=True))},
+        "contextforge": {
+            "last_verification_status": "human_acceptance_required",
+            "human_review_request_id": "api-human-review-decision:human-review:2",
+            "human_review_request_ref": request_ref,
+            "human_review_reason_code": "human_acceptance_required",
+        },
+        "human_review_required": True,
+        "next_route": "continue",
+    }
+    validate_v2_graph_state(state)
+    workspace.resolve_path(GRAPH_V2_STATE_REF).write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    api = make_api(tmp_path)
+
+    response = api.handle(
+        "POST",
+        f"/jobs/{workspace.job_id}/human-review",
+        body={
+            "decision": "approve",
+            "reviewer_id": "reviewer-001",
+            "reviewer_role": "qa_lead",
+            "reason": "Manual acceptance reviewed the listed criterion.",
+            "covered_criterion_ids": ["AC-MANUAL"],
+            "created_at": "2026-05-22T00:00:00Z",
+        },
+    )
+    payload = response_json(response)
+    body_text = response.body.decode("utf-8")
+
+    assert response.status == 200
+    assert payload["decision"] == "approve"
+    assert payload["decision_ref"] == "human_review/decision.json"
+    assert payload["manual_acceptance_record"]["ref"] == "qa/manual_acceptance_record.json"
+    assert workspace.resolve_path("human_review/decision.json", must_exist=True).is_file()
+    manual = json.loads(workspace.resolve_path("qa/manual_acceptance_record.json", must_exist=True).read_text())
+    assert manual["decision"] == "approved"
+    assert manual["covered_criterion_ids"] == ["AC-MANUAL"]
+    assert marker not in body_text
+
+    status_response = api.handle("GET", f"/jobs/{workspace.job_id}/contextforge")
+    status_payload = response_json(status_response)
+    status_text = status_response.body.decode("utf-8")
+
+    assert status_payload["human_review"]["decision"]["decision"] == "approve"
+    assert status_payload["human_review"]["decision"]["manual_acceptance_record"]["ref"] == "qa/manual_acceptance_record.json"
+    assert status_payload["human_review"]["raw_payload_included"] is False
+    assert marker not in status_text
+
+    human_review_response = api.handle("GET", f"/jobs/{workspace.job_id}/human-review")
+    human_review_payload = response_json(human_review_response)
+    human_review_text = human_review_response.body.decode("utf-8")
+
+    assert human_review_response.status == 200
+    assert human_review_payload["human_review"]["required"] is True
+    assert human_review_payload["human_review"]["decision"]["decision"] == "approve"
+    assert human_review_payload["human_review"]["decision"]["manual_acceptance_record"]["ref"] == "qa/manual_acceptance_record.json"
+    assert marker not in human_review_text
+
+
+def test_human_review_decision_rejects_stale_request_hash_before_side_effects(tmp_path):
+    workspace = initialize_job_workspace(tmp_path / "runs", "api-human-review-stale-request")
+    workspace.resolve_path("contextforge").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("human_review").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("acceptance_criteria.yaml").write_text(
+        "criteria:\n- id: AC-MANUAL\n  description: Manual check.\n",
+        encoding="utf-8",
+    )
+    request_ref = "human_review/request.json"
+    workspace.resolve_path(request_ref).write_text(
+        json.dumps(
+            {
+                "schema_version": "skillfoundry.human_review_request.v1",
+                "request_id": "api-human-review-stale-request:human-review:1",
+                "job_id": workspace.job_id,
+                "status": "open",
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    original_request_hash = sha256_file(workspace.resolve_path(request_ref, must_exist=True))
+    state = {
+        "schema_version": "skillfoundry.graph_v2_state.v1",
+        "job_id": workspace.job_id,
+        "stage": "human_review",
+        "status": "human_review_required",
+        "attempt_count": 1,
+        "attempt_limit": 1,
+        "refs": {"human_review_request": request_ref},
+        "hashes": {"human_review_request": original_request_hash},
+        "contextforge": {"last_verification_status": "human_acceptance_required"},
+        "human_review_required": True,
+        "next_route": "continue",
+    }
+    validate_v2_graph_state(state)
+    workspace.resolve_path(GRAPH_V2_STATE_REF).write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    workspace.resolve_path(request_ref, must_exist=True).write_text(
+        json.dumps({"schema_version": "skillfoundry.human_review_request.v1", "job_id": workspace.job_id, "tampered": True}),
+        encoding="utf-8",
+    )
+    api = make_api(tmp_path)
+
+    response = api.handle(
+        "POST",
+        f"/jobs/{workspace.job_id}/human-review",
+        body={
+            "decision": "approve",
+            "reviewer_id": "reviewer-001",
+            "reviewer_role": "qa_lead",
+            "reason": "Should fail before recording authority.",
+            "covered_criterion_ids": ["AC-MANUAL"],
+        },
+    )
+    payload = response_json(response)
+
+    assert response.status == 409
+    assert payload["error"]["code"] == "human_review_request_stale"
+    assert not workspace.resolve_path("human_review/decision.json").exists()
+    assert not (workspace.root / "qa" / "manual_acceptance_record.json").exists()
+
+
+def test_human_review_decision_rejects_agent_reviewer(tmp_path):
+    workspace = initialize_job_workspace(tmp_path / "runs", "api-human-review-agent-reject")
+    workspace.resolve_path("contextforge").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("human_review").mkdir(parents=True, exist_ok=True)
+    request_ref = "human_review/request.json"
+    workspace.resolve_path(request_ref).write_text(
+        json.dumps({"schema_version": "skillfoundry.human_review_request.v1", "job_id": workspace.job_id}),
+        encoding="utf-8",
+    )
+    state = {
+        "schema_version": "skillfoundry.graph_v2_state.v1",
+        "job_id": workspace.job_id,
+        "stage": "human_review",
+        "status": "human_review_required",
+        "attempt_count": 1,
+        "attempt_limit": 1,
+        "refs": {"human_review_request": request_ref},
+        "hashes": {"human_review_request": sha256_file(workspace.resolve_path(request_ref, must_exist=True))},
+        "contextforge": {"last_verification_status": "review_required"},
+        "human_review_required": True,
+        "next_route": "continue",
+    }
+    validate_v2_graph_state(state)
+    workspace.resolve_path(GRAPH_V2_STATE_REF).write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    api = make_api(tmp_path)
+
+    response = api.handle(
+        "POST",
+        f"/jobs/{workspace.job_id}/human-review",
+        body={
+            "decision": "reject",
+            "reviewer_id": "agent-reviewer",
+            "reviewer_role": "agent",
+            "reason": "Automated reviewers cannot provide human authority.",
+        },
+    )
+    payload = response_json(response)
+
+    assert response.status == 403
+    assert payload["error"]["code"] == "human_reviewer_required"
+    assert not workspace.resolve_path("human_review/decision.json").exists()
 
 
 def test_get_job_contextforge_status_rejects_invalid_graph_v2_state_as_canonical(tmp_path):

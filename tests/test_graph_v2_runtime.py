@@ -23,6 +23,7 @@ from skillfoundry import (
     V2StateValidationError,
     V2Status,
     build_offline_goal_harness_node,
+    build_human_review_node,
     build_repair_goal_harness_node,
     build_verified_goal_harness_node,
     build_verified_repair_verification_node,
@@ -250,6 +251,10 @@ def test_v2_graph_runs_verified_goal_harness_through_real_registry_gate(tmp_path
         registry_gate_callable=build_verified_registry_gate_node(
             runs_root,
             registry_path=registry_path,
+            created_at=CREATED_AT,
+        ),
+        human_review_node_callable=build_human_review_node(
+            runs_root,
             created_at=CREATED_AT,
         ),
     )
@@ -608,6 +613,10 @@ def test_v2_graph_reverifies_and_registers_after_repair(tmp_path: Path) -> None:
             registry_path=registry_path,
             created_at=CREATED_AT,
         ),
+        human_review_node_callable=build_human_review_node(
+            runs_root,
+            created_at=CREATED_AT,
+        ),
     )
 
     result = graph.invoke({"job_id": workspace.job_id, "attempt_limit": 2})
@@ -679,6 +688,10 @@ def test_v2_graph_does_not_register_failed_repair_verification(tmp_path: Path) -
             registry_path=registry_path,
             created_at=CREATED_AT,
         ),
+        human_review_node_callable=build_human_review_node(
+            runs_root,
+            created_at=CREATED_AT,
+        ),
     )
 
     result = graph.invoke({"job_id": workspace.job_id, "attempt_limit": 2})
@@ -694,6 +707,13 @@ def test_v2_graph_does_not_register_failed_repair_verification(tmp_path: Path) -
     assert "registry_decision" not in result["refs"]
     assert not registry_path.exists()
     assert not (workspace.root / "registry" / "decision.json").exists()
+    assert result["refs"]["human_review_request"] == "human_review/request.json"
+    request = json.loads(workspace.resolve_path("human_review/request.json", must_exist=True).read_text())
+    assert request["status"] == "open"
+    assert request["reason_code"] == "verification_failed_attempt_limit"
+    assert request["required_authority"] == "human_operator"
+    assert request["evidence_refs"]["repair_attempt"] == "attempts/002/repair_attempt.json"
+    assert request["trust_boundaries"]["raw_transcript_included"] is False
 
     verified_runtime = json.loads(
         workspace.resolve_path(VERIFIED_GOAL_RUNTIME_RESULT_REF, must_exist=True).read_text()
