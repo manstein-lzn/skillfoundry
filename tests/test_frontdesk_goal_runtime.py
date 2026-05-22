@@ -6,6 +6,7 @@ from contextforge import ContextLedger
 
 import skillfoundry
 from skillfoundry import (
+    AcceptanceCriteriaSet,
     FRONTDESK_ACCEPTANCE_CRITERIA_REF,
     FRONTDESK_CORE_NEED_BRIEF_REF,
     FRONTDESK_CORE_NEED_REPORT_REF,
@@ -224,6 +225,13 @@ def test_frontdesk_solution_planner_output_is_user_review_draft_not_acceptance(t
     assert solution_plan["acceptance_criteria_ref"] == FRONTDESK_ACCEPTANCE_CRITERIA_REF
     assert "Raw conversation is forbidden provenance only." in draft_spec
     assert "Builder context must be based on frozen governed artifacts" in acceptance
+    criteria = AcceptanceCriteriaSet.read_yaml_file(
+        workspace.resolve_path(FRONTDESK_ACCEPTANCE_CRITERIA_REF, must_exist=True)
+    )
+    assert [criterion.verifier_check_id for criterion in criteria.criteria] == [
+        "package_skill_md_present",
+        "contextforge_raw_frontdesk_conversation_excluded",
+    ]
     assert result.harness_result.worker_run.metadata["worker_self_report_is_not_acceptance"] is True
     assert result.harness_result.worker_run.metadata["raw_conversation_included"] is False
     assert result.runtime_result["refs"]["solution_plan"] == FRONTDESK_SOLUTION_PLAN_REF

@@ -17,11 +17,12 @@ from skillfoundry import (
     LocalSkillRegistry,
     OWNED_LLM_WORKER_OUTPUT_SCHEMA_VERSION,
     OwnedLLMSkillBuilderWorker,
+    SkillFoundryAPI,
     VERIFIED_GOAL_RUNTIME_RESULT_REF,
     run_offline_goal_harness,
     run_verified_offline_goal_harness,
 )
-from skillfoundry.workspace import initialize_job_workspace
+from skillfoundry.workspace import JobWorkspace, initialize_job_workspace
 
 
 CREATED_AT = "2026-05-22T00:00:00Z"
@@ -258,6 +259,63 @@ def test_verified_goal_harness_can_promote_owned_llm_worker_factory(tmp_path: Pa
     assert input_manifest["contextforge"]["prompt_view_ids"]
     assert workspace.resolve_path("attempts/001/owned_llm_worker_report.json", must_exist=True).is_file()
     assert client.calls
+
+
+def test_default_frontdesk_frozen_job_promotes_through_verified_goal_harness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    job_id = "frontdesk-verified-v2"
+    marker = "RAW_FRONTDESK_VERIFIED_RUNTIME_MARKER_SHOULD_NOT_LEAK"
+    api = SkillFoundryAPI(tmp_path / "runs")
+
+    created = api.create_frontdesk_job({"job_id": job_id, "message": f"Build a governed status skill. {marker}"})
+    assert created["status"] == "await_user_plan_review"
+
+    approved = api.review_frontdesk_plan(
+        job_id,
+        {"decision": "approve", "reason": "The governed offline plan is acceptable."},
+    )
+    assert approved["status"] == "route_to_build"
+    assert approved["state"]["readiness"] == "frozen"
+
+    workspace = JobWorkspace(root=tmp_path / "runs" / job_id, job_id=job_id)
+    criteria = AcceptanceCriteriaSet.read_yaml_file(
+        workspace.resolve_path("acceptance_criteria.yaml", must_exist=True)
+    )
+    assert [criterion.verifier_check_id for criterion in criteria.criteria] == [
+        "package_skill_md_present",
+        "contextforge_raw_frontdesk_conversation_excluded",
+    ]
+
+    result = run_verified_offline_goal_harness(
+        workspace,
+        registry_path=tmp_path / "registry.json",
+        created_at=CREATED_AT,
+    )
+
+    assert result.verifier_result.passed is True
+    assert result.acceptance_coverage_result.passed is True
+    assert result.contextforge_verification_result.status == "passed"
+    assert result.registry_entry.approval_status == APPROVAL_APPROVED
+    assert result.final_report["final_status"] == "registered"
+
+    verifier_checks = {check["name"]: check for check in result.verifier_result.checks}
+    assert verifier_checks["contextforge_raw_frontdesk_conversation_excluded"]["passed"] is True
+    coverage_by_id = {item.criterion_id: item for item in result.acceptance_coverage_result.items}
+    assert coverage_by_id["AC-002"].passed is True
+    assert coverage_by_id["AC-002"].verifier_check_id == "contextforge_raw_frontdesk_conversation_excluded"
+
+    ledger = ContextLedger.connect(workspace.resolve_path("contextforge/ledger.sqlite3", must_exist=True))
+    try:
+        context_view = ledger.get_context_view(result.goal_harness.runtime_result["ids"]["context_view_id"])
+        prompt_view, _blocks = ledger.get_prompt_view(result.goal_harness.runtime_result["ids"]["prompt_view_id"])
+    finally:
+        ledger.close()
+    assert f"{job_id}:raw_frontdesk_conversation" in context_view.forbidden_item_ids
+    assert f"{job_id}:raw_frontdesk_conversation" not in context_view.included_item_ids
+    assert marker not in "\n".join(message.content for message in prompt_view.messages)
 
 
 def test_verified_offline_goal_harness_fails_closed_before_runtime_without_acceptance_criteria(

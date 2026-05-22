@@ -8,8 +8,11 @@
 
 它不替代当前短期执行源：
 
-- `docs/DEVELOPMENT_ROADMAP.md`
 - `HANDOFF.md`
+- `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`
+- `docs/CONTEXTFORGE_GOAL_HARNESS_REBUILD_PLAN.md`
+
+当前状态说明：ContextForge Goal Harness MVP 已经在 `third_party/contextforge` 中存在，SkillFoundry 也已经落地一批 Goal Harness bridge/slice。本文仍作为长期愿景使用；具体 phase 编号、当前下一步和实现状态以 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md` 为准。
 
 它的作用是固定一个长期架构判断：ContextForge 不应该只是 SkillFoundry 的附属上下文模块，而应该演进为强 agent 的工作外骨骼；SkillFoundry 则应该成为这套外骨骼的第一个真实产品验证场。
 

@@ -10,6 +10,8 @@ from typing import Any, Mapping
 
 import yaml
 
+from contextforge import ContextLedger
+
 from .schema import (
     ArtifactManifest,
     ExecutionReport,
@@ -36,6 +38,11 @@ DEFAULT_REQUIRED_SKILL_SECTIONS = (
 )
 
 _ZERO_HASH = "0" * 64
+_CONTEXTFORGE_LEDGER_REF = "contextforge/ledger.sqlite3"
+_CONTEXTFORGE_STATE_REF = "contextforge/goal_harness_state.json"
+_RAW_FRONTDESK_CONVERSATION_REF = "frontdesk/conversation.jsonl"
+_RAW_FRONTDESK_CONTEXT_ITEM_SUFFIX = ":raw_frontdesk_conversation"
+_RAW_FRONTDESK_EXCLUSION_CHECK = "contextforge_raw_frontdesk_conversation_excluded"
 _HEADING_RE = re.compile(r"^(?P<level>#{1,6})\s+(?P<title>.+?)\s*#*\s*$")
 _MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\((?P<target>[^)\s]+)(?:\s+\"[^\"]*\")?\)")
 _URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
@@ -113,6 +120,7 @@ class Verifier:
         static_evidence = self._check_static_package(workspace, checks)
         self._check_package_paths(workspace, checks, package_errors)
         self._check_declared_reference_paths(workspace, checks, static_evidence.skill_text)
+        self._check_contextforge_raw_frontdesk_exclusion(workspace, checks)
         self._check_package_hash(checks, package_hash)
         self._check_sandbox_smoke(workspace, checks)
         llm_ref = self._record_llm_judge_signal(workspace, checks)
@@ -608,6 +616,152 @@ class Verifier:
                     True,
                     "declared local reference/script paths are relative and confined",
                     "package/SKILL.md",
+                )
+            )
+
+    def _check_contextforge_raw_frontdesk_exclusion(
+        self,
+        workspace: JobWorkspace,
+        checks: list[VerifierCheck],
+    ) -> None:
+        """Verify raw Front Desk conversation stayed out of build-visible context."""
+
+        raw_path = workspace.root.joinpath(*validate_relative_path(_RAW_FRONTDESK_CONVERSATION_REF).parts)
+        if not raw_path.is_file():
+            checks.append(
+                _check(
+                    _RAW_FRONTDESK_EXCLUSION_CHECK,
+                    True,
+                    "no raw Front Desk conversation artifact exists for this workspace",
+                    _RAW_FRONTDESK_CONVERSATION_REF,
+                )
+            )
+            return
+        try:
+            raw_path = workspace.resolve_path(_RAW_FRONTDESK_CONVERSATION_REF, must_exist=True)
+        except Exception as exc:
+            checks.append(
+                _check(
+                    _RAW_FRONTDESK_EXCLUSION_CHECK,
+                    False,
+                    f"raw Front Desk conversation artifact is present but unsafe: {exc}",
+                    _RAW_FRONTDESK_CONVERSATION_REF,
+                )
+            )
+            return
+
+        state_ref = _CONTEXTFORGE_STATE_REF
+        ledger_ref = _CONTEXTFORGE_LEDGER_REF
+        try:
+            state_payload = json.loads(workspace.resolve_path(state_ref, must_exist=True).read_text(encoding="utf-8"))
+        except Exception as exc:
+            checks.append(
+                _check(
+                    _RAW_FRONTDESK_EXCLUSION_CHECK,
+                    False,
+                    f"raw Front Desk conversation exists but ContextForge build state is missing or invalid: {exc}",
+                    state_ref,
+                )
+            )
+            return
+
+        contextforge_state = state_payload.get("contextforge") if isinstance(state_payload, dict) else None
+        context_view_id = (
+            contextforge_state.get("last_context_view_id") if isinstance(contextforge_state, dict) else None
+        )
+        if not isinstance(context_view_id, str) or not context_view_id.strip():
+            checks.append(
+                _check(
+                    _RAW_FRONTDESK_EXCLUSION_CHECK,
+                    False,
+                    "ContextForge build state does not reference last_context_view_id",
+                    state_ref,
+                )
+            )
+            return
+
+        ledger_path = workspace.root.joinpath(*validate_relative_path(ledger_ref).parts)
+        if not ledger_path.is_file():
+            checks.append(
+                _check(
+                    _RAW_FRONTDESK_EXCLUSION_CHECK,
+                    False,
+                    "raw Front Desk conversation exists but ContextForge ledger is missing",
+                    ledger_ref,
+                )
+            )
+            return
+        try:
+            ledger_path = workspace.resolve_path(ledger_ref, must_exist=True)
+        except Exception as exc:
+            checks.append(
+                _check(
+                    _RAW_FRONTDESK_EXCLUSION_CHECK,
+                    False,
+                    f"ContextForge ledger path is present but unsafe: {exc}",
+                    ledger_ref,
+                )
+            )
+            return
+
+        expected_item_id = f"{workspace.job_id}{_RAW_FRONTDESK_CONTEXT_ITEM_SUFFIX}"
+        failures: list[str] = []
+        try:
+            ledger = ContextLedger.connect(ledger_path)
+            try:
+                context_view = ledger.get_context_view(context_view_id)
+                prompt_view_id = context_view.prompt_view_id
+                prompt_view = None
+                prompt_blocks = []
+                if prompt_view_id:
+                    prompt_view, prompt_blocks = ledger.get_prompt_view(prompt_view_id)
+            finally:
+                ledger.close()
+        except Exception as exc:
+            checks.append(
+                _check(
+                    _RAW_FRONTDESK_EXCLUSION_CHECK,
+                    False,
+                    f"ContextForge raw conversation exclusion evidence could not be loaded: {exc}",
+                    ledger_ref,
+                )
+            )
+            return
+
+        included = set(context_view.included_item_ids)
+        forbidden = set(context_view.forbidden_item_ids)
+        if expected_item_id not in forbidden:
+            failures.append(f"{expected_item_id} was not recorded as forbidden")
+        if expected_item_id in included:
+            failures.append(f"{expected_item_id} entered ContextView.included_item_ids")
+        if prompt_view is None:
+            failures.append("ContextView does not reference a PromptView")
+        else:
+            prompt_source_ids = set(prompt_view.source_item_ids)
+            if expected_item_id in prompt_source_ids:
+                failures.append(f"{expected_item_id} entered PromptView.source_item_ids")
+            if any(expected_item_id in block.source_item_ids for block in prompt_blocks):
+                failures.append(f"{expected_item_id} entered PromptBlock.source_item_ids")
+            raw_content = raw_path.read_text(encoding="utf-8").strip()
+            if raw_content:
+                prompt_text = "\n".join(
+                    [
+                        *(message.content for message in prompt_view.messages),
+                        *(block.content for block in prompt_blocks),
+                    ]
+                )
+                if raw_content in prompt_text:
+                    failures.append("raw Front Desk conversation bytes appeared in rendered prompt evidence")
+
+        if failures:
+            checks.append(_check(_RAW_FRONTDESK_EXCLUSION_CHECK, False, "; ".join(failures), ledger_ref))
+        else:
+            checks.append(
+                _check(
+                    _RAW_FRONTDESK_EXCLUSION_CHECK,
+                    True,
+                    "raw Front Desk conversation was forbidden and absent from build PromptView evidence",
+                    ledger_ref,
                 )
             )
 

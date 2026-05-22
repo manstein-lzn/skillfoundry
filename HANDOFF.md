@@ -34,7 +34,7 @@ Front Desk v2 Goal Harness slices 已存在。
 
 - ContextForge 已作为 Git submodule 接入：`third_party/contextforge`。
 - `pyproject.toml` 通过 editable path source 使用 `contextforge==0.1.0`，默认 `uv` index 设置为清华源。
-- `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md` 已创建，并由独立 `gpt-5.5 xhigh` reviewer 审查为 `approved_with_residual_risks`、无 blocking findings。
+- `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md` 已创建；初版曾由独立 `gpt-5.5 xhigh` reviewer 审查为 `approved_with_residual_risks`、无 blocking findings。当前入口文档 reviewer 记录以该文档末尾和最新 MetaLoop review 为准。
 - v2 核心桥接模块已经存在：
   - `src/skillfoundry/contracts.py`
   - `src/skillfoundry/goal_runtime.py`
@@ -156,7 +156,7 @@ uv run --extra test pytest -q
 python3 /home/mansteinl/.codex/skills/metaloop/scripts/metaloop_kernel.py --workspace . status
 ```
 
-`docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md` 的独立 reviewer 结论：`approved_with_residual_risks`，无 blocker。后续代码切片仍需按对应 focused tests 和全量测试重新验证。
+`docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md` 的初版独立 reviewer 结论是 `approved_with_residual_risks`、无 blocker；后续入口文档复审记录以该文档末尾和最新 MetaLoop review 为准。代码切片仍需按对应 focused tests 和全量测试重新验证。
 
 ## 接手后建议先做
 
@@ -173,12 +173,12 @@ uv run --extra test pytest -q
 .venv/bin/python -m pytest -q
 ```
 
-2. 若要继续 v2 重建，先读 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`，当前优先做 Phase 3：
+2. 若要继续 v2 重建，先读 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`。当前优先修通默认 Front Desk frozen job 到 verified build / verify / acceptance coverage / registry 的离线闭环：
 
-- 把 `FrontDeskLoop` approved-plan audit/freeze 路径接到 `run_frontdesk_spec_auditor_goal_harness(...)`。
-- 保留 user plan review gate 和 source-hash check。
-- 保留 deterministic `FrontDeskFreezeGate`。
-- 跑 `tests/test_frontdesk_loop.py tests/test_frontdesk_api.py tests/test_frontdesk_goal_runtime.py` 和全量 pytest。
+- Front Desk 生成的 `acceptance_criteria.yaml` 必须使用 deterministic `verifier_check_id`。
+- 如果验收项声明 raw conversation exclusion，需要 verifier/bridge 有对应的确定性 check，或引用现有等价 check。
+- 默认 no-key API job 应能 approve/freeze 后进入 `run_verified_offline_goal_harness(...)` 并通过 registry gate，或给出明确可审计失败。
+- 跑 `tests/test_frontdesk_loop.py tests/test_frontdesk_api.py tests/test_frontdesk_goal_runtime.py tests/test_goal_harness_verified_runtime.py tests/test_verification_bridge.py tests/test_registry.py tests/test_acceptance_coverage.py` 和全量 pytest。
 
 3. 后续继续 Phase 4/5：
 
