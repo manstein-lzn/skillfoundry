@@ -175,6 +175,12 @@ from .graph_v2 import (
     route_after_verification,
     validate_v2_graph_state,
 )
+from .verification_bridge import (
+    CONTEXTFORGE_VERIFICATION_RESULT_REF,
+    SKILLFOUNDRY_VERIFICATION_RESULT_REF,
+    VERIFICATION_BRIDGE_VERSION,
+    bridge_skillfoundry_verification_result,
+)
 from .offline import (
     OFFLINE_REPORT_VERSION,
     DEFAULT_REVIEW_STATUS,
@@ -289,6 +295,7 @@ __all__ = [
     "CodexCommandRunner",
     "CodexWorker",
     "CONTEXT_ADAPTER_VERSION",
+    "CONTEXTFORGE_VERIFICATION_RESULT_REF",
     "CONTEXTFORGE_CONTRACT_DIR",
     "CONTRACT_MANIFEST_REF",
     "CONTRACT_MANIFEST_SCHEMA_VERSION",
@@ -410,6 +417,7 @@ __all__ = [
     "SkillFoundryOps",
     "SkillVersionManager",
     "SkillSpec",
+    "SKILLFOUNDRY_VERIFICATION_RESULT_REF",
     "SPEC_AUDITOR_AGENT_ROLE",
     "SPEC_AUDIT_FAILURE_SCHEMA_VERSION",
     "SPEC_AUDIT_OUTPUT_SCHEMA_NAMES",
@@ -428,6 +436,7 @@ __all__ = [
     "V2Status",
     "VERIFIER_VERSION",
     "VERIFICATION_GATE_REF",
+    "VERIFICATION_BRIDGE_VERSION",
     "Verifier",
     "VerifierCheck",
     "VerifierPromptEvidence",
@@ -456,6 +465,7 @@ __all__ = [
     "build_skillfoundry_graph",
     "build_skillfoundry_v2_graph",
     "build_offline",
+    "bridge_skillfoundry_verification_result",
     "canonical_json_bytes",
     "compile_skillfoundry_graph",
     "compile_skillfoundry_v2_graph",
