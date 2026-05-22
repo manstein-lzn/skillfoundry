@@ -345,6 +345,7 @@ def _visible_context(node_id: str) -> list[dict[str, JsonValue]]:
         refs.append("frontdesk/core_need_brief.json")
     if node_id == SPEC_AUDITOR_NODE_ID:
         refs.append(_SOLUTION_PLAN_REF)
+        refs.extend(["frontdesk/draft_skill_spec.yaml", "frontdesk/acceptance_criteria.yaml"])
     return [
         {
             "selector_id": f"visible-{ref.replace('/', '-').replace('.', '-')}",
@@ -357,6 +358,8 @@ def _visible_context(node_id: str) -> list[dict[str, JsonValue]]:
                 FRONTDESK_BUDGET_REF,
                 "frontdesk/core_need_brief.json",
                 _SOLUTION_PLAN_REF,
+                "frontdesk/draft_skill_spec.yaml",
+                "frontdesk/acceptance_criteria.yaml",
             },
             "reason": "Governed Front Desk artifact visible to this node.",
             "metadata": {
@@ -498,6 +501,8 @@ def _frontdesk_source_hashes(frontdesk: FrontDeskWorkspace) -> dict[str, JsonVal
         FRONTDESK_BUDGET_REF,
         "frontdesk/core_need_brief.json",
         _SOLUTION_PLAN_REF,
+        "frontdesk/draft_skill_spec.yaml",
+        "frontdesk/acceptance_criteria.yaml",
     ]
     hashes: dict[str, JsonValue] = {}
     for ref in refs:

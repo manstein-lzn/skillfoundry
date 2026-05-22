@@ -12,21 +12,28 @@ from skillfoundry import (
     FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF,
     FRONTDESK_CORE_NEED_RUNTIME_STATE_REF,
     FRONTDESK_DRAFT_SKILL_SPEC_REF,
+    FRONTDESK_FEASIBILITY_REPORT_REF,
     FRONTDESK_GOAL_RUNTIME_LEDGER_REF,
     FRONTDESK_GOAL_RUNTIME_SCHEMA_VERSION,
     FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF,
     FRONTDESK_SOLUTION_PLAN_REF,
     FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF,
     FRONTDESK_SOLUTION_PLAN_RUNTIME_STATE_REF,
+    FRONTDESK_SPEC_AUDIT_FAILURE_REF,
+    FRONTDESK_SPEC_AUDIT_REPORT_REF,
+    FRONTDESK_SPEC_AUDIT_RUNTIME_RESULT_REF,
+    FRONTDESK_SPEC_AUDIT_RUNTIME_STATE_REF,
     FRONTDESK_V2_GOAL_CONTRACT_REF,
     CORE_NEED_DISCOVERY_NODE_ID,
     SOLUTION_PLANNER_NODE_ID,
+    SPEC_AUDITOR_NODE_ID,
     ConversationTurn,
     initialize_frontdesk_workspace,
     initialize_job_workspace,
     write_frontdesk_artifact,
     run_frontdesk_core_need_goal_harness,
     run_frontdesk_solution_planner_goal_harness,
+    run_frontdesk_spec_auditor_goal_harness,
 )
 
 
@@ -78,6 +85,7 @@ def _frontdesk_workspace(tmp_path, *, marker: str = "RAW_FRONTDESK_MARKER", seed
 def test_frontdesk_goal_runtime_api_is_exported() -> None:
     assert skillfoundry.run_frontdesk_core_need_goal_harness is run_frontdesk_core_need_goal_harness
     assert skillfoundry.run_frontdesk_solution_planner_goal_harness is run_frontdesk_solution_planner_goal_harness
+    assert skillfoundry.run_frontdesk_spec_auditor_goal_harness is run_frontdesk_spec_auditor_goal_harness
     assert skillfoundry.FRONTDESK_GOAL_RUNTIME_SCHEMA_VERSION == FRONTDESK_GOAL_RUNTIME_SCHEMA_VERSION
 
 
@@ -218,3 +226,96 @@ def test_frontdesk_solution_planner_output_is_user_review_draft_not_acceptance(t
     assert result.runtime_result["refs"]["solution_plan"] == FRONTDESK_SOLUTION_PLAN_REF
     assert "solution_plan" in result.runtime_result["hashes"]
     assert "acceptance_criteria" in result.runtime_result["hashes"]
+
+
+def _approved_solution_plan(frontdesk) -> None:
+    payload = json.loads(frontdesk.workspace.resolve_path(FRONTDESK_SOLUTION_PLAN_REF, must_exist=True).read_text())
+    payload["status"] = "approved"
+    write_frontdesk_artifact(frontdesk, FRONTDESK_SOLUTION_PLAN_REF, payload)
+
+
+def test_frontdesk_spec_auditor_runs_after_approved_plan_without_raw_conversation(tmp_path) -> None:
+    marker = "RAW_CONVERSATION_SHOULD_NOT_ENTER_SPEC_AUDITOR_PROMPT"
+    workspace, frontdesk = _frontdesk_workspace(tmp_path, marker=marker, seed_solution_plan=False)
+    run_frontdesk_core_need_goal_harness(frontdesk, created_at=CREATED_AT)
+    run_frontdesk_solution_planner_goal_harness(frontdesk, created_at=CREATED_AT)
+    _approved_solution_plan(frontdesk)
+
+    result = run_frontdesk_spec_auditor_goal_harness(frontdesk, created_at=CREATED_AT)
+
+    assert workspace.resolve_path(FRONTDESK_SPEC_AUDIT_RUNTIME_RESULT_REF, must_exist=True).is_file()
+    assert workspace.resolve_path(FRONTDESK_SPEC_AUDIT_RUNTIME_STATE_REF, must_exist=True).is_file()
+    assert workspace.resolve_path(FRONTDESK_SPEC_AUDIT_REPORT_REF, must_exist=True).is_file()
+    assert workspace.resolve_path(FRONTDESK_FEASIBILITY_REPORT_REF, must_exist=True).is_file()
+    assert result.harness_result.worker_run.worker_kind == "fake_model"
+    assert result.harness_result.worker_run.status == "completed"
+    assert result.goal_run.status == "completed"
+    assert result.runtime_state["stage"] == SPEC_AUDITOR_NODE_ID
+    assert result.runtime_state["refs"]["spec_audit_report"] == FRONTDESK_SPEC_AUDIT_REPORT_REF
+    assert result.runtime_result["trust_boundaries"]["raw_conversation_included"] is False
+
+    ledger = ContextLedger.connect(workspace.resolve_path(FRONTDESK_GOAL_RUNTIME_LEDGER_REF, must_exist=True))
+    try:
+        context_view = ledger.get_context_view(result.harness_result.compiled_context.context_view.context_view_id)
+        prompt_view, _blocks = ledger.get_prompt_view(result.harness_result.compiled_context.prompt_view.id)
+        included = set(context_view.included_item_ids)
+        forbidden = set(context_view.forbidden_item_ids)
+        assert f"{workspace.job_id}:{SPEC_AUDITOR_NODE_ID}:frontdesk_core_need_brief" in included
+        assert f"{workspace.job_id}:{SPEC_AUDITOR_NODE_ID}:frontdesk_solution_plan" in included
+        assert f"{workspace.job_id}:{SPEC_AUDITOR_NODE_ID}:frontdesk_draft_skill_spec" in included
+        assert f"{workspace.job_id}:{SPEC_AUDITOR_NODE_ID}:frontdesk_acceptance_criteria" in included
+        assert f"{workspace.job_id}:{SPEC_AUDITOR_NODE_ID}:raw_frontdesk_conversation" in forbidden
+        assert f"{workspace.job_id}:{SPEC_AUDITOR_NODE_ID}:raw_frontdesk_conversation" not in included
+        rendered_prompt = "\n".join(message.content for message in prompt_view.messages)
+    finally:
+        ledger.close()
+
+    state_text = json.dumps(result.runtime_state, sort_keys=True)
+    result_text = json.dumps(result.runtime_result, sort_keys=True)
+    assert "Governed Requirement Skill" in rendered_prompt
+    assert marker not in rendered_prompt
+    assert marker not in state_text
+    assert marker not in result_text
+    assert "conversation.jsonl" not in state_text
+    assert "conversation.jsonl" not in result_text
+
+
+def test_frontdesk_spec_auditor_writes_audit_refs_after_user_review_gate(tmp_path) -> None:
+    workspace, frontdesk = _frontdesk_workspace(tmp_path, seed_solution_plan=False)
+    run_frontdesk_core_need_goal_harness(frontdesk, created_at=CREATED_AT)
+    run_frontdesk_solution_planner_goal_harness(frontdesk, created_at=CREATED_AT)
+    _approved_solution_plan(frontdesk)
+
+    result = run_frontdesk_spec_auditor_goal_harness(frontdesk, created_at=CREATED_AT)
+
+    audit = json.loads(workspace.resolve_path(FRONTDESK_SPEC_AUDIT_REPORT_REF, must_exist=True).read_text())
+    feasibility = json.loads(workspace.resolve_path(FRONTDESK_FEASIBILITY_REPORT_REF, must_exist=True).read_text())
+    assert audit["decision"] == "approved"
+    assert audit["feasibility_report_ref"] == FRONTDESK_FEASIBILITY_REPORT_REF
+    assert audit["elicitation_report_ref"] == FRONTDESK_SOLUTION_PLAN_REF
+    assert feasibility["decision"] == "feasible"
+    assert feasibility["report_ref"] == FRONTDESK_FEASIBILITY_REPORT_REF
+    assert result.harness_result.worker_run.metadata["worker_self_report_is_not_acceptance"] is True
+    assert result.runtime_result["refs"]["spec_audit_report"] == FRONTDESK_SPEC_AUDIT_REPORT_REF
+    assert "spec_audit_report" in result.runtime_result["hashes"]
+    assert "feasibility_report" in result.runtime_result["hashes"]
+
+
+def test_frontdesk_spec_auditor_fails_closed_before_solution_plan_approval(tmp_path) -> None:
+    workspace, frontdesk = _frontdesk_workspace(tmp_path, seed_solution_plan=False)
+    run_frontdesk_core_need_goal_harness(frontdesk, created_at=CREATED_AT)
+    run_frontdesk_solution_planner_goal_harness(frontdesk, created_at=CREATED_AT)
+
+    result = run_frontdesk_spec_auditor_goal_harness(frontdesk, created_at=CREATED_AT)
+
+    failure = json.loads(workspace.resolve_path(FRONTDESK_SPEC_AUDIT_FAILURE_REF, must_exist=True).read_text())
+    assert result.harness_result.worker_run.status == "failed"
+    assert result.harness_result.worker_run.failure_class == "solution_plan_not_approved"
+    assert result.goal_run.status == "failed"
+    assert failure["failure_class"] == "solution_plan_not_approved"
+    assert failure["details"]["solution_plan_status"] == "awaiting_user_review"
+    assert failure["raw_conversation_included"] is False
+    assert not workspace.resolve_path(FRONTDESK_SPEC_AUDIT_REPORT_REF).exists()
+    assert not workspace.resolve_path(FRONTDESK_FEASIBILITY_REPORT_REF).exists()
+    assert result.runtime_result["refs"]["spec_audit_failure"] == FRONTDESK_SPEC_AUDIT_FAILURE_REF
+    assert "spec_audit_failure" in result.runtime_result["hashes"]
