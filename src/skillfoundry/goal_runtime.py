@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from contextforge import (
+    CheckpointManager,
     ContextItem,
     ContextKernel,
     ContextLedger,
@@ -126,6 +127,10 @@ def run_offline_goal_harness(
             task_id=_TASK_ID,
             created_at=timestamp,
             metadata={"skillfoundry_job_id": workspace.job_id, "attempt_id": "001"},
+            checkpoint_reason="phase_complete",
+            checkpoint_best_result="Build node completed and worker boundary evidence was recorded.",
+            checkpoint_latest_diagnosis="Offline deterministic build node reached verification boundary.",
+            checkpoint_next_plan="Run SkillFoundry verifier and bridge the result into ContextForge.",
         )
         _write_offline_verification_evidence(workspace, verification_mode, created_at=timestamp)
         verification_result = VerificationRunner(workspace.root).run(
@@ -354,6 +359,18 @@ def build_goal_harness_state(
     """Return the LangGraph-style refs-only state for the offline slice."""
 
     next_route = _route_for_verification(verification_result)
+    contextforge_state: dict[str, JsonValue] = {
+        "last_goal_run_id": goal_run.goal_run_id,
+        "last_worker_run_id": harness_result.worker_run.worker_run_id,
+        "last_context_view_id": harness_result.compiled_context.context_view.context_view_id,
+        "last_prompt_cache_plan_id": harness_result.compiled_context.cache_plan.cache_plan_id,
+        "last_verification_result_id": verification_result.verification_result_id,
+        "last_verification_status": verification_result.status,
+        "next_route": next_route,
+    }
+    if goal_run.checkpoint_ids:
+        contextforge_state["last_checkpoint_id"] = goal_run.checkpoint_ids[-1]
+        contextforge_state["checkpoint_ids"] = list(goal_run.checkpoint_ids)
     return {
         "schema_version": GOAL_RUNTIME_STATE_SCHEMA_VERSION,
         "job_id": workspace.job_id,
@@ -373,15 +390,7 @@ def build_goal_harness_state(
             "build_node_contract": contracts.build_node_contract.contract_hash,
             "verification_gate": contracts.verification_gate.gate_hash,
         },
-        "contextforge": {
-            "last_goal_run_id": goal_run.goal_run_id,
-            "last_worker_run_id": harness_result.worker_run.worker_run_id,
-            "last_context_view_id": harness_result.compiled_context.context_view.context_view_id,
-            "last_prompt_cache_plan_id": harness_result.compiled_context.cache_plan.cache_plan_id,
-            "last_verification_result_id": verification_result.verification_result_id,
-            "last_verification_status": verification_result.status,
-            "next_route": next_route,
-        },
+        "contextforge": contextforge_state,
         "human_review_required": verification_result.status == "human_acceptance_required",
         "next_route": next_route,
     }
@@ -566,6 +575,28 @@ def _finalize_goal_harness_verification(
         verification_result,
         created_at=created_at,
     )
+    verification_checkpoint = CheckpointManager().create(
+        goal_harness.contracts.goal_contract,
+        final_goal_run,
+        reason="phase_complete" if verification_result.status == "passed" else "verifier_failed",
+        current_best_result=_checkpoint_best_result(verification_result),
+        latest_diagnosis=_checkpoint_latest_diagnosis(verification_result),
+        next_plan=_checkpoint_next_plan(verification_result),
+        created_at=created_at,
+        metadata={"skillfoundry_goal_runtime": GOAL_RUNTIME_RESULT_SCHEMA_VERSION},
+    )
+    final_goal_run = GoalRunRecord.from_dict(
+        {
+            **final_goal_run.to_dict(),
+            "checkpoint_ids": _dedupe([*final_goal_run.checkpoint_ids, verification_checkpoint.checkpoint_id]),
+            "updated_at": created_at,
+            "metadata": {
+                **final_goal_run.metadata,
+                "latest_checkpoint_id": verification_checkpoint.checkpoint_id,
+                "verification_checkpoint_id": verification_checkpoint.checkpoint_id,
+            },
+        }
+    )
     graph_state = build_goal_harness_state(
         workspace,
         goal_harness.contracts,
@@ -586,6 +617,7 @@ def _finalize_goal_harness_verification(
     ledger = ContextLedger.connect(workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF, must_exist=True))
     try:
         ledger.record_verification_result(verification_result)
+        ledger.record_checkpoint(verification_checkpoint)
         ledger.record_goal_run_record(final_goal_run)
     finally:
         ledger.close()
@@ -598,6 +630,29 @@ def _finalize_goal_harness_verification(
         graph_state=graph_state,
         runtime_result=runtime_result,
     )
+
+
+def _checkpoint_best_result(verification_result: ContextForgeVerificationResult) -> str:
+    if verification_result.status == "passed":
+        return "Verification bridge passed and final evidence is ready for registry gating."
+    if verification_result.status == "failed":
+        return "Verification bridge failed and repair evidence is required before registry gating."
+    return f"Verification bridge returned {verification_result.status}; route according to review policy."
+
+
+def _checkpoint_latest_diagnosis(verification_result: ContextForgeVerificationResult) -> str:
+    failed = [item.validator_id for item in verification_result.validator_results if not item.passed]
+    if not failed:
+        return "All blocking verification bridge validators passed."
+    return "Failed verification bridge validators: " + ", ".join(failed[:10])
+
+
+def _checkpoint_next_plan(verification_result: ContextForgeVerificationResult) -> str:
+    if verification_result.status == "passed":
+        return "Proceed to registry gate using ContextForge bridge and SkillFoundry verifier evidence refs."
+    if verification_result.status == "failed":
+        return "Route to repair and preserve verifier/coverage failure refs for the next attempt."
+    return "Route to human review or redesign according to verification status."
 
 
 def _goal_run_with_verification(

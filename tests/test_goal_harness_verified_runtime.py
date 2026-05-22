@@ -116,6 +116,9 @@ def test_verified_offline_goal_harness_promotes_through_verifier_coverage_bridge
         assert goal_record is not None
         assert goal_record.verification_result_id == result.contextforge_verification_result.verification_result_id
         assert goal_record.status == "completed"
+        checkpoints = ledger.query_checkpoints(goal_run_id=result.goal_harness.goal_run.goal_run_id)
+        assert {checkpoint.checkpoint_id for checkpoint in checkpoints} == set(result.goal_harness.goal_run.checkpoint_ids)
+        assert len(checkpoints) >= 2
     finally:
         ledger.close()
 

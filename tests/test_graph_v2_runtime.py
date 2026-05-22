@@ -2,16 +2,26 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 
 from contextforge import ContextLedger
+import pytest
 
 from skillfoundry import (
+    AcceptanceCriteriaSet,
+    AcceptanceCriterion,
+    CONTEXTFORGE_VERIFICATION_RESULT_REF,
     GOAL_RUNTIME_LEDGER_REF,
     GOAL_RUNTIME_RESULT_REF,
+    LocalSkillRegistry,
+    VERIFIED_GOAL_RUNTIME_RESULT_REF,
     V2Route,
     V2Stage,
+    V2StateValidationError,
     V2Status,
     build_offline_goal_harness_node,
+    build_verified_goal_harness_node,
+    build_verified_registry_gate_node,
     compile_skillfoundry_v2_graph,
     validate_v2_graph_state,
 )
@@ -20,6 +30,32 @@ from skillfoundry.workspace import initialize_job_workspace
 
 
 CREATED_AT = "2026-05-22T00:00:00Z"
+
+
+def _criterion() -> AcceptanceCriterion:
+    return AcceptanceCriterion(
+        id="AC-GRAPH-V2-001",
+        description="The v2 graph produces a verified Skill package.",
+        source_requirement="Route the verified Goal Harness runtime through LangGraph v2.",
+        source_turn_ids=["turn-graph-v2"],
+        requirement_id="REQ-GRAPH-V2-001",
+        test_method="static",
+        pass_condition="Verifier check package_skill_md_present passes.",
+        failure_examples=["package/SKILL.md is missing."],
+        required_evidence=[],
+        evidence_kind="verifier_check",
+        priority="must",
+        risk_tags=[],
+        data_sensitivity="internal",
+        coverage_status="planned",
+        verifier_check_id="package_skill_md_present",
+    )
+
+
+def _write_acceptance_criteria(workspace) -> None:
+    AcceptanceCriteriaSet(criteria=[_criterion()], job_id=workspace.job_id).write_yaml_file(
+        workspace.resolve_path("acceptance_criteria.yaml")
+    )
 
 
 def test_v2_graph_runs_offline_goal_harness_node_and_routes_success(tmp_path: Path) -> None:
@@ -53,6 +89,136 @@ def test_v2_graph_runs_offline_goal_harness_node_and_routes_success(tmp_path: Pa
         assert ledger.get_verification_result(result["contextforge"]["last_verification_result_id"])
     finally:
         ledger.close()
+
+
+def test_v2_graph_runs_verified_goal_harness_through_real_registry_gate(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    registry_path = tmp_path / "registry.json"
+    workspace = initialize_job_workspace(runs_root, "graph-runtime-verified")
+    _write_acceptance_criteria(workspace)
+    graph = compile_skillfoundry_v2_graph(
+        build_node_callable=build_verified_goal_harness_node(
+            runs_root,
+            registry_path=registry_path,
+            created_at=CREATED_AT,
+        ),
+        registry_gate_callable=build_verified_registry_gate_node(
+            runs_root,
+            registry_path=registry_path,
+            created_at=CREATED_AT,
+        ),
+    )
+
+    result = graph.invoke({"job_id": workspace.job_id, "attempt_limit": 2})
+
+    validate_v2_graph_state(result)
+    assert result["stage"] == V2Stage.EMIT_REPORT.value
+    assert result["status"] == V2Status.REPORT_EMITTED.value
+    assert result["refs"]["verified_runtime_result"] == VERIFIED_GOAL_RUNTIME_RESULT_REF
+    assert result["refs"]["contextforge_verification_result"] == CONTEXTFORGE_VERIFICATION_RESULT_REF
+    assert result["refs"]["final_report"] == "final_report.json"
+    assert result["refs"]["registry_decision"] == "registry/decision.json"
+    assert result["refs"]["registry_entry"] == "registry/entry.json"
+    assert result["contextforge"]["last_verification_status"] == "passed"
+    assert result["contextforge"]["last_goal_decision"] == "complete"
+    assert result["contextforge"]["registry_approved"] is True
+    assert result["contextforge"]["checkpoint_ids"]
+    assert workspace.resolve_path("final_report.json", must_exist=True).is_file()
+    assert workspace.resolve_path("registry/decision.json", must_exist=True).is_file()
+    assert workspace.resolve_path("registry/entry.json", must_exist=True).is_file()
+
+    final_report = json.loads(workspace.resolve_path("final_report.json", must_exist=True).read_text())
+    assert final_report["final_status"] == "registered"
+    entry = LocalSkillRegistry(registry_path).get(
+        result["contextforge"]["registry_skill_id"],
+        result["contextforge"]["registry_version"],
+    )
+    assert LocalSkillRegistry(registry_path).verify_entry(entry).valid is True
+
+    ledger = ContextLedger.connect(workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF, must_exist=True))
+    try:
+        goal_run = ledger.get_goal_run_record(result["contextforge"]["last_goal_run_id"])
+        assert goal_run.verification_result_id == result["contextforge"]["last_verification_result_id"]
+        assert goal_run.checkpoint_ids == result["contextforge"]["checkpoint_ids"]
+        assert len(ledger.query_checkpoints(goal_run_id=goal_run.goal_run_id)) >= 2
+    finally:
+        ledger.close()
+
+
+def test_verified_registry_gate_rejects_tampered_verified_runtime(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    registry_path = tmp_path / "registry.json"
+    workspace = initialize_job_workspace(runs_root, "graph-runtime-tamper")
+    _write_acceptance_criteria(workspace)
+    build_node = build_verified_goal_harness_node(
+        runs_root,
+        registry_path=registry_path,
+        created_at=CREATED_AT,
+    )
+    state = build_node({"job_id": workspace.job_id, "attempt_limit": 2})
+    verified_path = workspace.resolve_path(VERIFIED_GOAL_RUNTIME_RESULT_REF, must_exist=True)
+    payload = json.loads(verified_path.read_text())
+    payload["status"]["registry_approved"] = False
+    verified_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+
+    registry_gate = build_verified_registry_gate_node(
+        runs_root,
+        registry_path=registry_path,
+        created_at=CREATED_AT,
+    )
+    with pytest.raises(V2StateValidationError, match="registry approval"):
+        registry_gate(state)
+
+
+def test_verified_registry_gate_rejects_cross_job_verified_runtime(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    registry_path = tmp_path / "registry.json"
+    source = initialize_job_workspace(runs_root, "graph-runtime-source")
+    target = initialize_job_workspace(runs_root, "graph-runtime-target")
+    _write_acceptance_criteria(source)
+    build_node = build_verified_goal_harness_node(
+        runs_root,
+        registry_path=registry_path,
+        created_at=CREATED_AT,
+    )
+    build_node({"job_id": source.job_id, "attempt_limit": 2})
+    (target.root / "contextforge").mkdir(exist_ok=True)
+    for ref in (
+        VERIFIED_GOAL_RUNTIME_RESULT_REF,
+        CONTEXTFORGE_VERIFICATION_RESULT_REF,
+        "final_report.json",
+    ):
+        source_path = source.resolve_path(ref, must_exist=True)
+        target_path = target.resolve_path(ref)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_path, target_path)
+
+    registry_gate = build_verified_registry_gate_node(
+        runs_root,
+        registry_path=registry_path,
+        created_at=CREATED_AT,
+    )
+    with pytest.raises(V2StateValidationError, match="job_id mismatch"):
+        registry_gate({"job_id": target.job_id, "refs": {"verified_runtime_result": VERIFIED_GOAL_RUNTIME_RESULT_REF}})
+
+    assert not (target.root / "registry" / "decision.json").exists()
+
+
+def test_verified_graph_nodes_reject_unsafe_job_id_before_workspace_writes(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    registry_gate = build_verified_registry_gate_node(
+        runs_root,
+        registry_path=tmp_path / "registry.json",
+        created_at=CREATED_AT,
+    )
+
+    with pytest.raises(V2StateValidationError, match="job_id"):
+        registry_gate({"job_id": "../outside"})
+
+    assert not (outside / "registry" / "decision.json").exists()
 
 
 def test_v2_graph_runs_offline_goal_harness_node_and_routes_failed_verification_to_repair(tmp_path: Path) -> None:

@@ -41,6 +41,8 @@ def test_offline_goal_harness_pass_records_context_cache_worker_verification_and
         assert ledger.get_worker_run(result.harness_result.worker_run.worker_run_id) == result.harness_result.worker_run
         assert ledger.get_verification_result(result.verification_result.verification_result_id) == result.verification_result
         assert ledger.get_goal_run_record(result.goal_run.goal_run_id) == result.goal_run
+        checkpoints = ledger.query_checkpoints(goal_run_id=result.goal_run.goal_run_id)
+        assert {checkpoint.checkpoint_id for checkpoint in checkpoints} == set(result.goal_run.checkpoint_ids)
     finally:
         ledger.close()
 
@@ -65,6 +67,9 @@ def test_offline_goal_harness_pass_records_context_cache_worker_verification_and
     assert result.verification_result.status == "passed"
     assert result.goal_run.status == "completed"
     assert result.goal_run.decision == "complete"
+    assert result.goal_run.checkpoint_ids
+    assert result.graph_state["contextforge"]["last_checkpoint_id"] == result.goal_run.checkpoint_ids[-1]
+    assert result.graph_state["contextforge"]["checkpoint_ids"] == result.goal_run.checkpoint_ids
     assert result.graph_state["contextforge"]["next_route"] == "registry_gate"
 
 

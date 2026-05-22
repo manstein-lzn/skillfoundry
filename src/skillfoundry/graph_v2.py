@@ -4,15 +4,23 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from enum import StrEnum
+import json
 from pathlib import Path
 import re
 from typing import Any, Mapping, TypedDict
 
+from contextforge import VerificationResult as ContextForgeVerificationResult
 from langgraph.graph import END, START, StateGraph
 
-from .goal_runtime import OfflineVerificationMode, run_offline_goal_harness
-from .schema import SchemaValidationError, ensure_json_compatible
-from .workspace import JobWorkspace
+from .goal_runtime import (
+    OfflineVerificationMode,
+    VERIFIED_GOAL_RUNTIME_RESULT_REF,
+    run_offline_goal_harness,
+    run_verified_offline_goal_harness,
+)
+from .registry import DEFAULT_REGISTRY_VERSION, LocalSkillRegistry
+from .schema import JsonValue, SchemaValidationError, ensure_json_compatible, sha256_file, sha256_json, utc_now
+from .workspace import JOB_ID_RE, JobWorkspace
 
 
 MAX_V2_INLINE_STRING_BYTES = 1024
@@ -194,6 +202,7 @@ def route_after_verification(state: Mapping[str, Any]) -> str:
 def build_skillfoundry_v2_graph(
     *,
     build_node_callable: V2Node | None = None,
+    registry_gate_callable: V2Node | None = None,
 ) -> StateGraph:
     """Build the v2 refs-only LangGraph spine."""
 
@@ -203,7 +212,7 @@ def build_skillfoundry_v2_graph(
     graph.add_node(V2Stage.VERIFY.value, verify_node)
     graph.add_node(V2Stage.ROUTE_AFTER_VERIFICATION.value, route_after_verification_node)
     graph.add_node(V2Stage.REPAIR_GOAL_NODE.value, repair_goal_node)
-    graph.add_node(V2Stage.REGISTRY_GATE.value, registry_gate_node)
+    graph.add_node(V2Stage.REGISTRY_GATE.value, registry_gate_callable or registry_gate_node)
     graph.add_node(V2Stage.HUMAN_REVIEW.value, human_review_node)
     graph.add_node(V2Stage.REDESIGN.value, redesign_node)
     graph.add_node(V2Stage.REJECT.value, reject_node)
@@ -237,6 +246,7 @@ def build_skillfoundry_v2_graph(
 def compile_skillfoundry_v2_graph(
     *,
     build_node_callable: V2Node | None = None,
+    registry_gate_callable: V2Node | None = None,
     checkpointer: Any | None = None,
     interrupt_before: list[str] | str | None = None,
     interrupt_after: list[str] | str | None = None,
@@ -244,7 +254,10 @@ def compile_skillfoundry_v2_graph(
 ) -> Any:
     """Compile the v2 graph while preserving LangGraph checkpoint options."""
 
-    return build_skillfoundry_v2_graph(build_node_callable=build_node_callable).compile(
+    return build_skillfoundry_v2_graph(
+        build_node_callable=build_node_callable,
+        registry_gate_callable=registry_gate_callable,
+    ).compile(
         checkpointer=checkpointer,
         interrupt_before=interrupt_before,
         interrupt_after=interrupt_after,
@@ -310,7 +323,7 @@ def build_offline_goal_harness_node(
     def _node(state: SkillFoundryV2State) -> SkillFoundryV2State:
         validate_v2_graph_state(state)
         job_id = _job_id(state)
-        workspace = JobWorkspace(root=runs_path / job_id, job_id=job_id)
+        workspace = _graph_workspace(runs_path, job_id)
         result = run_offline_goal_harness(
             workspace,
             verification_mode=verification_mode,
@@ -321,10 +334,73 @@ def build_offline_goal_harness_node(
         hashes = dict(state.get("hashes", {}))
         hashes.update(_string_mapping(runtime_state.get("hashes", {}), "runtime hashes"))
         contextforge = dict(state.get("contextforge", {}))
-        contextforge.update(_string_mapping(runtime_state.get("contextforge", {}), "runtime contextforge"))
+        contextforge.update(_contextforge_mapping(runtime_state.get("contextforge", {}), "runtime contextforge"))
         contextforge["last_goal_status"] = result.goal_run.status
         if result.goal_run.decision is not None:
             contextforge["last_goal_decision"] = result.goal_run.decision
+        update: SkillFoundryV2State = {
+            "schema_version": _STATE_SCHEMA_VERSION,
+            "job_id": job_id,
+            "stage": V2Stage.BUILD_GOAL_NODE.value,
+            "status": V2Status.BUILD_RECORDED.value,
+            "attempt_count": max(int(state.get("attempt_count", 0)), int(runtime_state.get("attempt_count", 1))),
+            "attempt_limit": int(state.get("attempt_limit", 1)),
+            "refs": refs,
+            "hashes": hashes,
+            "contextforge": contextforge,
+            "human_review_required": bool(runtime_state.get("human_review_required", False)),
+            "next_route": str(runtime_state.get("next_route", V2Route.CONTINUE.value)),
+        }
+        return _validated_update(state, update)
+
+    return _node
+
+
+def build_verified_goal_harness_node(
+    runs_root: str | Path,
+    *,
+    registry_path: str | Path,
+    version: str = DEFAULT_REGISTRY_VERSION,
+    created_at: str | None = None,
+) -> V2Node:
+    """Return a v2 graph build node backed by the verified Goal Harness runtime."""
+
+    runs_path = Path(runs_root)
+    registry_file = Path(registry_path)
+
+    def _node(state: SkillFoundryV2State) -> SkillFoundryV2State:
+        validate_v2_graph_state(state)
+        job_id = _job_id(state)
+        workspace = _graph_workspace(runs_path, job_id)
+        result = run_verified_offline_goal_harness(
+            workspace,
+            registry_path=registry_file,
+            version=version,
+            created_at=created_at,
+        )
+        runtime_state = result.goal_harness.graph_state
+        verified_runtime = result.verified_runtime_result
+        refs = _merge_refs(state, **_string_mapping(runtime_state.get("refs", {}), "runtime refs"))
+        refs.update(_safe_verified_runtime_refs(verified_runtime.get("refs", {})))
+        hashes = dict(state.get("hashes", {}))
+        hashes.update(_string_mapping(runtime_state.get("hashes", {}), "runtime hashes"))
+        hashes.update(_string_mapping(verified_runtime.get("hashes", {}), "verified runtime hashes"))
+        hashes["verified_runtime_result"] = sha256_file(
+            workspace.resolve_path(VERIFIED_GOAL_RUNTIME_RESULT_REF, must_exist=True)
+        )
+        hashes["final_report"] = sha256_file(workspace.resolve_path("final_report.json", must_exist=True))
+        contextforge = dict(state.get("contextforge", {}))
+        contextforge.update(_contextforge_mapping(runtime_state.get("contextforge", {}), "runtime contextforge"))
+        contextforge.update(
+            {
+                "last_goal_status": result.goal_harness.goal_run.status,
+                "last_goal_decision": result.goal_harness.goal_run.decision or "",
+                "registry_approved": result.registry_entry.approval_status == "approved",
+                "registry_skill_id": result.registry_entry.skill_id,
+                "registry_version": result.registry_entry.version,
+                "verified_runtime_result_ref": VERIFIED_GOAL_RUNTIME_RESULT_REF,
+            }
+        )
         update: SkillFoundryV2State = {
             "schema_version": _STATE_SCHEMA_VERSION,
             "job_id": job_id,
@@ -386,6 +462,105 @@ def registry_gate_node(state: SkillFoundryV2State) -> SkillFoundryV2State:
     return _validated_update(state, update)
 
 
+def build_verified_registry_gate_node(
+    runs_root: str | Path,
+    *,
+    registry_path: str | Path,
+    created_at: str | None = None,
+) -> V2Node:
+    """Return a registry gate that validates verified runtime and registry evidence."""
+
+    runs_path = Path(runs_root)
+    registry_file = Path(registry_path)
+
+    def _node(state: SkillFoundryV2State) -> SkillFoundryV2State:
+        validate_v2_graph_state(state)
+        job_id = _job_id(state)
+        workspace = _graph_workspace(runs_path, job_id)
+        verified_ref = _state_ref(state, "verified_runtime_result", VERIFIED_GOAL_RUNTIME_RESULT_REF)
+        verified_runtime = _read_json_ref(workspace, verified_ref, "verified runtime result")
+        final_report_ref = _json_ref(verified_runtime, ("refs", "final_report"), "final_report.json")
+        final_report = _read_json_ref(workspace, final_report_ref, "final report")
+        _require_verified_runtime_registered(verified_runtime, final_report, job_id=job_id)
+        skill_id = _json_str_at(verified_runtime, ("ids", "registry_skill_id"), "registry skill id")
+        version = _json_str_at(verified_runtime, ("ids", "registry_version"), "registry version")
+        registry = LocalSkillRegistry(registry_file)
+        entry = registry.get(skill_id, version)
+        _require_registry_entry_for_workspace(entry, workspace)
+        contextforge_result = _read_current_contextforge_verification(workspace, verified_runtime)
+        _require_contextforge_result_for_workspace(contextforge_result, workspace, verified_runtime, entry.package_hash)
+        verification_report = registry.verify_entry(entry)
+        if not verification_report.valid:
+            raise V2StateValidationError(
+                "verified registry gate failed: " + "; ".join(verification_report.failures)
+            )
+        entry_hash = sha256_json(entry.to_dict())
+        report_entry_hash = _optional_nested_str(final_report, ("refs", "registry_entry", "entry_hash"))
+        if report_entry_hash != entry_hash:
+            raise V2StateValidationError(
+                f"final_report registry entry hash mismatch: expected {entry_hash}, got {report_entry_hash!r}"
+            )
+        registry_dir = workspace.resolve_path("registry")
+        registry_dir.mkdir(parents=True, exist_ok=True)
+        entry_ref = "registry/entry.json"
+        decision_ref = "registry/decision.json"
+        timestamp = created_at or utc_now()
+        entry_payload = {
+            "schema_version": "skillfoundry.graph_v2.registry_entry_snapshot.v1",
+            "job_id": job_id,
+            "registry_path": registry_file.as_posix(),
+            "entry_hash": entry_hash,
+            "entry": entry.to_dict(),
+            "verification_report": verification_report.to_dict(),
+            "created_at": timestamp,
+        }
+        decision_payload = {
+            "schema_version": "skillfoundry.graph_v2.registry_decision.v1",
+            "job_id": job_id,
+            "passed": True,
+            "decision": "registered",
+            "registry_path": registry_file.as_posix(),
+            "skill_id": entry.skill_id,
+            "version": entry.version,
+            "entry_ref": entry_ref,
+            "entry_hash": entry_hash,
+            "verified_runtime_result_ref": verified_ref,
+            "contextforge_verification_result_ref": _json_ref(
+                verified_runtime,
+                ("refs", "contextforge_verification_result"),
+                "contextforge/verification_result.json",
+            ),
+            "created_at": timestamp,
+        }
+        _write_json_ref(workspace, entry_ref, entry_payload)
+        _write_json_ref(workspace, decision_ref, decision_payload)
+        refs = _merge_refs(state, registry_decision=decision_ref, registry_entry=entry_ref)
+        hashes = dict(state.get("hashes", {}))
+        hashes["registry_decision"] = sha256_file(workspace.resolve_path(decision_ref, must_exist=True))
+        hashes["registry_entry"] = sha256_file(workspace.resolve_path(entry_ref, must_exist=True))
+        contextforge = dict(state.get("contextforge", {}))
+        contextforge.update(
+            {
+                "registry_approved": True,
+                "registry_skill_id": entry.skill_id,
+                "registry_version": entry.version,
+                "registry_verification_report_valid": True,
+            }
+        )
+        update: SkillFoundryV2State = {
+            "stage": V2Stage.REGISTRY_GATE.value,
+            "status": V2Status.REGISTERED.value,
+            "refs": refs,
+            "hashes": hashes,
+            "contextforge": contextforge,
+            "human_review_required": False,
+            "next_route": V2Route.CONTINUE.value,
+        }
+        return _validated_update(state, update)
+
+    return _node
+
+
 def repair_goal_node(state: SkillFoundryV2State) -> SkillFoundryV2State:
     next_attempt = int(state.get("attempt_count", 0)) + 1
     refs = _merge_refs(
@@ -440,7 +615,8 @@ def reject_node(state: SkillFoundryV2State) -> SkillFoundryV2State:
 
 
 def emit_report_node(state: SkillFoundryV2State) -> SkillFoundryV2State:
-    refs = _merge_refs(state, final_report="contextforge/final_report.json")
+    refs = dict(state.get("refs", {}))
+    refs.setdefault("final_report", "contextforge/final_report.json")
     update: SkillFoundryV2State = {
         "stage": V2Stage.EMIT_REPORT.value,
         "status": V2Status.REPORT_EMITTED.value,
@@ -469,9 +645,19 @@ def _attempts_exhausted(state: Mapping[str, Any]) -> bool:
 
 def _job_id(state: Mapping[str, Any]) -> str:
     job_id = state.get("job_id")
-    if not isinstance(job_id, str) or not job_id:
-        raise V2StateValidationError("job_id is required")
+    if not isinstance(job_id, str) or not JOB_ID_RE.fullmatch(job_id):
+        raise V2StateValidationError("job_id must be a safe workspace path segment")
     return job_id
+
+
+def _graph_workspace(runs_path: Path, job_id: str) -> JobWorkspace:
+    try:
+        resolved_runs = runs_path.resolve(strict=True)
+        root = (resolved_runs / job_id).resolve(strict=True)
+        root.relative_to(resolved_runs)
+    except Exception as exc:
+        raise V2StateValidationError(f"job workspace must be under runs_root: {job_id}") from exc
+    return JobWorkspace(root=root, job_id=job_id)
 
 
 def _merge_refs(state: Mapping[str, Any], **updates: str) -> dict[str, str]:
@@ -488,6 +674,32 @@ def _string_mapping(value: Any, field_name: str) -> dict[str, str]:
         if not isinstance(key, str) or not isinstance(item, str):
             raise V2StateValidationError(f"{field_name} must contain only string keys and values")
         result[key] = item
+    return result
+
+
+def _safe_verified_runtime_refs(value: Any) -> dict[str, str]:
+    refs = _string_mapping(value, "verified runtime refs")
+    forbidden_ref_keys = {
+        "worker_transcript",
+        "worker_diff",
+    }
+    return {key: item for key, item in refs.items() if key not in forbidden_ref_keys}
+
+
+def _contextforge_mapping(value: Any, field_name: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise V2StateValidationError(f"{field_name} must be a mapping")
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key:
+            raise V2StateValidationError(f"{field_name} keys must be non-empty strings")
+        if isinstance(item, (str, int, bool)) or item is None:
+            result[key] = item
+            continue
+        if isinstance(item, list) and all(isinstance(entry, str) and entry for entry in item):
+            result[key] = list(item)
+            continue
+        raise V2StateValidationError(f"{field_name}.{key} must be an ID, status, flag, or string list")
     return result
 
 
@@ -599,6 +811,172 @@ def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _state_ref(state: Mapping[str, Any], key: str, fallback: str) -> str:
+    refs = state.get("refs", {})
+    if isinstance(refs, Mapping):
+        value = _optional_str(refs.get(key))
+        if value:
+            return value
+    return fallback
+
+
+def _read_json_ref(workspace: JobWorkspace, ref: str, label: str) -> dict[str, JsonValue]:
+    try:
+        path = workspace.resolve_path(ref, must_exist=True)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise V2StateValidationError(f"{label} is missing or invalid at {ref}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise V2StateValidationError(f"{label} at {ref} must be a JSON object")
+    compatible = ensure_json_compatible(payload)
+    if not isinstance(compatible, dict):
+        raise V2StateValidationError(f"{label} at {ref} must be a JSON object")
+    return compatible  # type: ignore[return-value]
+
+
+def _write_json_ref(workspace: JobWorkspace, ref: str, payload: Mapping[str, Any]) -> None:
+    compatible = ensure_json_compatible(dict(payload))
+    if not isinstance(compatible, dict):
+        raise V2StateValidationError(f"{ref} payload must be a JSON object")
+    path = workspace.resolve_path(ref)
+    path.write_text(json.dumps(compatible, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
+
+
+def _require_verified_runtime_registered(
+    verified_runtime: Mapping[str, Any],
+    final_report: Mapping[str, Any],
+    *,
+    job_id: str,
+) -> None:
+    if verified_runtime.get("job_id") != job_id:
+        raise V2StateValidationError(
+            f"verified runtime job_id mismatch: expected {job_id}, got {verified_runtime.get('job_id')!r}"
+        )
+    if final_report.get("job_id") != job_id:
+        raise V2StateValidationError(
+            f"final_report job_id mismatch: expected {job_id}, got {final_report.get('job_id')!r}"
+        )
+    if _optional_nested_str(verified_runtime, ("status", "contextforge_verification")) != "passed":
+        raise V2StateValidationError("verified runtime did not record passed ContextForge verification")
+    if _optional_nested_str(verified_runtime, ("status", "final_status")) != "registered":
+        raise V2StateValidationError("verified runtime did not record registered final status")
+    if _optional_nested_bool(verified_runtime, ("status", "registry_approved")) is not True:
+        raise V2StateValidationError("verified runtime did not record registry approval")
+    if final_report.get("final_status") != "registered":
+        raise V2StateValidationError("final_report did not record registered final status")
+
+
+def _require_registry_entry_for_workspace(entry: Any, workspace: JobWorkspace) -> None:
+    if entry.build_job_id != workspace.job_id:
+        raise V2StateValidationError(
+            f"registry entry build_job_id mismatch: expected {workspace.job_id}, got {entry.build_job_id!r}"
+        )
+    provenance_root = _optional_nested_str(entry.provenance, ("workspace_root",))
+    current_root = workspace.root.resolve(strict=True).as_posix()
+    if provenance_root != current_root:
+        raise V2StateValidationError(
+            f"registry entry workspace_root mismatch: expected {current_root}, got {provenance_root!r}"
+        )
+
+
+def _read_current_contextforge_verification(
+    workspace: JobWorkspace,
+    verified_runtime: Mapping[str, Any],
+) -> ContextForgeVerificationResult:
+    ref = _json_ref(verified_runtime, ("refs", "contextforge_verification_result"), "contextforge/verification_result.json")
+    try:
+        path = workspace.resolve_path(ref, must_exist=True)
+        result = ContextForgeVerificationResult.from_json(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise V2StateValidationError(f"ContextForge verification result is missing or invalid at {ref}: {exc}") from exc
+    recorded_hash = _optional_nested_str(verified_runtime, ("hashes", "contextforge_verification_result"))
+    actual_hash = sha256_file(path)
+    if recorded_hash != actual_hash:
+        raise V2StateValidationError(
+            f"ContextForge verification hash mismatch: expected {recorded_hash!r}, got {actual_hash}"
+        )
+    return result
+
+
+def _require_contextforge_result_for_workspace(
+    result: ContextForgeVerificationResult,
+    workspace: JobWorkspace,
+    verified_runtime: Mapping[str, Any],
+    package_hash: str,
+) -> None:
+    if result.status != "passed" or not result.passed:
+        raise V2StateValidationError(f"ContextForge verification result did not pass: {result.status}")
+    if result.metadata.get("job_id") != workspace.job_id:
+        raise V2StateValidationError(
+            f"ContextForge verification job_id mismatch: expected {workspace.job_id}, "
+            f"got {result.metadata.get('job_id')!r}"
+        )
+    if result.metadata.get("current_package_hash") != package_hash:
+        raise V2StateValidationError(
+            "ContextForge verification package hash mismatch: "
+            f"expected {package_hash}, got {result.metadata.get('current_package_hash')!r}"
+        )
+    _require_metadata_hash_matches_workspace(
+        workspace,
+        result,
+        "skillfoundry_verification_result_hash",
+        "verifier/verification_result.json",
+    )
+    _require_metadata_hash_matches_workspace(
+        workspace,
+        result,
+        "acceptance_coverage_result_hash",
+        "qa/acceptance_coverage_result.json",
+    )
+    recorded_id = _optional_nested_str(verified_runtime, ("ids", "contextforge_verification_result_id"))
+    if recorded_id != result.verification_result_id:
+        raise V2StateValidationError(
+            f"verified runtime ContextForge verification id mismatch: expected {recorded_id!r}, "
+            f"got {result.verification_result_id}"
+        )
+
+
+def _require_metadata_hash_matches_workspace(
+    workspace: JobWorkspace,
+    result: ContextForgeVerificationResult,
+    metadata_key: str,
+    ref: str,
+) -> None:
+    expected = result.metadata.get(metadata_key)
+    actual = sha256_file(workspace.resolve_path(ref, must_exist=True))
+    if expected != actual:
+        raise V2StateValidationError(f"ContextForge metadata {metadata_key} mismatch: expected {expected!r}, got {actual}")
+
+
+def _json_ref(payload: Mapping[str, Any], path: tuple[str, ...], fallback: str) -> str:
+    return _optional_nested_str(payload, path) or fallback
+
+
+def _json_str_at(payload: Mapping[str, Any], path: tuple[str, ...], label: str) -> str:
+    value = _optional_nested_str(payload, path)
+    if value is None:
+        raise V2StateValidationError(f"{label} is missing")
+    return value
+
+
+def _optional_nested_str(payload: Mapping[str, Any], path: tuple[str, ...]) -> str | None:
+    value: Any = payload
+    for key in path:
+        if not isinstance(value, Mapping):
+            return None
+        value = value.get(key)
+    return _optional_str(value)
+
+
+def _optional_nested_bool(payload: Mapping[str, Any], path: tuple[str, ...]) -> bool | None:
+    value: Any = payload
+    for key in path:
+        if not isinstance(value, Mapping):
+            return None
+        value = value.get(key)
+    return value if isinstance(value, bool) else None
+
+
 __all__ = [
     "MAX_V2_INLINE_STRING_BYTES",
     "SkillFoundryV2State",
@@ -609,6 +987,8 @@ __all__ = [
     "build_goal_node",
     "build_offline_goal_harness_node",
     "build_skillfoundry_v2_graph",
+    "build_verified_goal_harness_node",
+    "build_verified_registry_gate_node",
     "compile_skillfoundry_v2_graph",
     "emit_report_node",
     "freeze_contracts_node",
