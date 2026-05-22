@@ -12,6 +12,7 @@ from skillfoundry.goal_runtime import (
     GOAL_RUNTIME_STATE_REF,
     run_offline_goal_harness,
 )
+from skillfoundry.workers_v2 import WORKERS_V2_VERSION
 from skillfoundry.workspace import initialize_job_workspace
 
 
@@ -54,6 +55,13 @@ def test_offline_goal_harness_pass_records_context_cache_worker_verification_and
         result.contracts.build_node_contract.cache_policy.cache_epoch_id
     )
     assert result.harness_result.worker_run.worker_kind == "fake_model"
+    assert result.harness_result.worker_run.metadata["workers_v2"] == WORKERS_V2_VERSION
+    assert result.harness_result.worker_run.metadata["worker_self_report_is_not_acceptance"] is True
+    assert result.harness_result.worker_run.metadata["changed_files"] == [
+        "package/SKILL.md",
+        "attempts/fake_worker_report.json",
+        "attempts/fake_worker_transcript.log",
+    ]
     assert result.verification_result.status == "passed"
     assert result.goal_run.status == "completed"
     assert result.goal_run.decision == "complete"

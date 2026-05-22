@@ -155,7 +155,6 @@ from .goal_runtime import (
     GOAL_RUNTIME_RESULT_SCHEMA_VERSION,
     GOAL_RUNTIME_STATE_REF,
     GOAL_RUNTIME_STATE_SCHEMA_VERSION,
-    FakeSkillBuilderWorker,
     SkillFoundryGoalHarnessResult,
     build_goal_harness_state,
     run_offline_goal_harness,
@@ -264,6 +263,12 @@ from .workspace import (
     initialize_job_workspace,
     verify_locked_inputs,
 )
+from .workers_v2 import (
+    WORKERS_V2_VERSION,
+    CodexThreadSkillBuilderWorker,
+    ExternalAgentSkillBuilderWorker,
+    FakeSkillBuilderWorker,
+)
 from .worker import (
     BuildWorker,
     CODEX_PILOT_ENV_VAR,
@@ -309,6 +314,7 @@ __all__ = [
     "CODEX_PILOT_ENV_VAR",
     "CodexCommandResult",
     "CodexCommandRunner",
+    "CodexThreadSkillBuilderWorker",
     "CodexWorker",
     "CONTEXT_ADAPTER_VERSION",
     "CONTEXTFORGE_VERIFICATION_RESULT_REF",
@@ -363,6 +369,7 @@ __all__ = [
     "PlanReviewRecord",
     "SolutionPlan",
     "FrontDeskWorkspace",
+    "ExternalAgentSkillBuilderWorker",
     "FRONTDESK_BUDGET_REF",
     "FRONTDESK_CLARIFICATION_SUMMARY_REF",
     "FRONTDESK_CONVERSATION_REF",
@@ -477,6 +484,7 @@ __all__ = [
     "WorkerRunContext",
     "WorkerRunResult",
     "WorkflowStatus",
+    "WORKERS_V2_VERSION",
     "VERSION_CHANGE_REPORT_VERSION",
     "assert_under_root",
     "audit_report_to_json",
