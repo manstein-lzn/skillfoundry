@@ -10,6 +10,8 @@ from skillfoundry import (
     FRONTDESK_LOOP_STATUS_FAIL_CLOSED,
     FRONTDESK_LOOP_STATUS_HUMAN_REVIEW,
     FRONTDESK_LOOP_STATUS_ROUTE_TO_BUILD,
+    FRONTDESK_SPEC_AUDIT_RUNTIME_RESULT_REF,
+    FRONTDESK_SPEC_AUDIT_RUNTIME_STATE_REF,
     FrontDeskConfig,
     FrontDeskLoop,
     FrontDeskLoopResult,
@@ -355,6 +357,27 @@ def test_clear_need_materializes_audits_and_freezes(tmp_path):
     assert workspace.resolve_path("frontdesk/spec_audit_report_001.json", must_exist=True).is_file()
     assert workspace.resolve_path("frontdesk/freeze_gate_result.json", must_exist=True).is_file()
     assert workspace.resolve_path("frontdesk/freeze_manifest.json", must_exist=True).is_file()
+
+
+def test_approved_plan_without_auditor_client_uses_goal_harness_spec_auditor(tmp_path):
+    workspace, frontdesk = make_frontdesk_workspace(tmp_path)
+    result = run_frontdesk_round(
+        workspace,
+        elicitor_client=ScriptedModelClient(payload=ready_for_audit_payload()),
+    )
+    approved_state = approve_solution_plan(workspace, frontdesk, result.state)
+
+    freeze_result = run_frontdesk_round(frontdesk, state=approved_state)
+
+    assert freeze_result.status == FRONTDESK_LOOP_STATUS_ROUTE_TO_BUILD
+    assert freeze_result.state.readiness == "frozen"
+    assert freeze_result.state.latest_audit_report_ref == "frontdesk/spec_audit_report_001.json"
+    assert workspace.resolve_path(FRONTDESK_SPEC_AUDIT_RUNTIME_RESULT_REF, must_exist=True).is_file()
+    assert workspace.resolve_path(FRONTDESK_SPEC_AUDIT_RUNTIME_STATE_REF, must_exist=True).is_file()
+    runtime_result = read_json(workspace, FRONTDESK_SPEC_AUDIT_RUNTIME_RESULT_REF)
+    assert runtime_result["refs"]["plan_review"] == "frontdesk/plan_review_001.json"
+    assert runtime_result["refs"]["spec_audit_report"] == "frontdesk/spec_audit_report_001.json"
+    assert runtime_result["trust_boundaries"]["raw_conversation_included"] is False
 
 
 def test_auditor_approved_but_freeze_gate_blocks_routes_to_ask_user(tmp_path):

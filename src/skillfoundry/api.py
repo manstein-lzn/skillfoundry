@@ -1022,10 +1022,11 @@ class SkillFoundryAPI:
         if state is not None and (state.readiness == "plan_approved" or state.next_action == "freeze_approved_plan"):
             round_index = _frontdesk_report_index(state.latest_elicitation_report_ref) or max(1, state.clarification_round)
             elicitor_client = None
+            auditor_client = None
         else:
             round_index = (state.clarification_round if state is not None else 0) + 1
             elicitor_client = self._frontdesk_client("requirements_elicitor", frontdesk.job_id, round_index)
-        auditor_client = self._frontdesk_client("spec_auditor", frontdesk.job_id, round_index)
+            auditor_client = self._frontdesk_client("spec_auditor", frontdesk.job_id, round_index)
         result = run_frontdesk_round(
             frontdesk,
             state=state,

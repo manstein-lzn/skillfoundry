@@ -3,6 +3,7 @@ import json
 from contextforge.schema import ModelResponse
 
 from skillfoundry.api import SkillFoundryAPI
+from skillfoundry.frontdesk_goal_runtime import FRONTDESK_SPEC_AUDIT_RUNTIME_RESULT_REF
 from skillfoundry.frontdesk_schema import FrontDeskConfig
 
 
@@ -172,6 +173,12 @@ def test_frontdesk_api_runs_multi_round_loop_with_injected_clients(tmp_path):
     assert approved["state"]["readiness"] == "frozen"
     assert approved["state"]["skill_spec_ref"] == "skill_spec.yaml"
     assert approved["state"]["latest_plan_review_ref"] == "frontdesk/plan_review_002.json"
+    assert approved["state"]["latest_audit_report_ref"] == "frontdesk/spec_audit_report_002.json"
+    runtime_result_path = tmp_path / "runs" / "frontdesk-api-demo" / FRONTDESK_SPEC_AUDIT_RUNTIME_RESULT_REF
+    runtime_result = json.loads(runtime_result_path.read_text(encoding="utf-8"))
+    assert runtime_result["refs"]["plan_review"] == "frontdesk/plan_review_002.json"
+    assert runtime_result["refs"]["spec_audit_report"] == "frontdesk/spec_audit_report_002.json"
+    assert runtime_result["trust_boundaries"]["raw_conversation_included"] is False
 
     fetched = api.get_frontdesk_job("frontdesk-api-demo")
     assert fetched["turn_count"] == 2

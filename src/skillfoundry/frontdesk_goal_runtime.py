@@ -294,12 +294,14 @@ class FrontDeskSpecAuditorFakeWorker:
 
     frontdesk: FrontDeskWorkspace
     plan_review_ref: str = FRONTDESK_PLAN_REVIEW_REF
+    audit_report_ref: str = FRONTDESK_SPEC_AUDIT_REPORT_REF
+    audit_elicitation_report_ref: str = FRONTDESK_SOLUTION_PLAN_REF
     name: str = "frontdesk-spec-auditor-deterministic-worker"
 
     kind: str = "fake_model"
 
     def run(self, request: WorkerRunRequest) -> WorkerRunResult:
-        success_files = [FRONTDESK_SPEC_AUDIT_REPORT_REF, FRONTDESK_FEASIBILITY_REPORT_REF]
+        success_files = [self.audit_report_ref, FRONTDESK_FEASIBILITY_REPORT_REF]
         attempted_changed_files = [*success_files, FRONTDESK_SPEC_AUDIT_FAILURE_REF]
         try:
             enforce_write_scope(attempted_changed_files, request.node_contract.write_scope)
@@ -339,14 +341,8 @@ class FrontDeskSpecAuditorFakeWorker:
                 details={"audit_input_error": str(exc)},
             )
 
-        if plan.status != "approved":
-            return self._fail_closed(
-                request,
-                failure_class="solution_plan_not_approved",
-                message="Front Desk Spec Auditor requires an approved solution plan before audit.",
-                attempted_changed_files=attempted_changed_files,
-                details={"solution_plan_status": plan.status},
-            )
+        plan_review: PlanReviewRecord | None = None
+        plan_review_error: Exception | None = None
         try:
             plan_review = PlanReviewRecord.from_json(
                 self.frontdesk.workspace.resolve_path(self.plan_review_ref, must_exist=True).read_text(
@@ -354,12 +350,22 @@ class FrontDeskSpecAuditorFakeWorker:
                 )
             )
         except Exception as exc:
+            plan_review_error = exc
+        if plan.status != "approved" and plan_review_error is not None:
+            return self._fail_closed(
+                request,
+                failure_class="solution_plan_not_approved",
+                message="Front Desk Spec Auditor requires an approved solution plan before audit.",
+                attempted_changed_files=attempted_changed_files,
+                details={"solution_plan_status": plan.status},
+            )
+        if plan_review_error is not None or plan_review is None:
             return self._fail_closed(
                 request,
                 failure_class="missing_or_invalid_plan_review",
                 message="Front Desk Spec Auditor requires a valid approved plan review record before audit.",
                 attempted_changed_files=attempted_changed_files,
-                details={"plan_review_error": str(exc), "plan_review_ref": self.plan_review_ref},
+                details={"plan_review_error": str(plan_review_error), "plan_review_ref": self.plan_review_ref},
             )
         review_failure = _plan_review_failure(self.frontdesk, plan_review, plan_review_ref=self.plan_review_ref)
         if review_failure is not None:
@@ -413,16 +419,16 @@ class FrontDeskSpecAuditorFakeWorker:
                 "The approved plan, draft spec, and acceptance criteria are clear, feasible, and testable "
                 "for a governed SkillFoundry build."
             ),
-            elicitation_report_ref=FRONTDESK_SOLUTION_PLAN_REF,
+            elicitation_report_ref=self.audit_elicitation_report_ref,
             feasibility_report_ref=FRONTDESK_FEASIBILITY_REPORT_REF,
         )
         write_frontdesk_artifact(self.frontdesk, FRONTDESK_FEASIBILITY_REPORT_REF, feasibility)
-        write_frontdesk_artifact(self.frontdesk, FRONTDESK_SPEC_AUDIT_REPORT_REF, audit)
+        write_frontdesk_artifact(self.frontdesk, self.audit_report_ref, audit)
         return _frontdesk_worker_result(
             request,
             worker_name=self.name,
             status="completed",
-            final_output_ref=FRONTDESK_SPEC_AUDIT_REPORT_REF,
+            final_output_ref=self.audit_report_ref,
             summary="Front Desk Spec Auditor worker wrote governed audit artifacts.",
             failure_class=None,
             artifact_refs=success_files,
@@ -455,7 +461,7 @@ class FrontDeskSpecAuditorFakeWorker:
                 "plan_review": self.plan_review_ref,
                 "draft_skill_spec": FRONTDESK_DRAFT_SKILL_SPEC_REF,
                 "acceptance_criteria": FRONTDESK_ACCEPTANCE_CRITERIA_REF,
-                "spec_audit_report": FRONTDESK_SPEC_AUDIT_REPORT_REF,
+                "spec_audit_report": self.audit_report_ref,
                 "feasibility_report": FRONTDESK_FEASIBILITY_REPORT_REF,
             },
             "raw_conversation_included": False,
@@ -658,6 +664,8 @@ def run_frontdesk_spec_auditor_goal_harness(
     *,
     run_id: str | None = None,
     plan_review_ref: str = FRONTDESK_PLAN_REVIEW_REF,
+    audit_report_ref: str = FRONTDESK_SPEC_AUDIT_REPORT_REF,
+    audit_elicitation_report_ref: str = FRONTDESK_SOLUTION_PLAN_REF,
     created_at: str | None = None,
 ) -> FrontDeskSpecAuditorGoalHarnessResult:
     """Run Front Desk Spec Auditor as a ContextForge Goal Harness node."""
@@ -688,7 +696,12 @@ def run_frontdesk_spec_auditor_goal_harness(
         harness_result = GoalHarness(ContextKernel(ledger)).run_single_node(
             goal_contract,
             node_contract,
-            FrontDeskSpecAuditorFakeWorker(frontdesk, plan_review_ref=plan_review_ref),
+            FrontDeskSpecAuditorFakeWorker(
+                frontdesk,
+                plan_review_ref=plan_review_ref,
+                audit_report_ref=audit_report_ref,
+                audit_elicitation_report_ref=audit_elicitation_report_ref,
+            ),
             graph_id=_GRAPH_ID,
             run_id=resolved_run_id,
             task_id=SPEC_AUDITOR_NODE_ID,
@@ -715,7 +728,7 @@ def run_frontdesk_spec_auditor_goal_harness(
         if harness_result.worker_run.status == "completed":
             output_refs.update(
                 {
-                    "spec_audit_report": FRONTDESK_SPEC_AUDIT_REPORT_REF,
+                    "spec_audit_report": audit_report_ref,
                     "feasibility_report": FRONTDESK_FEASIBILITY_REPORT_REF,
                 }
             )

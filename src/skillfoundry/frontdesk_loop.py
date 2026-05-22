@@ -13,6 +13,8 @@ from typing import Any, Mapping
 
 from .frontdesk import (
     ELICITATION_STATUS_FAIL_CLOSED,
+    ELICITATION_REPORT_REF_TEMPLATE,
+    FEASIBILITY_REPORT_REF,
     FREEZE_GATE_DECISION_ASK_USER,
     FREEZE_GATE_DECISION_FREEZE,
     FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED,
@@ -27,19 +29,23 @@ from .frontdesk import (
     ROOT_ACCEPTANCE_CRITERIA_REF,
     ROOT_SKILL_SPEC_REF,
     ROOT_VERIFICATION_SPEC_REF,
+    SPEC_AUDIT_REPORT_REF_TEMPLATE,
     SPEC_AUDIT_STATUS_FAIL_CLOSED,
     FrontDeskFreezeGate,
     RequirementsElicitor,
     SpecAuditor,
 )
+from .frontdesk_goal_runtime import run_frontdesk_spec_auditor_goal_harness
 from .frontdesk_schema import (
     AcceptanceCriteriaSet,
     CoreNeedBrief,
     CoreNeedDiscoveryReport,
     ElicitationReport,
+    FeasibilityReport,
     FrontDeskConfig,
     FrontDeskState,
     PlanReviewRecord,
+    SpecAuditReport,
     SolutionPlan,
 )
 from .frontdesk_workspace import (
@@ -434,57 +440,126 @@ class FrontDeskLoop:
             )
             return _failure_result(failed_state, round_index=round_index, failure_ref=failure_ref)
 
-        try:
-            audit = self.auditor.audit(
-                frontdesk,
-                round_index=round_index,
-                client=auditor_client,
-                config=config,
-                provider=auditor_provider,
-                model=auditor_model,
-                model_params=auditor_model_params,
+        if _use_goal_harness_spec_auditor(self.auditor, auditor_client):
+            audit_report_ref = SPEC_AUDIT_REPORT_REF_TEMPLATE.format(sequence=round_index)
+            feasibility_report_ref = FEASIBILITY_REPORT_REF
+            elicitation_report_ref = state.latest_elicitation_report_ref or ELICITATION_REPORT_REF_TEMPLATE.format(
+                sequence=round_index
             )
-        except Exception as exc:
-            failure_ref = _write_loop_failure(
-                frontdesk,
-                round_index=round_index,
-                failure_type="auditor_exception",
-                message=str(exc),
-                details={"exception_type": type(exc).__name__},
-                artifact_refs=_artifact_refs_from_state(state),
-            )
-            failed_state = _failed_state(
-                state,
-                clarification_round=round_index,
-                latest_elicitation_report_ref=state.latest_elicitation_report_ref,
-                latest_audit_report_ref=state.latest_audit_report_ref,
-            )
-            return _failure_result(failed_state, round_index=round_index, failure_ref=failure_ref)
+            try:
+                goal_audit = run_frontdesk_spec_auditor_goal_harness(
+                    frontdesk,
+                    plan_review_ref=state.latest_plan_review_ref,
+                    audit_report_ref=audit_report_ref,
+                    audit_elicitation_report_ref=elicitation_report_ref,
+                )
+            except Exception as exc:
+                failure_ref = _write_loop_failure(
+                    frontdesk,
+                    round_index=round_index,
+                    failure_type="goal_harness_spec_auditor_exception",
+                    message=str(exc),
+                    details={"exception_type": type(exc).__name__},
+                    artifact_refs=_artifact_refs_from_state(state),
+                )
+                failed_state = _failed_state(
+                    state,
+                    clarification_round=round_index,
+                    latest_elicitation_report_ref=state.latest_elicitation_report_ref,
+                    latest_audit_report_ref=state.latest_audit_report_ref,
+                )
+                return _failure_result(failed_state, round_index=round_index, failure_ref=failure_ref)
+            if goal_audit.harness_result.worker_run.status != "completed":
+                failed_state = _failed_state(
+                    state,
+                    clarification_round=round_index,
+                    latest_elicitation_report_ref=state.latest_elicitation_report_ref,
+                    latest_audit_report_ref=state.latest_audit_report_ref,
+                )
+                return _failure_result(
+                    failed_state,
+                    round_index=round_index,
+                    failure_ref=goal_audit.harness_result.worker_run.final_output_ref,
+                )
+            try:
+                audit_report = SpecAuditReport.read_json_file(
+                    frontdesk.workspace.resolve_path(audit_report_ref, must_exist=True)
+                )
+                feasibility_report = FeasibilityReport.read_json_file(
+                    frontdesk.workspace.resolve_path(feasibility_report_ref, must_exist=True)
+                )
+            except Exception as exc:
+                failure_ref = _write_loop_failure(
+                    frontdesk,
+                    round_index=round_index,
+                    failure_type="invalid_goal_harness_spec_auditor_result",
+                    message=str(exc),
+                    details={"exception_type": type(exc).__name__},
+                    artifact_refs=_artifact_refs_from_state(state),
+                )
+                failed_state = _failed_state(
+                    state,
+                    clarification_round=round_index,
+                    latest_elicitation_report_ref=state.latest_elicitation_report_ref,
+                    latest_audit_report_ref=state.latest_audit_report_ref,
+                )
+                return _failure_result(failed_state, round_index=round_index, failure_ref=failure_ref)
+        else:
+            try:
+                audit = self.auditor.audit(
+                    frontdesk,
+                    round_index=round_index,
+                    client=auditor_client,
+                    config=config,
+                    provider=auditor_provider,
+                    model=auditor_model,
+                    model_params=auditor_model_params,
+                )
+            except Exception as exc:
+                failure_ref = _write_loop_failure(
+                    frontdesk,
+                    round_index=round_index,
+                    failure_type="auditor_exception",
+                    message=str(exc),
+                    details={"exception_type": type(exc).__name__},
+                    artifact_refs=_artifact_refs_from_state(state),
+                )
+                failed_state = _failed_state(
+                    state,
+                    clarification_round=round_index,
+                    latest_elicitation_report_ref=state.latest_elicitation_report_ref,
+                    latest_audit_report_ref=state.latest_audit_report_ref,
+                )
+                return _failure_result(failed_state, round_index=round_index, failure_ref=failure_ref)
 
-        if audit.status == SPEC_AUDIT_STATUS_FAIL_CLOSED:
-            failed_state = _failed_state(
-                state,
-                clarification_round=round_index,
-                latest_elicitation_report_ref=state.latest_elicitation_report_ref,
-                latest_audit_report_ref=state.latest_audit_report_ref,
-            )
-            return _failure_result(failed_state, round_index=round_index, failure_ref=audit.failure_ref)
+            if audit.status == SPEC_AUDIT_STATUS_FAIL_CLOSED:
+                failed_state = _failed_state(
+                    state,
+                    clarification_round=round_index,
+                    latest_elicitation_report_ref=state.latest_elicitation_report_ref,
+                    latest_audit_report_ref=state.latest_audit_report_ref,
+                )
+                return _failure_result(failed_state, round_index=round_index, failure_ref=audit.failure_ref)
 
-        if audit.audit_report_ref is None or audit.feasibility_report_ref is None:
-            failure_ref = _write_loop_failure(
-                frontdesk,
-                round_index=round_index,
-                failure_type="invalid_audit_result",
-                message="auditor returned success without required report refs",
-                artifact_refs=_artifact_refs_from_state(state),
-            )
-            failed_state = _failed_state(
-                state,
-                clarification_round=round_index,
-                latest_elicitation_report_ref=state.latest_elicitation_report_ref,
-                latest_audit_report_ref=state.latest_audit_report_ref,
-            )
-            return _failure_result(failed_state, round_index=round_index, failure_ref=failure_ref)
+            if audit.audit_report_ref is None or audit.feasibility_report_ref is None:
+                failure_ref = _write_loop_failure(
+                    frontdesk,
+                    round_index=round_index,
+                    failure_type="invalid_audit_result",
+                    message="auditor returned success without required report refs",
+                    artifact_refs=_artifact_refs_from_state(state),
+                )
+                failed_state = _failed_state(
+                    state,
+                    clarification_round=round_index,
+                    latest_elicitation_report_ref=state.latest_elicitation_report_ref,
+                    latest_audit_report_ref=state.latest_audit_report_ref,
+                )
+                return _failure_result(failed_state, round_index=round_index, failure_ref=failure_ref)
+            audit_report_ref = audit.audit_report_ref
+            feasibility_report_ref = audit.feasibility_report_ref
+            audit_report = audit.audit_report
+            feasibility_report = audit.feasibility_report
 
         elicitation_report = None
         if state.latest_elicitation_report_ref is not None:
@@ -498,8 +573,8 @@ class FrontDeskLoop:
             frontdesk,
             round_index=round_index,
             elicitation_report=elicitation_report,
-            audit_report=audit.audit_report,
-            feasibility_report=audit.feasibility_report,
+            audit_report=audit_report,
+            feasibility_report=feasibility_report,
         )
 
         try:
@@ -517,7 +592,7 @@ class FrontDeskLoop:
                 state,
                 clarification_round=round_index,
                 latest_elicitation_report_ref=state.latest_elicitation_report_ref,
-                latest_audit_report_ref=audit.audit_report_ref,
+                latest_audit_report_ref=audit_report_ref,
             )
             return _failure_result(failed_state, round_index=round_index, failure_ref=failure_ref)
 
@@ -525,8 +600,9 @@ class FrontDeskLoop:
             state,
             job_id=frontdesk.job_id,
             round_index=round_index,
-            elicitation_report_ref=state.latest_elicitation_report_ref or f"frontdesk/elicitation_report_{round_index:03d}.json",
-            audit_report_ref=audit.audit_report_ref,
+            elicitation_report_ref=state.latest_elicitation_report_ref
+            or ELICITATION_REPORT_REF_TEMPLATE.format(sequence=round_index),
+            audit_report_ref=audit_report_ref,
             freeze_decision=freeze.decision,
             freeze_gate_result_ref=freeze.freeze_gate_result_ref,
             freeze_manifest_ref=freeze.freeze_manifest_ref,
@@ -539,11 +615,15 @@ class FrontDeskLoop:
             status=next_state.next_action,
             frozen_artifact_refs=dict(freeze.frozen_artifact_refs),
             elicitation_report_ref=state.latest_elicitation_report_ref,
-            audit_report_ref=audit.audit_report_ref,
-            feasibility_report_ref=audit.feasibility_report_ref,
+            audit_report_ref=audit_report_ref,
+            feasibility_report_ref=feasibility_report_ref,
             freeze_gate_result_ref=freeze.freeze_gate_result_ref,
             freeze_manifest_ref=freeze.freeze_manifest_ref,
         )
+
+
+def _use_goal_harness_spec_auditor(auditor: SpecAuditor, auditor_client: Any | None) -> bool:
+    return auditor_client is None and type(auditor) is SpecAuditor
 
 
 def run_frontdesk_round(
