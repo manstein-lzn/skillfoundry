@@ -11,6 +11,13 @@ from typing import Any, Mapping
 import yaml
 
 from .context import OwnedLLMCallResult, SkillFoundryContextAdapter
+from .contracts import (
+    BUILD_NODE_CONTRACT_REF,
+    CONTRACT_MANIFEST_REF,
+    GOAL_CONTRACT_REF,
+    VERIFICATION_GATE_REF,
+    write_contextforge_contract_artifacts,
+)
 from .frontdesk_schema import (
     AcceptanceCriteriaSet,
     ElicitationReport,
@@ -823,6 +830,10 @@ class FrontDeskFreezeGate:
                     "worker_input": ROOT_WORKER_INPUT_REF,
                     "build_contract": ROOT_BUILD_CONTRACT_REF,
                     "freeze_manifest": FREEZE_MANIFEST_REF,
+                    "goal_contract": GOAL_CONTRACT_REF,
+                    "build_node_contract": BUILD_NODE_CONTRACT_REF,
+                    "verification_gate": VERIFICATION_GATE_REF,
+                    "contract_manifest": CONTRACT_MANIFEST_REF,
                 }
             except (OSError, ValueError, SchemaValidationError) as exc:
                 blocking_reasons.append(
@@ -2559,6 +2570,7 @@ def _write_frozen_inputs_and_manifest(
 
     _upsert_locked_manifest_records(workspace, list(FROZEN_INPUT_REFS))
     workspace.check_locked_inputs()
+    write_contextforge_contract_artifacts(workspace)
 
     artifact_hashes = _freeze_artifact_hashes(
         workspace,
@@ -2581,6 +2593,10 @@ def _write_frozen_inputs_and_manifest(
             ROOT_VERIFICATION_SPEC_REF,
             ROOT_WORKER_INPUT_REF,
             ROOT_BUILD_CONTRACT_REF,
+            GOAL_CONTRACT_REF,
+            BUILD_NODE_CONTRACT_REF,
+            VERIFICATION_GATE_REF,
+            CONTRACT_MANIFEST_REF,
         ],
     )
     conversation_summary_hash = artifact_hashes[FRONTDESK_CLARIFICATION_SUMMARY_REF]

@@ -6,18 +6,22 @@ import skillfoundry
 from skillfoundry import (
     AcceptanceCriteriaSet,
     AcceptanceCriterion,
+    BUILD_NODE_CONTRACT_REF,
+    CONTRACT_MANIFEST_REF,
     ConversationTurn,
     ElicitationReport,
     FeasibilityReport,
     FREEZE_GATE_DECISION_ASK_USER,
     FREEZE_GATE_DECISION_FREEZE,
     FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED,
+    GOAL_CONTRACT_REF,
     FrontDeskFreezeGate,
     LockedInputTamperError,
     PlanReviewRecord,
     SkillFoundryContextAdapter,
     SolutionPlan,
     SpecAuditReport,
+    VERIFICATION_GATE_REF,
     append_conversation_turn,
     initialize_frontdesk_workspace,
     initialize_job_workspace,
@@ -265,6 +269,10 @@ def test_freeze_gate_freezes_approved_spec_and_writes_manifest_and_locked_record
         "verification_spec.yaml",
         "worker_input.md",
         "build_contract.yaml",
+        GOAL_CONTRACT_REF,
+        BUILD_NODE_CONTRACT_REF,
+        VERIFICATION_GATE_REF,
+        CONTRACT_MANIFEST_REF,
         "frontdesk/freeze_gate_result.json",
         "frontdesk/freeze_manifest.json",
     ):
@@ -273,6 +281,10 @@ def test_freeze_gate_freezes_approved_spec_and_writes_manifest_and_locked_record
     gate_result = read_json(workspace, "frontdesk/freeze_gate_result.json")
     assert gate_result["decision"] == "freeze"
     assert gate_result["frozen_artifact_refs"]["acceptance_criteria"] == "acceptance_criteria.yaml"
+    assert gate_result["frozen_artifact_refs"]["goal_contract"] == GOAL_CONTRACT_REF
+    assert gate_result["frozen_artifact_refs"]["build_node_contract"] == BUILD_NODE_CONTRACT_REF
+    assert gate_result["frozen_artifact_refs"]["verification_gate"] == VERIFICATION_GATE_REF
+    assert gate_result["frozen_artifact_refs"]["contract_manifest"] == CONTRACT_MANIFEST_REF
 
     freeze_manifest = read_json(workspace, "frontdesk/freeze_manifest.json")
     assert freeze_manifest["elicitation_report_ref"] == "frontdesk/elicitation_report_001.json"
@@ -289,9 +301,20 @@ def test_freeze_gate_freezes_approved_spec_and_writes_manifest_and_locked_record
         "verification_spec.yaml",
         "worker_input.md",
         "build_contract.yaml",
+        GOAL_CONTRACT_REF,
+        BUILD_NODE_CONTRACT_REF,
+        VERIFICATION_GATE_REF,
+        CONTRACT_MANIFEST_REF,
     ):
         assert ref in freeze_manifest["artifact_hashes"]
         assert freeze_manifest["artifact_hashes"][ref] == sha256_file(workspace.resolve_path(ref, must_exist=True))
+
+    contract_manifest = read_json(workspace, CONTRACT_MANIFEST_REF)
+    goal_contract = read_json(workspace, GOAL_CONTRACT_REF)
+    node_contract = read_json(workspace, BUILD_NODE_CONTRACT_REF)
+    assert "frontdesk/conversation.jsonl" in contract_manifest["excluded_artifacts"]
+    assert goal_contract["metadata"]["raw_conversation_included"] is False
+    assert node_contract["metadata"]["raw_conversation_forbidden"] is True
 
     manifest = workspace.read_manifest()
     for ref in (
@@ -334,6 +357,10 @@ def test_freeze_gate_blocks_when_auditor_not_approved_and_does_not_overwrite_roo
     assert "audit_not_approved" in reason_codes(result)
     assert root_hashes(workspace) == before
     assert not workspace.resolve_path("frontdesk/freeze_manifest.json").exists()
+    assert not (workspace.root / GOAL_CONTRACT_REF).exists()
+    assert not (workspace.root / BUILD_NODE_CONTRACT_REF).exists()
+    assert not (workspace.root / VERIFICATION_GATE_REF).exists()
+    assert not (workspace.root / CONTRACT_MANIFEST_REF).exists()
     gate_result = read_json(workspace, "frontdesk/freeze_gate_result.json")
     assert gate_result["decision"] == "ask_user"
     assert gate_result["blocking_reasons"]
