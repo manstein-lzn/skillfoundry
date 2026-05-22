@@ -18,6 +18,7 @@ from .goal_runtime import (
     VERIFIED_GOAL_RUNTIME_RESULT_REF,
     run_repair_goal_harness,
     run_offline_goal_harness,
+    run_verified_repair_goal_harness,
     run_verified_offline_goal_harness,
 )
 from .registry import DEFAULT_REGISTRY_VERSION, LocalSkillRegistry
@@ -206,6 +207,7 @@ def route_after_verification(state: Mapping[str, Any]) -> str:
 def build_skillfoundry_v2_graph(
     *,
     build_node_callable: V2Node | None = None,
+    verify_node_callable: V2Node | None = None,
     repair_node_callable: V2Node | None = None,
     registry_gate_callable: V2Node | None = None,
 ) -> StateGraph:
@@ -214,7 +216,7 @@ def build_skillfoundry_v2_graph(
     graph = StateGraph(SkillFoundryV2State)
     graph.add_node(V2Stage.FREEZE_CONTRACTS.value, freeze_contracts_node)
     graph.add_node(V2Stage.BUILD_GOAL_NODE.value, build_node_callable or build_goal_node)
-    graph.add_node(V2Stage.VERIFY.value, verify_node)
+    graph.add_node(V2Stage.VERIFY.value, verify_node_callable or verify_node)
     graph.add_node(V2Stage.ROUTE_AFTER_VERIFICATION.value, route_after_verification_node)
     graph.add_node(V2Stage.REPAIR_GOAL_NODE.value, repair_node_callable or repair_goal_node)
     graph.add_node(V2Stage.REGISTRY_GATE.value, registry_gate_callable or registry_gate_node)
@@ -240,7 +242,14 @@ def build_skillfoundry_v2_graph(
         },
     )
     graph.add_edge(V2Stage.REGISTRY_GATE.value, V2Stage.EMIT_REPORT.value)
-    graph.add_edge(V2Stage.REPAIR_GOAL_NODE.value, END)
+    graph.add_conditional_edges(
+        V2Stage.REPAIR_GOAL_NODE.value,
+        route_after_repair,
+        {
+            V2Stage.VERIFY.value: V2Stage.VERIFY.value,
+            END: END,
+        },
+    )
     graph.add_edge(V2Stage.HUMAN_REVIEW.value, END)
     graph.add_edge(V2Stage.REDESIGN.value, END)
     graph.add_edge(V2Stage.REJECT.value, END)
@@ -251,6 +260,7 @@ def build_skillfoundry_v2_graph(
 def compile_skillfoundry_v2_graph(
     *,
     build_node_callable: V2Node | None = None,
+    verify_node_callable: V2Node | None = None,
     repair_node_callable: V2Node | None = None,
     registry_gate_callable: V2Node | None = None,
     checkpointer: Any | None = None,
@@ -262,6 +272,7 @@ def compile_skillfoundry_v2_graph(
 
     return build_skillfoundry_v2_graph(
         build_node_callable=build_node_callable,
+        verify_node_callable=verify_node_callable,
         repair_node_callable=repair_node_callable,
         registry_gate_callable=registry_gate_callable,
     ).compile(
@@ -295,10 +306,17 @@ def run_verified_skillfoundry_v2_graph(
             created_at=created_at,
             worker_factory=worker_factory,
         ),
+        verify_node_callable=build_verified_repair_verification_node(
+            runs_path,
+            registry_path=registry_path,
+            version=version,
+            created_at=created_at,
+        ),
         repair_node_callable=build_repair_goal_harness_node(
             runs_path,
             created_at=created_at,
             worker_factory=worker_factory,
+            continue_to_verification=True,
         ),
         registry_gate_callable=build_verified_registry_gate_node(
             runs_path,
@@ -475,6 +493,7 @@ def build_repair_goal_harness_node(
     *,
     created_at: str | None = None,
     worker_factory: GoalHarnessWorkerFactory | None = None,
+    continue_to_verification: bool = False,
 ) -> V2Node:
     """Return a repair node backed by a ContextForge Goal Harness worker boundary."""
 
@@ -509,6 +528,8 @@ def build_repair_goal_harness_node(
         )
         contextforge.update(_contextforge_mapping(runtime_state.get("contextforge", {}), "repair contextforge"))
         contextforge["repair_runtime_result_ref"] = result.runtime_result_ref
+        if continue_to_verification:
+            contextforge["repair_verification_requested"] = True
         update: SkillFoundryV2State = {
             "schema_version": _STATE_SCHEMA_VERSION,
             "job_id": job_id,
@@ -527,24 +548,114 @@ def build_repair_goal_harness_node(
     return _node
 
 
+def build_verified_repair_verification_node(
+    runs_root: str | Path,
+    *,
+    registry_path: str | Path,
+    version: str = DEFAULT_REGISTRY_VERSION,
+    created_at: str | None = None,
+) -> V2Node:
+    """Return a verify node that promotes repaired output through real gates."""
+
+    runs_path = Path(runs_root)
+    registry_file = Path(registry_path)
+
+    def _node(state: SkillFoundryV2State) -> SkillFoundryV2State:
+        validate_v2_graph_state(state)
+        if state.get("stage") != V2Stage.REPAIR_GOAL_NODE.value or state.get("status") != V2Status.REPAIR_RECORDED.value:
+            return verify_node(state)
+
+        job_id = _job_id(state)
+        workspace = _graph_workspace(runs_path, job_id)
+        contextforge = dict(state.get("contextforge", {}))
+        attempt_id = _optional_str(contextforge.get("last_repair_attempt_id"))
+        if attempt_id is None:
+            raise V2StateValidationError("verified repair node requires last_repair_attempt_id")
+
+        result = run_verified_repair_goal_harness(
+            workspace,
+            registry_path=registry_file,
+            attempt_id=attempt_id,
+            version=version,
+            created_at=created_at,
+        )
+        verified_runtime = result.verified_runtime_result
+        refs = _merge_refs(state, **_safe_verified_runtime_refs(verified_runtime.get("refs", {})))
+        hashes = dict(state.get("hashes", {}))
+        hashes.update(_string_mapping(verified_runtime.get("hashes", {}), "verified repair runtime hashes"))
+        hashes["verified_runtime_result"] = sha256_file(
+            workspace.resolve_path(VERIFIED_GOAL_RUNTIME_RESULT_REF, must_exist=True)
+        )
+        if result.final_report is not None:
+            hashes["final_report"] = sha256_file(workspace.resolve_path("final_report.json", must_exist=True))
+
+        contextforge.update(
+            {
+                "last_goal_run_id": result.goal_run.goal_run_id,
+                "last_goal_status": result.goal_run.status,
+                "last_goal_decision": result.goal_run.decision or "",
+                "last_verification_result_id": result.contextforge_verification_result.verification_result_id,
+                "last_verification_status": result.contextforge_verification_result.status,
+                "verified_runtime_result_ref": VERIFIED_GOAL_RUNTIME_RESULT_REF,
+                "repair_verified_runtime_result_ref": VERIFIED_GOAL_RUNTIME_RESULT_REF,
+                "repair_requires_followup_verification": False,
+                "worker_self_report_is_not_acceptance": True,
+            }
+        )
+        if result.goal_run.checkpoint_ids:
+            contextforge["last_checkpoint_id"] = result.goal_run.checkpoint_ids[-1]
+            contextforge["last_repair_verification_checkpoint_id"] = result.goal_run.checkpoint_ids[-1]
+            contextforge["checkpoint_ids"] = list(result.goal_run.checkpoint_ids)
+        if result.registry_entry is not None:
+            contextforge.update(
+                {
+                    "registry_approved": result.registry_entry.approval_status == "approved",
+                    "registry_skill_id": result.registry_entry.skill_id,
+                    "registry_version": result.registry_entry.version,
+                }
+            )
+        else:
+            contextforge["registry_approved"] = False
+
+        status = _status_for_verification_result(result.contextforge_verification_result.status)
+        route_state = dict(state)
+        route_state.update({"status": status, "contextforge": contextforge})
+        update: SkillFoundryV2State = {
+            "schema_version": _STATE_SCHEMA_VERSION,
+            "job_id": job_id,
+            "stage": V2Stage.VERIFY.value,
+            "status": status,
+            "attempt_count": int(state.get("attempt_count", 0)),
+            "attempt_limit": int(state.get("attempt_limit", 1)),
+            "refs": refs,
+            "hashes": hashes,
+            "contextforge": contextforge,
+            "human_review_required": False,
+            "next_route": route_after_verification(route_state),
+        }
+        return _validated_update(state, update)
+
+    return _node
+
+
 def verify_node(state: SkillFoundryV2State) -> SkillFoundryV2State:
     status = _optional_str(state.get("contextforge", {}).get("last_verification_status"))
-    if status == "passed":
-        graph_status = V2Status.VERIFIED.value
-    elif status == "failed":
-        graph_status = V2Status.VERIFICATION_FAILED.value
-    elif status in {"review_required", "human_acceptance_required"}:
-        graph_status = V2Status.HUMAN_REVIEW_REQUIRED.value
-    elif status == "unsupported_verification_spec":
-        graph_status = V2Status.REDESIGN_REQUIRED.value
-    else:
-        graph_status = V2Status.RUNNING.value
+    graph_status = _status_for_verification_result(status)
     update: SkillFoundryV2State = {
         "stage": V2Stage.VERIFY.value,
         "status": graph_status,
         "next_route": route_after_verification(state),
     }
     return _validated_update(state, update)
+
+
+def route_after_repair(state: SkillFoundryV2State) -> str:
+    validate_v2_graph_state(state)
+    contextforge = state.get("contextforge", {})
+    should_verify = isinstance(contextforge, Mapping) and contextforge.get("repair_verification_requested") is True
+    if state.get("status") == V2Status.REPAIR_RECORDED.value and should_verify:
+        return V2Stage.VERIFY.value
+    return END
 
 
 def route_after_verification_node(state: SkillFoundryV2State) -> SkillFoundryV2State:
@@ -743,6 +854,18 @@ def _validated_update(
     merged.update(update)
     validate_v2_graph_state(merged)
     return update
+
+
+def _status_for_verification_result(status: str | None) -> str:
+    if status == "passed":
+        return V2Status.VERIFIED.value
+    if status == "failed":
+        return V2Status.VERIFICATION_FAILED.value
+    if status in {"review_required", "human_acceptance_required"}:
+        return V2Status.HUMAN_REVIEW_REQUIRED.value
+    if status == "unsupported_verification_spec":
+        return V2Status.REDESIGN_REQUIRED.value
+    return V2Status.RUNNING.value
 
 
 def _attempts_exhausted(state: Mapping[str, Any]) -> bool:
@@ -1099,6 +1222,7 @@ __all__ = [
     "build_repair_goal_harness_node",
     "build_skillfoundry_v2_graph",
     "build_verified_goal_harness_node",
+    "build_verified_repair_verification_node",
     "build_verified_registry_gate_node",
     "compile_skillfoundry_v2_graph",
     "emit_report_node",
@@ -1108,6 +1232,7 @@ __all__ = [
     "registry_gate_node",
     "reject_node",
     "repair_goal_node",
+    "route_after_repair",
     "route_after_verification",
     "route_after_verification_node",
     "run_verified_skillfoundry_v2_graph",

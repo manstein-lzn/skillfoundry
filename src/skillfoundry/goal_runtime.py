@@ -136,6 +136,23 @@ class RepairSkillFoundryGoalHarnessResult:
     graph_state_ref: str
 
 
+@dataclass(frozen=True)
+class VerifiedRepairSkillFoundryGoalHarnessResult:
+    """A repaired attempt promoted through verifier, coverage, bridge, and registry gates."""
+
+    contracts: ContextForgeContractArtifacts
+    repair_attempt: RepairAttempt
+    repair_runtime_result: dict[str, JsonValue]
+    verifier_result: VerificationResult
+    acceptance_coverage_result: AcceptanceCoverageResult
+    contextforge_verification_result: ContextForgeVerificationResult
+    goal_run: GoalRunRecord
+    registry_entry: RegistryEntry | None
+    final_report: dict[str, JsonValue] | None
+    verified_runtime_result: dict[str, JsonValue]
+    verified_runtime_result_ref: str
+
+
 def _goal_harness_worker(
     workspace: JobWorkspace,
     worker_factory: GoalHarnessWorkerFactory | None,
@@ -454,6 +471,118 @@ def run_repair_goal_harness(
         )
     finally:
         ledger.close()
+
+
+def run_verified_repair_goal_harness(
+    workspace: JobWorkspace,
+    *,
+    registry_path: str | Path,
+    attempt_id: str = "002",
+    version: str = DEFAULT_REGISTRY_VERSION,
+    created_at: str | None = None,
+) -> VerifiedRepairSkillFoundryGoalHarnessResult:
+    """Promote a repaired attempt through independent verification gates.
+
+    This function intentionally starts from persisted repair evidence. The
+    repair worker boundary remains non-authoritative; only the verifier,
+    acceptance coverage evaluator, ContextForge verification bridge, and
+    registry gate can promote the repaired package.
+    """
+
+    if not attempt_id.isdigit() or len(attempt_id) < 3:
+        raise ValueError("repair attempt_id must be a zero-padded numeric string such as '002'")
+    timestamp = created_at or utc_now()
+    _check_verified_runtime_inputs(workspace)
+    workspace.check_locked_inputs()
+
+    repair_attempt_ref = REPAIR_ATTEMPT_REF_TEMPLATE.format(attempt_id=attempt_id)
+    repair_runtime_result_ref = REPAIR_GOAL_RUNTIME_RESULT_REF_TEMPLATE.format(attempt_id=attempt_id)
+    repair_attempt = RepairAttempt.read_json_file(workspace.resolve_path(repair_attempt_ref, must_exist=True))
+    repair_runtime_result = _read_json(workspace, repair_runtime_result_ref)
+    if repair_attempt.job_id != workspace.job_id:
+        raise ValueError(f"repair attempt job_id mismatch: expected {workspace.job_id}, got {repair_attempt.job_id}")
+    if repair_attempt.status != "completed":
+        raise ValueError(f"repair attempt must be completed before verification, got {repair_attempt.status!r}")
+
+    contracts = write_contextforge_contract_artifacts(workspace, created_at=timestamp)
+    goal_run_id = _json_str(repair_runtime_result, ("ids", "goal_run_id"), "repair goal_run_id")
+    worker_run_id = _json_str(repair_runtime_result, ("ids", "worker_run_id"), "repair worker_run_id")
+    ledger = ContextLedger.connect(workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF, must_exist=True))
+    try:
+        repair_goal_run = ledger.get_goal_run_record(goal_run_id)
+        repair_worker_run = ledger.get_worker_run(worker_run_id)
+    finally:
+        ledger.close()
+
+    verifier_result = Verifier().verify(workspace, attempt_id=attempt_id)
+    coverage_plan = AcceptanceCriteriaPlanner().plan(workspace)
+    acceptance_coverage_result = AcceptanceCoverageEvaluator().evaluate(workspace, plan=coverage_plan)
+    contextforge_verification_result = bridge_skillfoundry_verification_result(
+        workspace,
+        contracts.verification_gate,
+        goal_run_id=repair_goal_run.goal_run_id,
+        worker_id=repair_worker_run.worker_name,
+        expected_gate_hash=contracts.verification_gate.gate_hash,
+        created_at=timestamp,
+    )
+    final_goal_run = _finalize_repair_goal_run_verification(
+        workspace,
+        contracts,
+        repair_goal_run,
+        contextforge_verification_result,
+        created_at=timestamp,
+    )
+
+    registry_entry: RegistryEntry | None = None
+    final_report: dict[str, JsonValue] | None = None
+    if contextforge_verification_result.status == "passed":
+        registry_entry = LocalSkillRegistry(
+            registry_path,
+            duplicate_policy=DuplicatePolicy.IDEMPOTENT,
+        ).add_verified(
+            workspace,
+            version=version,
+            review_status="v2_goal_harness_repair_verified",
+            require_contextforge_verification=True,
+        )
+
+        from .graph import WorkflowStatus
+        from .offline import emit_final_report
+
+        final_report = emit_final_report(
+            workspace.root,
+            final_status=WorkflowStatus.REGISTERED,
+            registry_path=registry_path,
+            registry_entry=registry_entry,
+        )
+
+    verified_runtime_result = _verified_repair_runtime_result_payload(
+        workspace,
+        contracts,
+        repair_attempt,
+        repair_runtime_result,
+        verifier_result,
+        acceptance_coverage_result,
+        contextforge_verification_result,
+        final_goal_run,
+        registry_entry,
+        final_report,
+        created_at=timestamp,
+    )
+    _write_json(workspace, VERIFIED_GOAL_RUNTIME_RESULT_REF, verified_runtime_result)
+    return VerifiedRepairSkillFoundryGoalHarnessResult(
+        contracts=contracts,
+        repair_attempt=repair_attempt,
+        repair_runtime_result=repair_runtime_result,
+        verifier_result=verifier_result,
+        acceptance_coverage_result=acceptance_coverage_result,
+        contextforge_verification_result=contextforge_verification_result,
+        goal_run=final_goal_run,
+        registry_entry=registry_entry,
+        final_report=final_report,
+        verified_runtime_result=verified_runtime_result,
+        verified_runtime_result_ref=VERIFIED_GOAL_RUNTIME_RESULT_REF,
+    )
 
 
 def _check_verified_runtime_inputs(workspace: JobWorkspace) -> None:
@@ -1091,6 +1220,55 @@ def _finalize_goal_harness_verification(
     )
 
 
+def _finalize_repair_goal_run_verification(
+    workspace: JobWorkspace,
+    contracts: ContextForgeContractArtifacts,
+    repair_goal_run: GoalRunRecord,
+    verification_result: ContextForgeVerificationResult,
+    *,
+    created_at: str,
+) -> GoalRunRecord:
+    final_goal_run = _goal_run_with_verification(
+        repair_goal_run,
+        verification_result,
+        created_at=created_at,
+    )
+    verification_checkpoint = CheckpointManager().create(
+        contracts.goal_contract,
+        final_goal_run,
+        reason="phase_complete" if verification_result.status == "passed" else "verifier_failed",
+        current_best_result=_checkpoint_best_result(verification_result),
+        latest_diagnosis=_checkpoint_latest_diagnosis(verification_result),
+        next_plan=_checkpoint_next_plan(verification_result),
+        created_at=created_at,
+        metadata={
+            "skillfoundry_goal_runtime": REPAIR_GOAL_RUNTIME_RESULT_SCHEMA_VERSION,
+            "repair_verification": True,
+        },
+    )
+    final_goal_run = GoalRunRecord.from_dict(
+        {
+            **final_goal_run.to_dict(),
+            "checkpoint_ids": _dedupe([*final_goal_run.checkpoint_ids, verification_checkpoint.checkpoint_id]),
+            "updated_at": created_at,
+            "metadata": {
+                **final_goal_run.metadata,
+                "latest_checkpoint_id": verification_checkpoint.checkpoint_id,
+                "repair_verification_checkpoint_id": verification_checkpoint.checkpoint_id,
+                "worker_self_report_is_not_acceptance": True,
+            },
+        }
+    )
+    ledger = ContextLedger.connect(workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF, must_exist=True))
+    try:
+        ledger.record_verification_result(verification_result)
+        ledger.record_checkpoint(verification_checkpoint)
+        ledger.record_goal_run_record(final_goal_run)
+    finally:
+        ledger.close()
+    return final_goal_run
+
+
 def _checkpoint_best_result(verification_result: ContextForgeVerificationResult) -> str:
     if verification_result.status == "passed":
         return "Verification bridge passed and final evidence is ready for registry gating."
@@ -1275,6 +1453,106 @@ def _verified_runtime_result_payload(
     return ensure_json_compatible(payload)  # type: ignore[return-value]
 
 
+def _verified_repair_runtime_result_payload(
+    workspace: JobWorkspace,
+    contracts: ContextForgeContractArtifacts,
+    repair_attempt: RepairAttempt,
+    repair_runtime_result: dict[str, JsonValue],
+    verifier_result: VerificationResult,
+    acceptance_coverage_result: AcceptanceCoverageResult,
+    contextforge_verification_result: ContextForgeVerificationResult,
+    goal_run: GoalRunRecord,
+    registry_entry: RegistryEntry | None,
+    final_report: dict[str, JsonValue] | None,
+    *,
+    created_at: str,
+) -> dict[str, JsonValue]:
+    registry_approved = registry_entry is not None and registry_entry.approval_status == "approved"
+    refs = {
+        **dict(repair_runtime_result.get("refs", {})),
+        "verified_runtime_result": VERIFIED_GOAL_RUNTIME_RESULT_REF,
+        "repair_runtime_result": REPAIR_GOAL_RUNTIME_RESULT_REF_TEMPLATE.format(
+            attempt_id=repair_attempt.attempt_id
+        ),
+        "repair_attempt": REPAIR_ATTEMPT_REF_TEMPLATE.format(attempt_id=repair_attempt.attempt_id),
+        "worker_input_manifest": f"attempts/{repair_attempt.attempt_id}/input_manifest.json",
+        "worker_execution_report": f"attempts/{repair_attempt.attempt_id}/execution_report.json",
+        "worker_transcript": f"attempts/{repair_attempt.attempt_id}/worker_transcript.log",
+        "worker_diff": f"attempts/{repair_attempt.attempt_id}/output_diff.patch",
+        "skillfoundry_verification_result": "verifier/verification_result.json",
+        "acceptance_coverage_result": "qa/acceptance_coverage_result.json",
+        "contextforge_verification_result": "contextforge/verification_result.json",
+    }
+    if final_report is not None:
+        refs["final_report"] = "final_report.json"
+
+    ids: dict[str, JsonValue] = {
+        **dict(repair_runtime_result.get("ids", {})),
+        "goal_run_id": goal_run.goal_run_id,
+        "skillfoundry_verification_result_id": verifier_result.result_id,
+        "acceptance_coverage_result_id": acceptance_coverage_result.result_id,
+        "contextforge_verification_result_id": contextforge_verification_result.verification_result_id,
+    }
+    if registry_entry is not None:
+        ids["registry_skill_id"] = registry_entry.skill_id
+        ids["registry_version"] = registry_entry.version
+
+    status = {
+        **dict(repair_runtime_result.get("status", {})),
+        "goal_run": goal_run.status,
+        "decision": goal_run.decision,
+        "verification": contextforge_verification_result.status,
+        "skillfoundry_verification_passed": verifier_result.passed,
+        "acceptance_coverage_passed": acceptance_coverage_result.passed,
+        "contextforge_verification": contextforge_verification_result.status,
+        "registry_approved": registry_approved,
+        "final_status": final_report.get("final_status") if final_report is not None else "not_registered",
+        "worker_self_report_is_not_acceptance": True,
+    }
+
+    hashes = {
+        **dict(repair_runtime_result.get("hashes", {})),
+        "goal_contract": contracts.goal_contract.contract_hash,
+        "build_node_contract": contracts.build_node_contract.contract_hash,
+        "verification_gate": contracts.verification_gate.gate_hash,
+        "skillfoundry_verification_result": sha256_file(
+            workspace.resolve_path("verifier/verification_result.json", must_exist=True)
+        ),
+        "acceptance_coverage_result": sha256_file(
+            workspace.resolve_path("qa/acceptance_coverage_result.json", must_exist=True)
+        ),
+        "contextforge_verification_result": sha256_file(
+            workspace.resolve_path("contextforge/verification_result.json", must_exist=True)
+        ),
+        "repair_attempt": sha256_file(
+            workspace.resolve_path(
+                REPAIR_ATTEMPT_REF_TEMPLATE.format(attempt_id=repair_attempt.attempt_id),
+                must_exist=True,
+            )
+        ),
+    }
+    if registry_entry is not None:
+        hashes["registry_entry"] = sha256_json(registry_entry.to_dict())
+
+    payload = {
+        "schema_version": VERIFIED_GOAL_RUNTIME_RESULT_SCHEMA_VERSION,
+        "job_id": workspace.job_id,
+        "created_at": created_at,
+        "refs": refs,
+        "ids": ids,
+        "status": status,
+        "hashes": hashes,
+        "trust_boundaries": {
+            "worker_self_report_is_not_acceptance": True,
+            "repair_worker_output_is_not_acceptance": True,
+            "registry_requires_contextforge_verification": True,
+            "verifier_is_quality_fact_source": True,
+            "acceptance_coverage_required": True,
+        },
+    }
+    return ensure_json_compatible(payload)  # type: ignore[return-value]
+
+
 def _verification_gate_summary(contracts: ContextForgeContractArtifacts) -> str:
     gate = contracts.verification_gate
     return json.dumps(
@@ -1322,6 +1600,28 @@ def _sha256_or_unknown(workspace: JobWorkspace, artifact_ref: str) -> str:
 
 def _ZERO_HASH() -> str:
     return "0" * 64
+
+
+def _read_json(workspace: JobWorkspace, relative_path: str) -> dict[str, JsonValue]:
+    path = workspace.resolve_path(relative_path, must_exist=True)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"{relative_path} must contain a JSON object")
+    compatible = ensure_json_compatible(payload)
+    if not isinstance(compatible, dict):
+        raise ValueError(f"{relative_path} must contain a JSON object")
+    return compatible  # type: ignore[return-value]
+
+
+def _json_str(payload: dict[str, JsonValue], path: tuple[str, ...], label: str) -> str:
+    value: object = payload
+    for key in path:
+        if not isinstance(value, dict):
+            raise ValueError(f"{label} is missing")
+        value = value.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} is missing")
+    return value
 
 
 def _write_json(workspace: JobWorkspace, relative_path: str, payload: dict[str, JsonValue]) -> None:

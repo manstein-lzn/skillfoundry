@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import shutil
 
-from contextforge import ContextLedger, ModelResponse
+from contextforge import ContextLedger, ModelResponse, WorkerRunResult
 import pytest
 
 from skillfoundry import (
@@ -25,6 +25,7 @@ from skillfoundry import (
     build_offline_goal_harness_node,
     build_repair_goal_harness_node,
     build_verified_goal_harness_node,
+    build_verified_repair_verification_node,
     build_verified_registry_gate_node,
     compile_skillfoundry_v2_graph,
     validate_v2_graph_state,
@@ -98,8 +99,44 @@ class ScriptedGraphModelClient:
         )
 
 
+class BrokenRepairWorker:
+    name = "skillfoundry-broken-repair-worker"
+    kind = "fake_model"
+
+    def __init__(self, workspace) -> None:
+        self.workspace = workspace
+
+    def run(self, request) -> WorkerRunResult:
+        ref = "package/SKILL.md"
+        self.workspace.resolve_path(ref).write_text("# Broken Repair\n", encoding="utf-8")
+        return WorkerRunResult(
+            status="completed",
+            worker_name=self.name,
+            final_output_ref=ref,
+            summary="Wrote an intentionally incomplete repair package.",
+            failure_class=None,
+            prompt_view_ids=[request.prompt_view.id],
+            artifact_ids=[f"{self.workspace.job_id}:package:SKILL.md"],
+            usage_summary={
+                "provider": "offline",
+                "model": "broken_repair_fixture",
+                "usage_unavailable_reason": "test_fixture",
+            },
+            metadata={
+                "artifact_refs": [ref],
+                "changed_files": [ref],
+                "attempted_changed_files": [ref],
+                "worker_self_report_is_not_acceptance": True,
+            },
+        )
+
+
 def _owned_graph_worker_factory(client: ScriptedGraphModelClient):
     return lambda workspace: OwnedLLMSkillBuilderWorker(workspace, client=client)
+
+
+def _broken_repair_worker_factory():
+    return lambda workspace: BrokenRepairWorker(workspace)
 
 
 def _criterion() -> AcceptanceCriterion:
@@ -414,6 +451,127 @@ def test_v2_graph_runs_repair_goal_harness_node_after_failed_verification(tmp_pa
         ledger.close()
     assert f"{workspace.job_id}:verifier_failure:002" in context_view.included_item_ids
     assert f"{workspace.job_id}:raw_frontdesk_conversation" not in context_view.included_item_ids
+
+
+def test_v2_graph_reverifies_and_registers_after_repair(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    registry_path = tmp_path / "registry.json"
+    workspace = initialize_job_workspace(runs_root, "graph-runtime-repair-register")
+    _write_acceptance_criteria(workspace)
+    graph = compile_skillfoundry_v2_graph(
+        build_node_callable=build_offline_goal_harness_node(
+            runs_root,
+            verification_mode="fail_missing_coverage",
+            created_at=CREATED_AT,
+        ),
+        verify_node_callable=build_verified_repair_verification_node(
+            runs_root,
+            registry_path=registry_path,
+            created_at=CREATED_AT,
+        ),
+        repair_node_callable=build_repair_goal_harness_node(
+            runs_root,
+            created_at=CREATED_AT,
+            continue_to_verification=True,
+        ),
+        registry_gate_callable=build_verified_registry_gate_node(
+            runs_root,
+            registry_path=registry_path,
+            created_at=CREATED_AT,
+        ),
+    )
+
+    result = graph.invoke({"job_id": workspace.job_id, "attempt_limit": 2})
+
+    validate_v2_graph_state(result)
+    assert result["stage"] == V2Stage.EMIT_REPORT.value
+    assert result["status"] == V2Status.REPORT_EMITTED.value
+    assert result["attempt_count"] == 2
+    assert result["refs"]["repair_attempt"] == "attempts/002/repair_attempt.json"
+    assert result["refs"]["verified_runtime_result"] == VERIFIED_GOAL_RUNTIME_RESULT_REF
+    assert result["refs"]["registry_decision"] == "registry/decision.json"
+    assert result["refs"]["registry_entry"] == "registry/entry.json"
+    assert result["contextforge"]["last_repair_attempt_id"] == "002"
+    assert result["contextforge"]["last_verification_status"] == "passed"
+    assert result["contextforge"]["last_goal_decision"] == "complete"
+    assert result["contextforge"]["registry_approved"] is True
+    assert result["contextforge"]["worker_self_report_is_not_acceptance"] is True
+
+    verified_runtime = json.loads(
+        workspace.resolve_path(VERIFIED_GOAL_RUNTIME_RESULT_REF, must_exist=True).read_text()
+    )
+    assert verified_runtime["refs"]["worker_execution_report"] == "attempts/002/execution_report.json"
+    assert verified_runtime["trust_boundaries"]["repair_worker_output_is_not_acceptance"] is True
+    assert verified_runtime["status"]["registry_approved"] is True
+    assert workspace.resolve_path("registry/decision.json", must_exist=True).is_file()
+    assert workspace.resolve_path("final_report.json", must_exist=True).is_file()
+
+    entry = LocalSkillRegistry(registry_path).get(
+        result["contextforge"]["registry_skill_id"],
+        result["contextforge"]["registry_version"],
+    )
+    assert entry.provenance["execution_report"]["attempt_id"] == "002"
+    assert LocalSkillRegistry(registry_path).verify_entry(entry).valid is True
+
+    ledger = ContextLedger.connect(workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF, must_exist=True))
+    try:
+        goal_run = ledger.get_goal_run_record(result["contextforge"]["last_repair_goal_run_id"])
+        assert goal_run.verification_result_id == result["contextforge"]["last_verification_result_id"]
+        assert goal_run.decision == "complete"
+        assert len(ledger.query_checkpoints(goal_run_id=goal_run.goal_run_id)) >= 2
+    finally:
+        ledger.close()
+
+
+def test_v2_graph_does_not_register_failed_repair_verification(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    registry_path = tmp_path / "registry.json"
+    workspace = initialize_job_workspace(runs_root, "graph-runtime-repair-still-fails")
+    _write_acceptance_criteria(workspace)
+    graph = compile_skillfoundry_v2_graph(
+        build_node_callable=build_offline_goal_harness_node(
+            runs_root,
+            verification_mode="fail_missing_coverage",
+            created_at=CREATED_AT,
+        ),
+        verify_node_callable=build_verified_repair_verification_node(
+            runs_root,
+            registry_path=registry_path,
+            created_at=CREATED_AT,
+        ),
+        repair_node_callable=build_repair_goal_harness_node(
+            runs_root,
+            created_at=CREATED_AT,
+            worker_factory=_broken_repair_worker_factory(),
+            continue_to_verification=True,
+        ),
+        registry_gate_callable=build_verified_registry_gate_node(
+            runs_root,
+            registry_path=registry_path,
+            created_at=CREATED_AT,
+        ),
+    )
+
+    result = graph.invoke({"job_id": workspace.job_id, "attempt_limit": 2})
+
+    validate_v2_graph_state(result)
+    assert result["stage"] == V2Stage.HUMAN_REVIEW.value
+    assert result["status"] == V2Status.HUMAN_REVIEW_REQUIRED.value
+    assert result["attempt_count"] == 2
+    assert result["contextforge"]["last_repair_attempt_id"] == "002"
+    assert result["contextforge"]["last_verification_status"] == "failed"
+    assert result["contextforge"]["registry_approved"] is False
+    assert "registry_entry" not in result["refs"]
+    assert "registry_decision" not in result["refs"]
+    assert not registry_path.exists()
+    assert not (workspace.root / "registry" / "decision.json").exists()
+
+    verified_runtime = json.loads(
+        workspace.resolve_path(VERIFIED_GOAL_RUNTIME_RESULT_REF, must_exist=True).read_text()
+    )
+    assert verified_runtime["status"]["registry_approved"] is False
+    assert verified_runtime["status"]["contextforge_verification"] == "failed"
+    assert "final_report" not in verified_runtime["refs"]
 
 
 def test_verification_status_overrides_conflicting_next_route() -> None:

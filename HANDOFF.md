@@ -27,7 +27,7 @@ ContextForge contract bridge 已存在。
 Offline Goal Harness build path 已存在。
 workers_v2 / graph_v2 / verification bridge / registry evidence gate 已存在。
 Front Desk v2 Goal Harness slices 已存在。
-graph v2 failed verification -> Goal Harness repair evidence node 已存在。
+graph v2 failed verification -> Goal Harness repair -> verifier / acceptance coverage / ContextForge bridge / registry gate 闭环已存在。
 产品主路径还需要继续收敛到这套 v2 骨架。
 ```
 
@@ -114,7 +114,7 @@ graph v2 failed verification -> Goal Harness repair evidence node 已存在。
   - Fake / owned LLM / Codex thread boundary / external agent worker。
 - `src/skillfoundry/graph_v2.py`
   - refs-only LangGraph v2 spine。
-  - verified build/registry happy path 和 failed verification repair evidence node。
+  - verified build/registry happy path 和 failed verification repair re-verification/registry loop。
 - `src/skillfoundry/frontdesk_goal_runtime.py`
   - Core Need、Solution Planner、Spec Auditor 的 Goal Harness runtime slices。
 - `src/skillfoundry/verification_bridge.py`
@@ -180,7 +180,7 @@ uv run --extra test pytest -q
 
 - `POST /frontdesk/jobs/{job_id}/build` 只接受 approved/frozen Front Desk jobs。
 - endpoint 通过 `graph_v2.py` 调用 verified Goal Harness build、SkillFoundry verifier、acceptance coverage、ContextForge verification bridge 和 registry gate。
-- failed verification route 可以进入 Goal Harness-backed repair node，记录 governed verifier-failure context、WorkerRun、ContextView、PromptCachePlan、checkpoint、repair instructions、repair runtime result 和 `RepairAttempt`；repair worker self-report 仍不是验收或注册依据。
+- failed verification route 可以进入 Goal Harness-backed repair node，记录 governed verifier-failure context、WorkerRun、ContextView、PromptCachePlan、checkpoint、repair instructions、repair runtime result 和 `RepairAttempt`；repair 后会重新进入 SkillFoundry verifier、acceptance coverage、ContextForge verification bridge 和 registry gate。repair worker self-report 仍不是验收或注册依据。
 - graph v2 final state 持久化到 `contextforge/graph_v2_state.json`，仍是 refs/IDs/status-only。
 - `GET /jobs/{job_id}/contextforge` 会暴露 verified runtime、graph v2 state、verification 和 registry summary，不暴露 raw prompt / raw payload。
 - 相关 focused gates：`tests/test_frontdesk_api.py tests/test_api.py tests/test_graph_v2_runtime.py tests/test_graph_v2.py tests/test_goal_harness_verified_runtime.py tests/test_verification_bridge.py tests/test_registry.py tests/test_acceptance_coverage.py` 和全量 pytest。
@@ -188,8 +188,8 @@ uv run --extra test pytest -q
 3. 后续继续 Phase 4/5/7：
 
 - 让 `graph_v2.py` 成为唯一产品 build / verify / repair / registry 主骨架，旧 `graph.py` 退役或隔离为 compatibility wrapper。
-- 把 repair 输出重新接回 verifier、acceptance coverage 和 registry gate，形成 repair 后续复验/注册闭环。
 - 继续完善 API/UI 的 registry outcome、repair/human-review route 和 evidence 摘要。
+- 隔离或退役 legacy prompt/context/worker 路径，把 v2 contract/graph/runtime 设为默认贡献入口。
 - 真实 provider / Codex SDK thread 只做 opt-in pilot，不进入默认测试。
 
 4. 不要回退以下约束：
