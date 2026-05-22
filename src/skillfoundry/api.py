@@ -1019,6 +1019,100 @@ class SkillFoundryAPI:
             ]
         )
 
+    def render_job_html(self, job_id: str) -> str:
+        """Render one refs-only build evidence page for a SkillFoundry job."""
+
+        safe_job_id = self._validate_job_id(job_id)
+        payload = self.get_job(safe_job_id)
+        contextforge_status = self.get_contextforge_status(safe_job_id)
+        status = contextforge_status.get("status") if isinstance(contextforge_status.get("status"), Mapping) else {}
+        assert isinstance(status, Mapping)
+        build_path = payload.get("build_path") if isinstance(payload.get("build_path"), Mapping) else {}
+        graph_v2 = status.get("graph_v2") if isinstance(status.get("graph_v2"), Mapping) else {}
+        verification = status.get("verification") if isinstance(status.get("verification"), Mapping) else {}
+        registry = status.get("registry") if isinstance(status.get("registry"), Mapping) else {}
+        repair = contextforge_status.get("repair_evidence") if isinstance(contextforge_status.get("repair_evidence"), Mapping) else {}
+        human_review = contextforge_status.get("human_review") if isinstance(contextforge_status.get("human_review"), Mapping) else {}
+        cache = contextforge_status.get("cache") if isinstance(contextforge_status.get("cache"), Mapping) else {}
+        worker = contextforge_status.get("worker") if isinstance(contextforge_status.get("worker"), Mapping) else {}
+        usage = contextforge_status.get("usage") if isinstance(contextforge_status.get("usage"), Mapping) else {}
+
+        return "\n".join(
+            [
+                "<!doctype html>",
+                '<html lang="en">',
+                "<head>",
+                '  <meta charset="utf-8">',
+                '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+                f"  <title>SkillFoundry Evidence: {escape(safe_job_id)}</title>",
+                "  <style>",
+                "    :root { color-scheme: light; font-family: system-ui, sans-serif; color: #172026; background: #f6f7f8; }",
+                "    body { margin: 0; }",
+                "    header { background: #172026; color: white; padding: 16px 24px; }",
+                "    main { max-width: 1160px; margin: 0 auto; padding: 24px; display: grid; gap: 18px; }",
+                "    h1 { font-size: 22px; margin: 0; font-weight: 650; letter-spacing: 0; }",
+                "    h2 { font-size: 17px; margin: 0 0 10px; font-weight: 650; letter-spacing: 0; }",
+                "    a { color: #075985; text-decoration: none; } a:hover { text-decoration: underline; }",
+                "    .panel { background: white; border: 1px solid #dbe0e3; border-radius: 8px; padding: 16px; }",
+                "    .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, .75fr); gap: 18px; align-items: start; }",
+                "    .stack { display: grid; gap: 12px; }",
+                "    .links { display: flex; flex-wrap: wrap; gap: 12px; }",
+                "    .status { display: inline-flex; width: fit-content; border-radius: 999px; padding: 4px 9px; background: #e8f1f8; color: #075985; font-size: 13px; font-weight: 650; }",
+                "    .success { background: #e9f7ef; color: #166534; }",
+                "    .danger { background: #fdecec; color: #991b1b; }",
+                "    .muted { color: #667780; }",
+                "    .small { font-size: 13px; }",
+                "    dl { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 8px 12px; margin: 0; }",
+                "    dt { color: #667780; } dd { margin: 0; overflow-wrap: anywhere; }",
+                "    table { width: 100%; border-collapse: collapse; }",
+                "    th, td { border-bottom: 1px solid #dbe0e3; padding: 8px 9px; text-align: left; vertical-align: top; font-size: 13px; overflow-wrap: anywhere; }",
+                "    th { color: #43515a; background: #eef1f3; font-weight: 650; }",
+                "    @media (max-width: 760px) { main { padding: 14px; } .grid { grid-template-columns: 1fr; } dl { grid-template-columns: 1fr; } }",
+                "  </style>",
+                "</head>",
+                "<body>",
+                f"  <header><h1>SkillFoundry Evidence: {escape(safe_job_id)}</h1></header>",
+                "  <main>",
+                '    <div class="links"><a href="/">Home</a>'
+                + self._optional_frontdesk_job_link(safe_job_id)
+                + "</div>",
+                '    <section class="grid">',
+                '      <div class="panel stack">',
+                "        <h2>Build Outcome</h2>",
+                self._job_evidence_summary_html(
+                    payload=payload,
+                    build_path=build_path,
+                    graph_v2=graph_v2,
+                    verification=verification,
+                    registry=registry,
+                    repair=repair,
+                    human_review=human_review,
+                ),
+                self._job_evidence_links_html(
+                    safe_job_id,
+                    payload=payload,
+                    human_review=human_review,
+                ),
+                "      </div>",
+                '      <aside class="panel stack">',
+                "        <h2>Runtime Signals</h2>",
+                self._job_runtime_summary_html(cache=cache, worker=worker, usage=usage),
+                "      </aside>",
+                "    </section>",
+                '    <section class="panel stack">',
+                "      <h2>Artifact Refs</h2>",
+                self._job_artifact_refs_html(contextforge_status),
+                "    </section>",
+                '    <section class="panel stack">',
+                "      <h2>Raw Evidence Policy</h2>",
+                "      <p class=\"small muted\">This page shows refs, hashes, IDs, status, and download eligibility only. It does not inline raw prompts, provider payloads, Front Desk conversation, worker transcripts, replay bundles, or package content.</p>",
+                "    </section>",
+                "  </main>",
+                "</body>",
+                "</html>",
+            ]
+        )
+
     def render_error_html(self, *, title: str, message: str, status: int) -> str:
         return "\n".join(
             [
@@ -1073,6 +1167,9 @@ class SkillFoundryAPI:
                 return self._json_response(self.list_jobs())
 
             if method == "GET" and len(route) == 2 and route[0] == "jobs":
+                if _wants_html(headers):
+                    html = self.render_job_html(route[1]).encode("utf-8")
+                    return APIHTTPResult(200, "text/html; charset=utf-8", html)
                 return self._json_response(self.get_job(route[1]))
 
             if method == "GET" and len(route) == 3 and route[0] == "jobs" and route[2] == "report":
@@ -2121,6 +2218,138 @@ class SkillFoundryAPI:
         verifier = refs.get("verifier_result") if isinstance(refs, Mapping) else None
         return bool(isinstance(verifier, Mapping) and verifier.get("passed") is True)
 
+    def _optional_frontdesk_job_link(self, job_id: str) -> str:
+        if (self._job_root(job_id) / FRONTDESK_CONVERSATION_REF).is_file():
+            return f'<a href="/frontdesk/jobs/{escape(job_id)}">Front Desk</a>'
+        return ""
+
+    def _job_evidence_summary_html(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        build_path: Mapping[str, Any],
+        graph_v2: Mapping[str, Any],
+        verification: Mapping[str, Any],
+        registry: Mapping[str, Any],
+        repair: Mapping[str, Any],
+        human_review: Mapping[str, Any],
+    ) -> str:
+        registry_label = "approved" if registry.get("approved") is True else "not approved"
+        registry_skill = _display_ref(registry.get("skill_id"))
+        registry_version = _display_ref(registry.get("version"))
+        repair_label = "none"
+        if repair.get("available") is True:
+            repair_label = "attempt " + _display_ref(repair.get("attempt_id"))
+            repair_status = _display_ref(repair.get("status"))
+            if repair_status != "none":
+                repair_label += f" / {repair_status}"
+        human_label = "not required"
+        human_decision = human_review.get("decision") if isinstance(human_review.get("decision"), Mapping) else {}
+        if human_review.get("required") is True:
+            human_label = "required"
+            reason = _display_ref(human_review.get("reason_code"))
+            if reason != "none":
+                human_label += f" / {reason}"
+        if isinstance(human_decision, Mapping) and human_decision.get("exists") is True:
+            decision = _display_ref(human_decision.get("decision"))
+            if decision != "none":
+                human_label += f" / decision: {decision}"
+        rows = [
+            ("Job status", _status_pill(_display_ref(payload.get("status")), _status_class(payload.get("status")))),
+            ("Build path", escape(_display_ref(build_path.get("mode")))),
+            ("Canonical", "yes" if build_path.get("canonical") is True else "no"),
+            ("Graph v2", escape(_compact_join(graph_v2.get("stage"), graph_v2.get("status")))),
+            ("Verification", _status_pill(_display_ref(verification.get("status")), _status_class(verification.get("status")))),
+            ("Registry", _status_pill(registry_label, "success" if registry.get("approved") is True else "")),
+            ("Registered skill", escape(f"{registry_skill}@{registry_version}" if registry_skill != "none" else "none")),
+            ("Repair", escape(repair_label)),
+            ("Repair cache plan", escape(_display_ref(repair.get("last_prompt_cache_plan_id")))),
+            ("Human review", escape(human_label)),
+            (
+                "Package",
+                _status_pill(
+                    "downloadable" if payload.get("package_downloadable") is True else "not downloadable",
+                    "success" if payload.get("package_downloadable") is True else "",
+                ),
+            ),
+        ]
+        return _definition_list_html(rows)
+
+    def _job_evidence_links_html(
+        self,
+        job_id: str,
+        *,
+        payload: Mapping[str, Any],
+        human_review: Mapping[str, Any],
+    ) -> str:
+        links = payload.get("links") if isinstance(payload.get("links"), Mapping) else {}
+        report_link = _mapping_str(links, "report")
+        package_link = _mapping_str(links, "package")
+        html_links = [f'<a href="/jobs/{escape(job_id)}/contextforge">ContextForge JSON</a>']
+        if report_link is not None and payload.get("final_status") is not None:
+            html_links.append(f'<a href="{escape(report_link)}">Final report JSON</a>')
+        decision = human_review.get("decision") if isinstance(human_review.get("decision"), Mapping) else {}
+        decision_exists = isinstance(decision, Mapping) and decision.get("exists") is True
+        if human_review.get("required") is True or decision_exists:
+            html_links.append(f'<a href="/jobs/{escape(job_id)}/human-review">Human review JSON</a>')
+        if package_link is not None:
+            html_links.append(f'<a href="{escape(package_link)}">Download package</a>')
+        return '<div class="links">' + "".join(html_links) + "</div>"
+
+    def _job_runtime_summary_html(
+        self,
+        *,
+        cache: Mapping[str, Any],
+        worker: Mapping[str, Any],
+        usage: Mapping[str, Any],
+    ) -> str:
+        usage_available = usage.get("usage_available") is True
+        rows = [
+            ("Cache plan", escape(_display_ref(cache.get("cache_plan_id")))),
+            ("Cache telemetry", escape(_display_ref(cache.get("cache_telemetry_status")))),
+            ("Expected cacheable tokens", escape(_display_ref(cache.get("expected_cacheable_tokens")))),
+            ("Actual cached tokens", escape(_display_ref(cache.get("actual_cached_tokens")))),
+            ("Cache ledger", escape(_display_ref(cache.get("ledger_status")))),
+            ("Worker", escape(_compact_join(worker.get("worker_kind"), worker.get("status")))),
+            ("Worker run", escape(_display_ref(worker.get("worker_run_id")))),
+            ("Usage", "available" if usage_available else "unavailable"),
+            ("Usage reason", escape(_display_ref(usage.get("usage_unavailable_reason")))),
+        ]
+        return _definition_list_html(rows)
+
+    def _job_artifact_refs_html(self, contextforge_status: Mapping[str, Any]) -> str:
+        rows: list[str] = []
+        refs = contextforge_status.get("refs") if isinstance(contextforge_status.get("refs"), Mapping) else {}
+        if isinstance(refs, Mapping):
+            rows.extend(_artifact_status_rows("contextforge", refs))
+        repair = contextforge_status.get("repair_evidence")
+        if isinstance(repair, Mapping):
+            repair_refs = repair.get("refs") if isinstance(repair.get("refs"), Mapping) else {}
+            if isinstance(repair_refs, Mapping):
+                rows.extend(_artifact_status_rows("repair", repair_refs))
+        human_review = contextforge_status.get("human_review")
+        if isinstance(human_review, Mapping):
+            request = human_review.get("request")
+            decision = human_review.get("decision")
+            human_refs: dict[str, Any] = {}
+            if isinstance(request, Mapping):
+                human_refs["request"] = request
+            if isinstance(decision, Mapping) and decision.get("exists") is True:
+                human_refs["decision"] = decision
+            rows.extend(_artifact_status_rows("human_review", human_refs))
+        if not rows:
+            return '<p class="muted">No artifact refs.</p>'
+        return "\n".join(
+            [
+                "      <table>",
+                "        <thead><tr><th>Area</th><th>Name</th><th>Ref</th><th>Exists</th><th>SHA256</th><th>Size</th></tr></thead>",
+                "        <tbody>",
+                *rows,
+                "        </tbody>",
+                "      </table>",
+            ]
+        )
+
     def _jobs_table_html(self, jobs: list[dict[str, JsonValue]]) -> str:
         if not jobs:
             return '<p class="muted">No jobs.</p>'
@@ -2754,6 +2983,66 @@ def _unreadable_model_call_summary(model_call_id: str) -> dict[str, JsonValue]:
         "replay_bundle_ref": None,
         "error_type": "unreadable_model_call_record",
     }
+
+
+def _definition_list_html(rows: list[tuple[str, str]]) -> str:
+    entries: list[str] = ["      <dl>"]
+    for key, value in rows:
+        entries.append(f"        <dt>{escape(key)}</dt><dd>{value}</dd>")
+    entries.append("      </dl>")
+    return "\n".join(entries)
+
+
+def _status_pill(label: str, cls: str = "") -> str:
+    class_attr = "status" if not cls else f"status {escape(cls)}"
+    return f'<span class="{class_attr}">{escape(label)}</span>'
+
+
+def _status_class(value: Any) -> str:
+    text = _display_ref(value).lower()
+    if text in {"registered", "report_emitted", "passed", "approved", "completed", "verified"}:
+        return "success"
+    if text in {"failed", "rejected", "invalid", "verification_failed"}:
+        return "danger"
+    return ""
+
+
+def _display_ref(value: Any) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value).strip()
+    return text if text else "none"
+
+
+def _compact_join(*values: Any) -> str:
+    parts = [_display_ref(value) for value in values if _display_ref(value) != "none"]
+    return " / ".join(parts) if parts else "none"
+
+
+def _artifact_status_rows(area: str, refs: Mapping[str, Any]) -> list[str]:
+    rows: list[str] = []
+    for name, status in sorted(refs.items(), key=lambda item: str(item[0])):
+        if not isinstance(status, Mapping):
+            continue
+        ref = _display_ref(status.get("ref"))
+        exists = "yes" if status.get("exists") is True else "no"
+        sha = _display_ref(status.get("sha256"))
+        size = _display_ref(status.get("size_bytes"))
+        rows.append(
+            "        <tr>"
+            f"<td>{escape(area)}</td>"
+            f"<td>{escape(str(name))}</td>"
+            f"<td>{escape(ref)}</td>"
+            f"<td>{escape(exists)}</td>"
+            f"<td>{escape(sha)}</td>"
+            f"<td>{escape(size)}</td>"
+            "</tr>"
+        )
+    return rows
 
 
 def _json_str(value: Any) -> str | None:

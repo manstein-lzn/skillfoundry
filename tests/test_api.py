@@ -294,6 +294,99 @@ def test_get_job_contextforge_status_exposes_repair_and_human_review_refs_withou
     assert "worker_transcript" not in body_text
 
 
+def test_get_job_html_evidence_view_exposes_refs_without_raw_content(tmp_path):
+    workspace = initialize_job_workspace(tmp_path / "runs", "api-v2-html-evidence")
+    marker = "RAW_API_HTML_EVIDENCE_MARKER_SHOULD_NOT_LEAK"
+    repair_dir = workspace.resolve_path("attempts/002")
+    repair_dir.mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("contextforge").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("human_review").mkdir(parents=True, exist_ok=True)
+
+    refs = {
+        "repair_attempt": "attempts/002/repair_attempt.json",
+        "repair_instructions": "attempts/002/repair_instructions.md",
+        "repair_runtime_result": "contextforge/repair_goal_runtime_result_002.json",
+        "repair_graph_state": "contextforge/repair_goal_harness_state_002.json",
+        "human_review_request": "human_review/request.json",
+    }
+    workspace.resolve_path(refs["repair_attempt"]).write_text(
+        json.dumps({"attempt_id": "002", "raw": marker}),
+        encoding="utf-8",
+    )
+    workspace.resolve_path(refs["repair_instructions"]).write_text(marker, encoding="utf-8")
+    workspace.resolve_path(refs["repair_runtime_result"]).write_text(
+        json.dumps({"status": "failed", "raw": marker}),
+        encoding="utf-8",
+    )
+    workspace.resolve_path(refs["repair_graph_state"]).write_text(
+        json.dumps({"status": "failed", "raw": marker}),
+        encoding="utf-8",
+    )
+    workspace.resolve_path(refs["human_review_request"]).write_text(
+        json.dumps({"reason": "verification_failed", "raw": marker}),
+        encoding="utf-8",
+    )
+    state = {
+        "schema_version": "skillfoundry.graph_v2_state.v1",
+        "job_id": workspace.job_id,
+        "stage": "human_review",
+        "status": "human_review_required",
+        "attempt_count": 2,
+        "attempt_limit": 2,
+        "refs": refs,
+        "hashes": {},
+        "contextforge": {
+            "last_repair_attempt_id": "002",
+            "repair_status": "completed",
+            "last_repair_goal_run_id": "repair-goal-run",
+            "last_repair_worker_run_id": "repair-worker-run",
+            "last_repair_context_view_id": "repair-context-view",
+            "last_repair_prompt_cache_plan_id": "repair-cache-plan",
+            "human_review_reason_code": "verification_failed",
+            "last_verification_status": "failed",
+            "worker_self_report_is_not_acceptance": True,
+        },
+        "human_review_required": True,
+        "next_route": "continue",
+    }
+    validate_v2_graph_state(state)
+    workspace.resolve_path(GRAPH_V2_STATE_REF).parent.mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path(GRAPH_V2_STATE_REF).write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    api = make_api(tmp_path)
+
+    response = api.handle("GET", f"/jobs/{workspace.job_id}", headers={"Accept": "text/html"})
+    html = response.body.decode("utf-8")
+
+    assert response.status == 200
+    assert response.content_type.startswith("text/html")
+    assert "graph_v2_goal_harness" in html
+    assert "repair-cache-plan" in html
+    assert "human_review/request.json" in html
+    assert "/jobs/api-v2-html-evidence/contextforge" in html
+    assert "/jobs/api-v2-html-evidence/human-review" in html
+    assert marker not in html
+    assert "worker_transcript" not in html
+    assert "package/SKILL.md" not in html
+
+
+def test_get_job_html_evidence_view_omits_package_link_when_not_downloadable(tmp_path):
+    api = make_legacy_api(tmp_path)
+    post_job(
+        api,
+        job_id="api-html-failed",
+        worker_mode=OfflineWorkerMode.ALWAYS_INVALID.value,
+        attempt_limit=1,
+    )
+
+    response = api.handle("GET", "/jobs/api-html-failed", headers={"Accept": "text/html"})
+    html = response.body.decode("utf-8")
+
+    assert response.status == 200
+    assert "Download package" not in html
+    assert "/jobs/api-html-failed/package.zip" not in html
+    assert "not downloadable" in html
+
+
 def test_human_review_decision_records_artifacts_without_raw_content(tmp_path):
     workspace = initialize_job_workspace(tmp_path / "runs", "api-human-review-decision")
     workspace.resolve_path("contextforge").mkdir(parents=True, exist_ok=True)

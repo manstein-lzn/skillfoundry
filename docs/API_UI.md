@@ -52,7 +52,11 @@ skillfoundry serve --runs-root runs --allow-legacy-offline-jobs
   JSON fields are `requirement`, optional `job_id`, optional `worker_mode`, and
   optional `attempt_limit`.
 - `GET /jobs`: list known job workspaces below `runs_root`.
-- `GET /jobs/<job_id>`: return job status and final report when present.
+- `GET /jobs/<job_id>`: return job status and final report when present. With
+  `Accept: text/html`, render a refs-only job evidence page showing build path,
+  graph v2 status, verification, registry, repair, human-review, cache, worker,
+  usage, and artifact ref summaries without inlining raw prompts, provider
+  payloads, conversations, transcripts, replay bundles, or package content.
 - `GET /jobs/<job_id>/report`: return `final_report.json`.
 - `GET /jobs/<job_id>/contextforge`: return refs-only ContextForge, graph v2,
   repair, human-review, cache, worker, verification, and registry evidence

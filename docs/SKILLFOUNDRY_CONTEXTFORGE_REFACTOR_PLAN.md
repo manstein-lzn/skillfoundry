@@ -1480,7 +1480,7 @@ ContextForge 当前不能被 SkillFoundry 宣称已经具备的能力：
 - `graph_v2.py` 还没有成为唯一产品 build / verify / repair / registry 路由。
 - 旧 `POST /jobs` 离线 builder 兼容路线仍存在；它已经默认 opt-in 隔离，并在 status 中标记为 `legacy_offline_compatibility`，避免新用户误用为产品主入口。
 - 旧 `graph.py`、`context.py`、`worker.py`、`llm_builder.py` 仍存在，需要隔离或退役。
-- API/UI 对 repair、human-review、registry evidence 的体验还不完整；`GET /jobs/{job_id}/contextforge` 已有 refs-only 摘要，但面向用户的 job evidence HTML / operator workbench 仍需产品化。
+- API/UI 对 repair、human-review、registry evidence 的体验还不完整；`GET /jobs/{job_id}/contextforge` 已有 refs-only 摘要，`GET /jobs/{job_id}` 也已有最小 refs-only HTML evidence 页面，但完整 operator workbench 仍需产品化。
 - human-review 已从纯 route/status 前进到 request / decision artifacts 和 API decision endpoint；它还不是完整运营工作台或自动重新调度系统。
 - live provider / real Codex SDK thread 仍是 opt-in future pilot。
 - 生产级 auth、tenant、queue、sandbox、secrets、monitoring、deployment 都没有完成。
@@ -2313,6 +2313,28 @@ verification:
   - exact focused human-review gates => 4 passed.
   - tests/test_graph_v2_runtime.py tests/test_api.py => 48 passed.
   - full suite: .venv/bin/python -m pytest -q => 421 passed.
+```
+
+WP2 API/UI evidence 实现更新：
+
+```text
+date: 2026-05-22
+scope: refs-only job evidence HTML view
+implemented:
+  - GET /jobs/{job_id} now returns a server-rendered evidence page when Accept: text/html is requested.
+  - The page summarizes build path, canonical flag, graph v2 route/status, verification status, registry outcome, repair status, human-review state, cache telemetry, worker run, usage availability, and artifact refs.
+  - Package download links are only rendered when the registry-backed package_downloadable flag is true.
+  - The page links to ContextForge JSON and human-review JSON where applicable, while keeping raw evidence out of the HTML body.
+trust_boundary:
+  - The HTML evidence view consumes get_contextforge_status() refs/status/hash summaries and does not parse, render, or inline raw prompt, provider payload, raw Front Desk conversation, worker transcript, replay bundle, repair instruction content, human-review request body, or package content. It may read artifact bytes only through existing hash/integrity checks used to produce refs and package download eligibility.
+verification:
+  - tests/test_api.py::test_get_job_html_evidence_view_exposes_refs_without_raw_content, tests/test_api.py::test_get_job_html_evidence_view_omits_package_link_when_not_downloadable, and tests/test_frontdesk_api.py::test_frontdesk_api_builds_frozen_job_through_graph_v2_without_raw_leakage => 3 passed.
+  - tests/test_api.py tests/test_frontdesk_api.py => 42 passed.
+  - tests/test_graph_v2_runtime.py => 16 passed.
+  - tests/test_graph_v2.py tests/test_graph_v2_runtime.py => 31 passed.
+  - full suite: .venv/bin/python -m pytest -q => 423 passed.
+remaining_risks:
+  - This is a minimal server-rendered evidence page, not a full operator workbench or post-human-review scheduling UI.
 ```
 
 本轮完整重构文档 reviewer 结果：

@@ -426,6 +426,19 @@ def test_frontdesk_api_builds_frozen_job_through_graph_v2_without_raw_leakage(tm
     assert job["build_path"]["mode"] == "graph_v2_goal_harness"
     assert job["package_downloadable"] is True
 
+    html_response = api.handle("GET", f"/jobs/{job_id}", headers={"Accept": "text/html"})
+    html = html_response.body.decode("utf-8")
+    assert html_response.status == 200
+    assert html_response.content_type.startswith("text/html")
+    assert "graph_v2_goal_harness" in html
+    assert "registered" in html
+    assert "Download package" in html
+    assert f"/jobs/{job_id}/package.zip" in html
+    assert f"/jobs/{job_id}/contextforge" in html
+    assert marker not in html
+    assert "raw_provider_payload" not in html
+    assert "worker_transcript" not in html
+
 
 def test_frontdesk_retry_upgrades_legacy_low_model_call_budget(tmp_path):
     payloads = {
