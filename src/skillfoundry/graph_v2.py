@@ -21,7 +21,7 @@ from .goal_runtime import (
     run_verified_repair_goal_harness,
     run_verified_offline_goal_harness,
 )
-from .registry import DEFAULT_REGISTRY_VERSION, LocalSkillRegistry
+from .registry import DEFAULT_REGISTRY_VERSION, DuplicatePolicy, LocalSkillRegistry
 from .schema import JsonValue, SchemaValidationError, ensure_json_compatible, sha256_file, sha256_json, utc_now
 from .workspace import JOB_ID_RE, JobWorkspace
 
@@ -321,6 +321,7 @@ def run_verified_skillfoundry_v2_graph(
         registry_gate_callable=build_verified_registry_gate_node(
             runs_path,
             registry_path=registry_path,
+            version=version,
             created_at=created_at,
         ),
     )
@@ -446,6 +447,7 @@ def build_verified_goal_harness_node(
             version=version,
             created_at=created_at,
             worker_factory=worker_factory,
+            promote_to_registry=False,
         )
         runtime_state = result.goal_harness.graph_state
         verified_runtime = result.verified_runtime_result
@@ -457,16 +459,13 @@ def build_verified_goal_harness_node(
         hashes["verified_runtime_result"] = sha256_file(
             workspace.resolve_path(VERIFIED_GOAL_RUNTIME_RESULT_REF, must_exist=True)
         )
-        hashes["final_report"] = sha256_file(workspace.resolve_path("final_report.json", must_exist=True))
         contextforge = dict(state.get("contextforge", {}))
         contextforge.update(_contextforge_mapping(runtime_state.get("contextforge", {}), "runtime contextforge"))
         contextforge.update(
             {
                 "last_goal_status": result.goal_harness.goal_run.status,
                 "last_goal_decision": result.goal_harness.goal_run.decision or "",
-                "registry_approved": result.registry_entry.approval_status == "approved",
-                "registry_skill_id": result.registry_entry.skill_id,
-                "registry_version": result.registry_entry.version,
+                "registry_approved": False,
                 "verified_runtime_result_ref": VERIFIED_GOAL_RUNTIME_RESULT_REF,
             }
         )
@@ -578,6 +577,7 @@ def build_verified_repair_verification_node(
             attempt_id=attempt_id,
             version=version,
             created_at=created_at,
+            promote_to_registry=False,
         )
         verified_runtime = result.verified_runtime_result
         refs = _merge_refs(state, **_safe_verified_runtime_refs(verified_runtime.get("refs", {})))
@@ -685,6 +685,7 @@ def build_verified_registry_gate_node(
     runs_root: str | Path,
     *,
     registry_path: str | Path,
+    version: str = DEFAULT_REGISTRY_VERSION,
     created_at: str | None = None,
 ) -> V2Node:
     """Return a registry gate that validates verified runtime and registry evidence."""
@@ -698,14 +699,43 @@ def build_verified_registry_gate_node(
         workspace = _graph_workspace(runs_path, job_id)
         verified_ref = _state_ref(state, "verified_runtime_result", VERIFIED_GOAL_RUNTIME_RESULT_REF)
         verified_runtime = _read_json_ref(workspace, verified_ref, "verified runtime result")
-        final_report_ref = _json_ref(verified_runtime, ("refs", "final_report"), "final_report.json")
-        final_report = _read_json_ref(workspace, final_report_ref, "final report")
-        _require_verified_runtime_registered(verified_runtime, final_report, job_id=job_id)
-        skill_id = _json_str_at(verified_runtime, ("ids", "registry_skill_id"), "registry skill id")
-        version = _json_str_at(verified_runtime, ("ids", "registry_version"), "registry version")
         registry = LocalSkillRegistry(registry_file)
-        entry = registry.get(skill_id, version)
-        _require_registry_entry_for_workspace(entry, workspace)
+        if _verified_runtime_already_registered(verified_runtime):
+            final_report_ref = _json_ref(verified_runtime, ("refs", "final_report"), "final_report.json")
+            final_report = _read_json_ref(workspace, final_report_ref, "final report")
+            _require_verified_runtime_registered(verified_runtime, final_report, job_id=job_id)
+            skill_id = _json_str_at(verified_runtime, ("ids", "registry_skill_id"), "registry skill id")
+            registered_version = _json_str_at(verified_runtime, ("ids", "registry_version"), "registry version")
+            entry = registry.get(skill_id, registered_version)
+            _require_registry_entry_for_workspace(entry, workspace)
+        else:
+            _require_verified_runtime_ready_for_registry(verified_runtime, job_id=job_id)
+            entry = LocalSkillRegistry(
+                registry_file,
+                duplicate_policy=DuplicatePolicy.IDEMPOTENT,
+            ).add_verified(
+                workspace,
+                version=version,
+                review_status="v2_graph_registry_gate_verified",
+                require_contextforge_verification=True,
+            )
+            _require_registry_entry_for_workspace(entry, workspace)
+            from .offline import emit_final_report
+
+            final_report = emit_final_report(
+                workspace.root,
+                final_status=V2Status.REGISTERED.value,
+                registry_path=registry_file,
+                registry_entry=entry,
+            )
+            verified_runtime = _verified_runtime_with_registry_approval(
+                workspace,
+                verified_runtime,
+                entry,
+                final_report,
+                created_at=created_at or utc_now(),
+            )
+            _write_json_ref(workspace, verified_ref, verified_runtime)
         contextforge_result = _read_current_contextforge_verification(workspace, verified_runtime)
         _require_contextforge_result_for_workspace(contextforge_result, workspace, verified_runtime, entry.package_hash)
         verification_report = registry.verify_entry(entry)
@@ -753,8 +783,15 @@ def build_verified_registry_gate_node(
         }
         _write_json_ref(workspace, entry_ref, entry_payload)
         _write_json_ref(workspace, decision_ref, decision_payload)
-        refs = _merge_refs(state, registry_decision=decision_ref, registry_entry=entry_ref)
+        refs = _merge_refs(
+            state,
+            final_report="final_report.json",
+            registry_decision=decision_ref,
+            registry_entry=entry_ref,
+        )
         hashes = dict(state.get("hashes", {}))
+        hashes["verified_runtime_result"] = sha256_file(workspace.resolve_path(verified_ref, must_exist=True))
+        hashes["final_report"] = sha256_file(workspace.resolve_path("final_report.json", must_exist=True))
         hashes["registry_decision"] = sha256_file(workspace.resolve_path(decision_ref, must_exist=True))
         hashes["registry_entry"] = sha256_file(workspace.resolve_path(entry_ref, must_exist=True))
         contextforge = dict(state.get("contextforge", {}))
@@ -1072,6 +1109,72 @@ def _write_json_ref(workspace: JobWorkspace, ref: str, payload: Mapping[str, Any
     path = workspace.resolve_path(ref)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(compatible, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
+
+
+def _verified_runtime_already_registered(verified_runtime: Mapping[str, Any]) -> bool:
+    return (
+        _optional_nested_bool(verified_runtime, ("status", "registry_approved")) is True
+        and _optional_nested_str(verified_runtime, ("status", "final_status")) == V2Status.REGISTERED.value
+        and _optional_nested_str(verified_runtime, ("refs", "final_report")) is not None
+        and _optional_nested_str(verified_runtime, ("ids", "registry_skill_id")) is not None
+        and _optional_nested_str(verified_runtime, ("ids", "registry_version")) is not None
+    )
+
+
+def _require_verified_runtime_ready_for_registry(
+    verified_runtime: Mapping[str, Any],
+    *,
+    job_id: str,
+) -> None:
+    if verified_runtime.get("job_id") != job_id:
+        raise V2StateValidationError(
+            f"verified runtime job_id mismatch: expected {job_id}, got {verified_runtime.get('job_id')!r}"
+        )
+    if _optional_nested_str(verified_runtime, ("status", "contextforge_verification")) != "passed":
+        raise V2StateValidationError("verified runtime did not record passed ContextForge verification")
+    if _optional_nested_bool(verified_runtime, ("status", "skillfoundry_verification_passed")) is not True:
+        raise V2StateValidationError("verified runtime did not record passed SkillFoundry verification")
+    if _optional_nested_bool(verified_runtime, ("status", "acceptance_coverage_passed")) is not True:
+        raise V2StateValidationError("verified runtime did not record passed acceptance coverage")
+
+
+def _verified_runtime_with_registry_approval(
+    workspace: JobWorkspace,
+    verified_runtime: Mapping[str, Any],
+    entry: Any,
+    final_report: Mapping[str, Any],
+    *,
+    created_at: str,
+) -> dict[str, JsonValue]:
+    payload = {
+        key: value
+        for key, value in verified_runtime.items()
+        if key in {"schema_version", "job_id", "created_at", "refs", "ids", "status", "hashes", "trust_boundaries"}
+    }
+    refs = dict(payload.get("refs", {})) if isinstance(payload.get("refs"), Mapping) else {}
+    refs["final_report"] = "final_report.json"
+    ids = dict(payload.get("ids", {})) if isinstance(payload.get("ids"), Mapping) else {}
+    ids["registry_skill_id"] = entry.skill_id
+    ids["registry_version"] = entry.version
+    status = dict(payload.get("status", {})) if isinstance(payload.get("status"), Mapping) else {}
+    status["registry_approved"] = entry.approval_status == "approved"
+    status["final_status"] = final_report.get("final_status")
+    hashes = dict(payload.get("hashes", {})) if isinstance(payload.get("hashes"), Mapping) else {}
+    hashes["registry_entry"] = sha256_json(entry.to_dict())
+    payload.update(
+        {
+            "job_id": workspace.job_id,
+            "updated_at": created_at,
+            "refs": refs,
+            "ids": ids,
+            "status": status,
+            "hashes": hashes,
+        }
+    )
+    compatible = ensure_json_compatible(payload)
+    if not isinstance(compatible, dict):
+        raise V2StateValidationError("verified runtime registry approval payload must be a JSON object")
+    return compatible  # type: ignore[return-value]
 
 
 def _require_verified_runtime_registered(

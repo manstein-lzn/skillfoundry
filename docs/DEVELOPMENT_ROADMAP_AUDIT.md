@@ -4,6 +4,8 @@
 审核方：独立 `gpt-5.5 xhigh` agent
 审核对象：`docs/DEVELOPMENT_ROADMAP.md`、README、历史 roadmap、Front Desk roadmap/audit、LLM Builder pilot、核心 src/tests
 
+> 历史状态说明：本文是 v0 / WP0-WP17 development roadmap 的独立审核记录，不再作为当前 v2 执行源。当前 v2 技术执行源是 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`，当前接手状态见 `HANDOFF.md`；本文保留用于理解 v0 产品边界和历史修正原因。
+
 ## 1. 结论
 
 审核结论：`approve_with_changes`。
@@ -62,7 +64,7 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
 
 修正：
 
-- README 明确 `docs/DEVELOPMENT_ROADMAP.md` 是当前唯一执行源；
+- README 在当时明确 `docs/DEVELOPMENT_ROADMAP.md` 是 v0 阶段执行源；当前已由 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md` 取代为 v2 canonical 执行源；
 - `docs/ROADMAP_EXECUTION_PLAN.md` 增加历史状态说明；
 - `docs/FRONT_DESK_AGENT_ROADMAP.md` 增加历史状态说明；
 - `docs/DEVELOPMENT_ROADMAP.md` 明确历史路线图中的 WP15B/WP16/WP17 状态已经过期。

@@ -4,7 +4,7 @@
 日期：2026-05-17
 适用范围：SkillFoundry WP13-WP17，面向真实 LLM 需求澄清、规格冻结、验收覆盖和真实 builder 试点
 
-> 状态说明：本文是 Front Desk WP13-WP17 设计形成文档。WP15B Front Desk Loop、WP16 Acceptance Coverage Bridge、WP17 Owned LLM Builder Pilot 已在后续实现中完成。本文中 “next / blocking / blocked” 等状态只保留为历史上下文，当前唯一执行源请看 `docs/DEVELOPMENT_ROADMAP.md`。
+> 状态说明：本文是 Front Desk WP13-WP17 设计形成文档。WP15B Front Desk Loop、WP16 Acceptance Coverage Bridge、WP17 Owned LLM Builder Pilot 已在后续实现中完成。本文中 “next / blocking / blocked” 等状态只保留为历史上下文。当前 v2 技术执行源是 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`，当前接手状态见 `HANDOFF.md`；`docs/DEVELOPMENT_ROADMAP.md` 仅作为 v0 / WP0-WP17 能力基线和产品经验记录。
 
 ## 1. 一句话结论
 
@@ -30,7 +30,9 @@ Requirements Elicitor Agent
 - 所有自有 LLM 调用必须通过 ContextForge 记录；
 - 所有最终规格必须落入 workspace 文件，并被 hash、manifest 和后续 QA/Verifier 使用。
 
-## 2. 当前基线
+## 2. 历史基线快照
+
+以下内容是 WP15 附近的历史基线说明，不代表当前待办状态。当前 v2 重构蓝图见 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`，当前接手状态见 `HANDOFF.md`；WP0-WP17 完成状态只应从 `docs/DEVELOPMENT_ROADMAP.md` 读取为历史能力基线。
 
 截至 WP15，SkillFoundry 已经具备：
 
@@ -52,15 +54,15 @@ deterministic FrontDeskFreezeGate
 
 当前默认路径仍然是离线 deterministic worker。WP14/WP15 已经把真实 LLM 节点的边界、schema、落盘和失败兜底做出来，但默认测试仍使用 fake/scripted client，不调用真实 provider。
 
-重要状态修正：
+当时的重要状态修正：
 
 - WP13-WP15 已完成的是 `schema/workspace`、`RequirementsElicitor`、`SpecAuditor`、`FrontDeskFreezeGate` 的部件级实现；
 - 这还不等于 Front Desk 端到端闭环完成；
-- `ask_user -> elicit -> audit -> freeze/human/reject` 的 LangGraph 多轮状态机仍是下一步阻塞项；
+- `ask_user -> elicit -> audit -> freeze/human/reject` 的 LangGraph 多轮状态机在当时仍是下一步阻塞项；
 - WP16 的验收覆盖闭环完成前，不能把 `planned` coverage 当作 Registry approved 的事实证据；
-- WP17 的真实 builder 试点必须等 Front Desk loop 和 WP16 coverage gate 可用后再进入主线。
+- WP17 的真实 builder 试点在当时必须等 Front Desk loop 和 WP16 coverage gate 可用后再进入主线。
 
-剩余缺口：
+当时的剩余缺口：
 
 - 没有多轮澄清状态机；
 - 没有把 acceptance criteria 稳定转换为 QA/Verifier 输入；
@@ -647,9 +649,9 @@ QA Lab 至少应该输出：
 | WP13 | Front Desk Schema + Workspace  | conversation/spec/audit files | deterministic schema tests   | done                         |
 | WP14 | LLM Elicitor Agent             | elicitation node + artifacts  | asks targeted questions      | done                         |
 | WP15 | Auditor + Freeze Gate          | objective audit + hard gate   | no premature build           | component done               |
-| WP15B| Front Desk LangGraph Loop      | multi-round clarification     | route/freeze/human/reject    | next / blocking              |
-| WP16 | Acceptance Criteria to QA       | QA/Verifier coverage bridge   | criteria drive evaluation    | next                         |
-| WP17 | Real Builder Integration       | Codex/LLM builder from spec   | verified real skill output   | blocked by WP15B-WP16        |
+| WP15B| Front Desk LangGraph Loop      | multi-round clarification     | route/freeze/human/reject    | historical: now done         |
+| WP16 | Acceptance Criteria to QA       | QA/Verifier coverage bridge   | criteria drive evaluation    | historical: now done         |
+| WP17 | Real Builder Integration       | Codex/LLM builder from spec   | verified real skill output   | historical: pilot now done   |
 +------+--------------------------------+-------------------------------+------------------------------+------------------------------+
 ```
 
@@ -746,7 +748,7 @@ Targeted Front Desk tests: 74 passed
 - Auditor approved 但 FreezeGate fail 时不能进入构建；
 - round limit 进入 human review。
 
-当前状态：
+当时状态：
 
 - `SpecAuditor` 已实现为 ContextForge owned LLM call；
 - `FrontDeskFreezeGate` 已实现为 non-LLM deterministic gate；

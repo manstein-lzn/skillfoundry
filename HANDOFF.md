@@ -28,7 +28,8 @@ Offline Goal Harness build path 已存在。
 workers_v2 / graph_v2 / verification bridge / registry evidence gate 已存在。
 Front Desk v2 Goal Harness slices 已存在。
 graph v2 failed verification -> Goal Harness repair -> verifier / acceptance coverage / ContextForge bridge / registry gate 闭环已存在。
-产品主路径还需要继续收敛到这套 v2 骨架。
+canonical graph v2 route 中首次 registry approval 已收敛到 registry gate；direct verified runtime helper 的自动注册只作为 compatibility 行为保留。
+产品主路径还需要继续收敛到这套 v2 骨架，尤其是 human-review workbench、legacy 最终退役和更完整的 API/UI evidence 体验。
 ```
 
 ## 最近完成的关键改动
@@ -179,7 +180,7 @@ uv run --extra test pytest -q
 2. 若要继续 v2 重建，先读 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`。当前默认 Front Desk frozen job 已能通过 API build endpoint 进入 graph v2 verified build / verify / acceptance coverage / registry happy path：
 
 - `POST /frontdesk/jobs/{job_id}/build` 只接受 approved/frozen Front Desk jobs。
-- endpoint 通过 `graph_v2.py` 调用 verified Goal Harness build、SkillFoundry verifier、acceptance coverage、ContextForge verification bridge 和 registry gate。
+- endpoint 通过 `graph_v2.py` 调用 verified Goal Harness build、SkillFoundry verifier、acceptance coverage、ContextForge verification bridge 和 registry gate；canonical route 中 verified runtime 只产出 candidate + evidence，registry gate 执行首次 `LocalSkillRegistry.add_verified()`、`final_report.json`、registry decision 和 entry snapshot。
 - failed verification route 可以进入 Goal Harness-backed repair node，记录 governed verifier-failure context、WorkerRun、ContextView、PromptCachePlan、checkpoint、repair instructions、repair runtime result 和 `RepairAttempt`；repair 后会重新进入 SkillFoundry verifier、acceptance coverage、ContextForge verification bridge 和 registry gate。repair worker self-report 仍不是验收或注册依据。
 - graph v2 final state 持久化到 `contextforge/graph_v2_state.json`，仍是 refs/IDs/status-only。
 - `GET /jobs/{job_id}/contextforge` 会暴露 build path、verified runtime、graph v2 state、repair evidence、human-review、verification 和 registry summary，不暴露 raw prompt / raw payload / raw conversation / transcript / package content。
@@ -188,7 +189,7 @@ uv run --extra test pytest -q
 
 3. 后续继续 Phase 4/5/7：
 
-- 让 `graph_v2.py` 成为唯一产品 build / verify / repair / registry 主骨架，旧 `graph.py` 退役或隔离为 compatibility wrapper。
+- 让 `graph_v2.py` 成为唯一产品 build / verify / repair / registry 主骨架，旧 `graph.py` 退役或隔离为 compatibility wrapper；registry timing 已在 canonical route 中收敛，后续重点是清掉旁路和旧入口歧义。
 - 继续完善 API/UI 的 registry outcome、repair/human-review route 和 evidence 摘要。
 - 隔离或退役 legacy prompt/context/worker 路径，把 v2 contract/graph/runtime 设为默认贡献入口。
 - 真实 provider / Codex SDK thread 只做 opt-in pilot，不进入默认测试。

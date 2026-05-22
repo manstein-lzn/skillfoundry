@@ -1482,9 +1482,9 @@ legacy paths 已经全部退役。
 | --- | --- | --- | --- |
 | ContextForge `metric_gates` | ContextForge schema 有 `metric_gates` 字段，但当前 core `VerificationRunner` 不执行 metric gates；SkillFoundry bridge 已通过 `contextforge_gate_metric_gates_supported` 对非空 metric gates fail closed。 | 不得声称 metric gates 已被 ContextForge core 执行。要么在 ContextForge upstream 实现 metric gate runner，要么继续在 SkillFoundry bridge 中 fail closed。 | `tests/test_verification_bridge.py::test_bridge_fails_closed_for_unsupported_metric_gates`；WP5/verification hardening。 |
 | `GoalHarness` 范围 | ContextForge `GoalHarness` 是单 agent node runtime，不做 scheduler、多 agent routing 或最终产品验收。 | SkillFoundry `graph_v2.py` 继续承担 refs-only orchestration、repair/human-review/registry route；不要把完整 workflow 平台责任下放给 ContextForge。 | `tests/test_graph_v2.py`, `tests/test_graph_v2_runtime.py`。 |
-| Registry 首次注册时序 | `run_verified_offline_goal_harness()` 当前会先调用 `LocalSkillRegistry.add_verified()`；`graph_v2` registry gate 随后复验并写 decision/snapshot。 | 目标产品路径应让 graph v2 registry gate 成为唯一产品批准点；verified runtime 可以保留 compatibility helper，但不应在 canonical route 中提前完成不可区分的首次注册。 | WP1/WP6；新增 registry timing test 后再改。 |
+| Registry 首次注册时序 | canonical `graph_v2` route 现在调用 verified runtime 时使用 `promote_to_registry=False`，只产出 candidate package + verifier / coverage / ContextForge evidence；`graph_v2` registry gate 随后执行 `LocalSkillRegistry.add_verified()`、`final_report.json`、registry decision 和 entry snapshot。Direct `run_verified_offline_goal_harness()` 默认仍注册并写 final report，作为 compatibility helper。 | 目标产品路径由 graph v2 registry gate 作为产品批准点；直接 helper 的自动注册语义只能被视为 compatibility surface，不能作为 canonical route。 | `tests/test_graph_v2_runtime.py::test_verified_build_node_defers_first_registry_approval_to_registry_gate`；WP1/WP6。 |
 | legacy `/jobs` | `POST /jobs` 默认返回 `legacy_offline_jobs_disabled`；只有显式 constructor flag、env var 或 CLI flag 开启时才会运行 `build_offline()` 并生成 `final_report.json`。 | 默认 API/UI 产品入口只走 Front Desk -> graph v2；legacy `/jobs` 保持 opt-in compatibility surface，后续再退役或迁移到专用兼容入口。 | `tests/test_api.py`, `tests/test_frontdesk_api.py`；WP1/WP6。 |
-| raw conversation ledger include | `seed_goal_harness_context()` 当前把 `frontdesk/conversation.jsonl` 作为 `raw_frontdesk_conversation` 写入 ledger，并依赖 forbidden selector 排除；部分 Front Desk v2 runtime 已把 conversation `prompt_include=False`。 | Raw provenance 默认不应可 prompt include；若短期保留当前记录方式，必须有 fail-closed negative tests 证明 builder/repair/API/status/graph state 不泄漏。 | `tests/test_goal_harness_slice.py`, `tests/test_frontdesk_goal_runtime.py`, `tests/test_graph_v2_runtime.py`。 |
+| raw conversation ledger include | `seed_goal_harness_context()` 仍会把 `frontdesk/conversation.jsonl` 作为 `raw_frontdesk_conversation` provenance 写入 ledger，但该 item 现在默认 `prompt_include=False`，并继续由 forbidden selector / leakage tests 证明不会进入 builder 或 repair prompt。Front Desk v2 runtime 同样把 raw conversation 作为 non prompt-includable provenance。 | Raw provenance 可以保存用于审计和排除证明，但不得成为 builder/repair visible context。 | `tests/test_goal_harness_slice.py`, `tests/test_frontdesk_goal_runtime.py`, `tests/test_graph_v2_runtime.py`。 |
 | legacy Front Desk prompt | 旧 RequirementsElicitor / SpecAuditor 可把 raw conversation 当作 `UNTRUSTED USER CONVERSATION CONTENT` 放入 Front Desk prompt。 | 只允许 Front Desk governed summarizer/auditor 看 raw conversation；builder、repair、registry 和 API status 永远不可见。 | Front Desk hardening tests；不要复制旧 prompt pattern 到 builder path。 |
 | worker self-report marker | `worker_self_report_not_acceptance` 当前是声明性 verifier marker，不是通用语义扫描器。 | 文档必须说清真实防线是 verifier freshness、coverage freshness、package hash、ContextForge result semantics 和 Registry 复验。 | `tests/test_registry.py`, `tests/test_verification_bridge.py`。 |
 | cache epoch worker identity | `cache_policy.metadata.epoch_inputs` 主要列 frozen/policy inputs；实际 `_cache_epoch_id()` 也包含 `worker_kind` 和 `worker_name`。 | 目标语义必须二选一：若 worker identity 改变会改变 prompt/runtime contract，则文档明确它应换 epoch；若希望跨 worker 复用稳定 prefix，则代码要从 epoch hash 中移出 worker identity。当前暂定：worker identity 属于执行边界，允许换 epoch。 | `tests/test_contracts.py`；WP5 cache hardening。 |
@@ -1522,11 +1522,13 @@ API/UI
 当前实现注意事项：
 
 ```text
-verified runtime 目前会先调用 Registry.add_verified()。
-graph v2 registry gate 随后复验 registry evidence，并写 registry decision / entry snapshot。
+canonical graph_v2 verified runtime 不做首次 registry approval。
+graph v2 registry gate 复验 evidence 后执行 Registry.add_verified()、final_report、
+registry decision 和 entry snapshot。
+direct run_verified_offline_goal_harness() 仍默认注册，只作为 compatibility helper。
 ```
 
-因此本轮迁移中 “Registry Gate” 的正确含义是产品主路径上的 registry evidence revalidation/snapshot gate，不要把它误读为当前唯一发生首次注册的位置。后续 graph v2 canonicalization 可以决定是否把首次批准时机进一步收敛到单一 gate。
+因此在 canonical route 中，“Registry Gate” 是产品批准点。不要仅凭 direct helper 生成的 `final_report.json` 或 registry entry 判定一个 job 是 canonical v2 build。
 
 #### 18.1.1 Canonical 判定合同
 
@@ -1553,29 +1555,30 @@ graph v2 registry gate 随后复验 registry evidence，并写 registry decision
 
 #### 18.1.2 Registry gate 目标形态
 
-当前实现处在迁移期：
-
-```text
-verified runtime
-  -> LocalSkillRegistry.add_verified()
-  -> graph_v2 registry gate revalidates and snapshots evidence
-```
-
-目标形态应收敛为：
+当前 canonical graph v2 route 已收敛为：
 
 ```text
 verified runtime
   -> candidate package + verification/coverage/ContextForge evidence
   -> graph_v2 registry gate
   -> LocalSkillRegistry.add_verified()
+  -> final_report.json
   -> registry decision / entry snapshot
+```
+
+Direct compatibility helper 仍保留：
+
+```text
+run_verified_offline_goal_harness()
+  -> LocalSkillRegistry.add_verified()
+  -> final_report.json
 ```
 
 这意味着：
 
 - `goal_runtime.py` 可以保留兼容辅助函数，但 canonical graph v2 route 不应把首次注册隐藏在 build runtime 内部。
 - graph v2 registry gate 应成为产品批准点，负责最终复验、写 decision、写 entry snapshot。
-- 迁移完成前，文档和 API 必须把当前时序标为 transitional revalidation/snapshot gate。
+- 文档、API 和 tests 必须继续区分 `graph_v2_goal_harness` canonical route 与 direct compatibility helper。
 - 改这部分时必须证明 failed verifier、failed coverage、stale evidence、fabricated evidence 和 worker self-report 都不能注册。
 
 ### 18.2 Builder-visible context
@@ -1608,7 +1611,7 @@ Raw Front Desk conversation 可以作为 provenance 被记录到 workspace 或 l
 
 | Artifact / context | 允许 producer | 允许 consumer | 禁止 consumer | Prompt policy | Graph/API policy |
 | --- | --- | --- | --- | --- | --- |
-| `frontdesk/conversation.jsonl` | API/UI Front Desk | Front Desk governed summarizer、Spec Auditor 的 Front Desk-only 审计路径 | builder、repair、registry、graph state、API status body | 不得进入 builder/repair prompt；作为 raw provenance 时应默认 `prompt_include=False`，若短期代码仍写 `prompt_include=True`，必须由 forbidden selector 和 leakage tests 双重兜底 | graph state/API status 只可暴露 ref/hash/existence，不可内联内容 |
+| `frontdesk/conversation.jsonl` | API/UI Front Desk | Front Desk governed summarizer、Spec Auditor 的 Front Desk-only 审计路径 | builder、repair、registry、graph state、API status body | 不得进入 builder/repair prompt；作为 raw provenance 时必须默认 `prompt_include=False`，任何未来放宽都必须由 forbidden selector 和 leakage tests 双重兜底 | graph state/API status 只可暴露 ref/hash/existence，不可内联内容 |
 | `raw_frontdesk_conversation` tag/context item | Front Desk / Goal Harness seeding | only as forbidden provenance evidence | builder/repair visible selectors、PromptView included blocks、Registry decision | 必须出现在 forbidden context 或 omission evidence 中，不得出现在 included context | tests 必须证明 included_item_ids 不含该 item |
 | `frontdesk/core_need_brief.json` | Core Need node | Solution Planner、Spec Auditor、FreezeGate、builder summary | unrelated jobs、unfrozen rejected plan paths | governed summary 可进入 stable prefix，前提是被 current freeze 引用 | API 可展示 governed摘要/ref |
 | `frontdesk/solution_plan.json` | Solution Planner | user review、Spec Auditor、FreezeGate | builder 在 freeze 前不可见；旧 rejected plan 不可见 | approved/frozen 后才可进入 builder-visible context | API 可展示当前 approved plan |
@@ -1738,6 +1741,8 @@ POST /jobs
 ```text
 graph_v2.py 成为唯一产品 build / verify / repair / registry 主骨架。
 ```
+
+WP1 和 WP6 应作为同一个 canonicalization gate 看待：任何新增 build / verify / repair / registry 能力默认进入 `graph_v2.py`、`goal_runtime.py`、`workers_v2.py`、`verification_bridge.py` 和 registry evidence gate；legacy 模块只能作为 compatibility surface、迁移垫片或删除对象。
 
 写范围：
 
@@ -1921,6 +1926,8 @@ PromptCachePlan proves provider cache hit.
 ```text
 新 contributor 不需要理解旧 WP0-WP17 内部实现，就能修改当前 v2 产品路径。
 ```
+
+WP6 不是单纯清理文档。它和 WP1 共同保证产品主路径不会继续漂回旧 `context.py`、`worker.py`、`llm_builder.py` 或 `graph.py`：新功能进入 v2 modules，旧模块只能保留兼容入口、历史 fixture 或被归档/删除。
 
 写范围：
 
@@ -2154,6 +2161,58 @@ residual_risks:
   - SkillFoundry 仍处于 mixed migration；graph_v2 还不是唯一产品 build / verify / repair / registry 路由。
   - Legacy /jobs 已默认隔离为 opt-in compatibility route，但完整退役仍是后续代码收敛事项。
   - Raw conversation 的短期 ledger/selector 风险仍需实现和负向测试持续守住。
-  - Registry 首次批准时序仍处于 transitional state，但文档已区分 current 和 target。
+  - 审查时 registry 首次批准时序仍是待收敛实现项；后续实现更新已记录 canonical graph_v2 route 的修正。
 status: approved for this documentation slice; remaining risks are implementation followups, not document blockers
+```
+
+本轮 reviewer 追加复审结果：
+
+```text
+reviewer: Zeno / independent gpt-5.5 xhigh reviewer
+model: gpt-5.5 xhigh
+initial_decision: conditionally_approved
+final_decision: approved_with_residual_risks
+blocking_findings: none
+required_changes_applied_in_this_revision:
+  - 旧 `docs/ROADMAP.md` 顶部状态说明已改为指向本文作为当前 v2 技术执行源，`docs/DEVELOPMENT_ROADMAP.md` 只保留为 v0/WP0-WP17 历史能力基线。
+  - 旧 `docs/ROADMAP_EXECUTION_PLAN.md` 顶部状态说明和 WP13 后续路线说明已改为指向本文作为当前 v2 执行路线。
+  - 旧 `docs/FRONT_DESK_AGENT_ROADMAP.md` 顶部状态说明和历史基线说明已改为指向本文作为当前 v2 重构蓝图。
+  - 旧 `docs/FRONT_DESK_ROADMAP_AUDIT.md` 顶部状态说明和历史 P0 状态引用已改为指向本文作为当前 v2 状态来源。
+  - 旧 `docs/DEVELOPMENT_ROADMAP_AUDIT.md` 已标注为 v0/WP0-WP17 historical audit，并移除 `DEVELOPMENT_ROADMAP.md` 仍是主执行入口的旧口径。
+  - WP1 / WP6 已明确作为同一个 canonicalization gate：新 build / verify / repair / registry 功能默认进入 v2 modules，legacy modules 只能 compatibility / migration / retirement。
+reviewer_confirmed:
+  - 本文正确区分 ContextForge、LangGraph、Codex SDK thread / GPT-5.5 worker、Verifier 和 Registry 的职责。
+  - 本文已经覆盖 Front Desk、FreezeGate、GoalContract / AgentNodeContract、ContextView / PromptCachePlan、Worker boundary、Verifier、Repair、Human review、Registry、API/UI、legacy retirement、测试验收和迁移阶段。
+  - ContextForge 能力边界保持弱声明：GoalHarness 是 single-node runtime；CodexThreadWorker 是 boundary-only；PromptCachePlan 不证明 provider cache hit。
+reviewer_reported_focused_verification:
+  - SkillFoundry focused tests: `tests/test_contracts.py tests/test_graph_v2.py tests/test_graph_v2_runtime.py tests/test_frontdesk_api.py tests/test_verification_bridge.py tests/test_registry.py` => 76 passed.
+  - ContextForge focused tests: `tests/test_goal_harness.py tests/test_langgraph_goal_node.py tests/test_verification_gates.py tests/test_prompt.py` => 22 passed.
+residual_risks:
+  - SkillFoundry 仍处于 mixed migration；graph_v2 还不是唯一产品 build / verify / repair / registry route。
+  - `seed_goal_harness_context()` 中 raw Front Desk conversation 仍有过渡风险；在改为默认 `prompt_include=False` 前，只能声称由 forbidden selector + leakage tests fail-closed 兜底，不能声称结构上不可能进入 prompt。
+  - 审查时 Registry gate 还不是唯一首次批准点；后续实现更新已记录 registry timing test 和 graph v2 gate 收敛。
+  - Human review 当前仍是 route/status，不是完整人工审查闭环；internal pilot 前需要补 request / decision / manual authority / registry binding workbench。
+status: approved for use as canonical v2 refactor execution entry; remaining items are implementation followups, not document blockers
+```
+
+后续实现更新：
+
+```text
+date: 2026-05-22
+scope: WP1/WP6 trust-boundary implementation slice
+implemented:
+  - canonical graph_v2 verified build path now calls run_verified_offline_goal_harness(..., promote_to_registry=False).
+  - canonical graph_v2 repair verification path now calls run_verified_repair_goal_harness(..., promote_to_registry=False).
+  - graph_v2 registry gate now performs first LocalSkillRegistry.add_verified(), emits final_report.json, and writes registry decision / entry snapshot.
+  - direct run_verified_offline_goal_harness() and run_verified_repair_goal_harness() still promote by default for compatibility callers.
+  - direct verified repair helper compatibility now has a focused regression test for default registry promotion and final report emission.
+  - seed_goal_harness_context() now records raw Front Desk conversation provenance with prompt_include=False while keeping forbidden selector evidence.
+verification:
+  - tests/test_goal_harness_verified_runtime.py tests/test_graph_v2_runtime.py => 21 passed.
+  - tests/test_graph_v2.py tests/test_graph_v2_runtime.py tests/test_goal_harness_verified_runtime.py tests/test_registry.py tests/test_verification_bridge.py tests/test_frontdesk_api.py tests/test_api.py => 104 passed.
+  - full suite: .venv/bin/python -m pytest -q => 416 passed.
+remaining_risks:
+  - SkillFoundry still has mixed migration and legacy modules; graph_v2 is the product path but old modules still exist as compatibility/historical surfaces.
+  - Human review remains route/status rather than a full workbench.
+  - Live provider / real Codex SDK pilot remains future opt-in after offline canonical route, evidence UI, and human-review operations are stronger.
 ```

@@ -290,6 +290,62 @@ def test_v2_graph_runs_verified_goal_harness_through_real_registry_gate(tmp_path
         ledger.close()
 
 
+def test_verified_build_node_defers_first_registry_approval_to_registry_gate(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    registry_path = tmp_path / "registry.json"
+    workspace = initialize_job_workspace(runs_root, "graph-runtime-registry-timing")
+    _write_acceptance_criteria(workspace)
+    build_node = build_verified_goal_harness_node(
+        runs_root,
+        registry_path=registry_path,
+        created_at=CREATED_AT,
+    )
+
+    state = build_node({"job_id": workspace.job_id, "attempt_limit": 2})
+
+    validate_v2_graph_state(state)
+    assert state["stage"] == V2Stage.BUILD_GOAL_NODE.value
+    assert state["status"] == V2Status.BUILD_RECORDED.value
+    assert state["refs"]["verified_runtime_result"] == VERIFIED_GOAL_RUNTIME_RESULT_REF
+    assert "final_report" not in state["refs"]
+    assert "registry_entry" not in state["refs"]
+    assert state["contextforge"]["registry_approved"] is False
+    assert not registry_path.exists()
+    assert not workspace.resolve_path("final_report.json").exists()
+
+    verified_runtime = json.loads(
+        workspace.resolve_path(VERIFIED_GOAL_RUNTIME_RESULT_REF, must_exist=True).read_text()
+    )
+    assert verified_runtime["status"]["contextforge_verification"] == "passed"
+    assert verified_runtime["status"]["registry_approved"] is False
+    assert verified_runtime["status"]["final_status"] == "verified_pending_registry"
+    assert "final_report" not in verified_runtime["refs"]
+    assert "registry_skill_id" not in verified_runtime["ids"]
+
+    registry_gate = build_verified_registry_gate_node(
+        runs_root,
+        registry_path=registry_path,
+        created_at=CREATED_AT,
+    )
+    registered = registry_gate(state)
+
+    validate_v2_graph_state(registered)
+    assert registered["stage"] == V2Stage.REGISTRY_GATE.value
+    assert registered["status"] == V2Status.REGISTERED.value
+    assert registered["refs"]["final_report"] == "final_report.json"
+    assert registered["refs"]["registry_decision"] == "registry/decision.json"
+    assert registered["contextforge"]["registry_approved"] is True
+    assert registry_path.exists()
+
+    promoted_runtime = json.loads(
+        workspace.resolve_path(VERIFIED_GOAL_RUNTIME_RESULT_REF, must_exist=True).read_text()
+    )
+    assert promoted_runtime["status"]["registry_approved"] is True
+    assert promoted_runtime["status"]["final_status"] == "registered"
+    assert promoted_runtime["refs"]["final_report"] == "final_report.json"
+    assert promoted_runtime["ids"]["registry_skill_id"] == registered["contextforge"]["registry_skill_id"]
+
+
 def test_verified_registry_gate_rejects_tampered_verified_runtime(tmp_path: Path) -> None:
     runs_root = tmp_path / "runs"
     registry_path = tmp_path / "registry.json"
@@ -303,7 +359,7 @@ def test_verified_registry_gate_rejects_tampered_verified_runtime(tmp_path: Path
     state = build_node({"job_id": workspace.job_id, "attempt_limit": 2})
     verified_path = workspace.resolve_path(VERIFIED_GOAL_RUNTIME_RESULT_REF, must_exist=True)
     payload = json.loads(verified_path.read_text())
-    payload["status"]["registry_approved"] = False
+    payload["status"]["contextforge_verification"] = "failed"
     verified_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
 
     registry_gate = build_verified_registry_gate_node(
@@ -311,7 +367,7 @@ def test_verified_registry_gate_rejects_tampered_verified_runtime(tmp_path: Path
         registry_path=registry_path,
         created_at=CREATED_AT,
     )
-    with pytest.raises(V2StateValidationError, match="registry approval"):
+    with pytest.raises(V2StateValidationError, match="passed ContextForge verification"):
         registry_gate(state)
 
 
@@ -328,11 +384,7 @@ def test_verified_registry_gate_rejects_cross_job_verified_runtime(tmp_path: Pat
     )
     build_node({"job_id": source.job_id, "attempt_limit": 2})
     (target.root / "contextforge").mkdir(exist_ok=True)
-    for ref in (
-        VERIFIED_GOAL_RUNTIME_RESULT_REF,
-        CONTEXTFORGE_VERIFICATION_RESULT_REF,
-        "final_report.json",
-    ):
+    for ref in (VERIFIED_GOAL_RUNTIME_RESULT_REF, CONTEXTFORGE_VERIFICATION_RESULT_REF):
         source_path = source.resolve_path(ref, must_exist=True)
         target_path = target.resolve_path(ref)
         target_path.parent.mkdir(parents=True, exist_ok=True)

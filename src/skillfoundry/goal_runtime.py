@@ -115,8 +115,8 @@ class VerifiedSkillFoundryGoalHarnessResult:
     verifier_result: VerificationResult
     acceptance_coverage_result: AcceptanceCoverageResult
     contextforge_verification_result: ContextForgeVerificationResult
-    registry_entry: RegistryEntry
-    final_report: dict[str, JsonValue]
+    registry_entry: RegistryEntry | None
+    final_report: dict[str, JsonValue] | None
     verified_runtime_result: dict[str, JsonValue]
     verified_runtime_result_ref: str
 
@@ -261,8 +261,15 @@ def run_verified_offline_goal_harness(
     run_id: str | None = None,
     created_at: str | None = None,
     worker_factory: GoalHarnessWorkerFactory | None = None,
+    promote_to_registry: bool = True,
 ) -> VerifiedSkillFoundryGoalHarnessResult:
-    """Run the offline v2 build node and promote only through real quality gates."""
+    """Run the offline v2 build node through real quality gates.
+
+    Direct compatibility callers keep the historical default of emitting a
+    registry entry and final report. Canonical graph_v2 callers set
+    ``promote_to_registry=False`` so the graph registry gate remains the single
+    product approval point after it revalidates the same evidence.
+    """
 
     timestamp = created_at or utc_now()
     _check_verified_runtime_inputs(workspace)
@@ -292,25 +299,28 @@ def run_verified_offline_goal_harness(
         verification_mode="verified",
         created_at=timestamp,
     )
-    registry_entry = LocalSkillRegistry(
-        registry_path,
-        duplicate_policy=DuplicatePolicy.IDEMPOTENT,
-    ).add_verified(
-        workspace,
-        version=version,
-        review_status="v2_goal_harness_verified",
-        require_contextforge_verification=True,
-    )
+    registry_entry: RegistryEntry | None = None
+    final_report: dict[str, JsonValue] | None = None
+    if promote_to_registry:
+        registry_entry = LocalSkillRegistry(
+            registry_path,
+            duplicate_policy=DuplicatePolicy.IDEMPOTENT,
+        ).add_verified(
+            workspace,
+            version=version,
+            review_status="v2_goal_harness_verified",
+            require_contextforge_verification=True,
+        )
 
-    from .graph import WorkflowStatus
-    from .offline import emit_final_report
+        from .graph import WorkflowStatus
+        from .offline import emit_final_report
 
-    final_report = emit_final_report(
-        workspace.root,
-        final_status=WorkflowStatus.REGISTERED,
-        registry_path=registry_path,
-        registry_entry=registry_entry,
-    )
+        final_report = emit_final_report(
+            workspace.root,
+            final_status=WorkflowStatus.REGISTERED,
+            registry_path=registry_path,
+            registry_entry=registry_entry,
+        )
     verified_runtime_result = _verified_runtime_result_payload(
         workspace,
         goal_harness,
@@ -480,6 +490,7 @@ def run_verified_repair_goal_harness(
     attempt_id: str = "002",
     version: str = DEFAULT_REGISTRY_VERSION,
     created_at: str | None = None,
+    promote_to_registry: bool = True,
 ) -> VerifiedRepairSkillFoundryGoalHarnessResult:
     """Promote a repaired attempt through independent verification gates.
 
@@ -535,7 +546,7 @@ def run_verified_repair_goal_harness(
 
     registry_entry: RegistryEntry | None = None
     final_report: dict[str, JsonValue] | None = None
-    if contextforge_verification_result.status == "passed":
+    if contextforge_verification_result.status == "passed" and promote_to_registry:
         registry_entry = LocalSkillRegistry(
             registry_path,
             duplicate_policy=DuplicatePolicy.IDEMPOTENT,
@@ -678,7 +689,7 @@ def seed_goal_harness_context(
                 task_id=task_id,
                 node_id=node_id,
                 tags=["raw_frontdesk_conversation"],
-                prompt_include=True,
+                prompt_include=False,
             )
         )
     recorded: list[str] = []
@@ -1392,57 +1403,67 @@ def _verified_runtime_result_payload(
     verifier_result: VerificationResult,
     acceptance_coverage_result: AcceptanceCoverageResult,
     contextforge_verification_result: ContextForgeVerificationResult,
-    registry_entry: RegistryEntry,
-    final_report: dict[str, JsonValue],
+    registry_entry: RegistryEntry | None,
+    final_report: dict[str, JsonValue] | None,
     *,
     created_at: str,
 ) -> dict[str, JsonValue]:
+    registry_approved = registry_entry is not None and registry_entry.approval_status == "approved"
+    refs = {
+        **goal_harness.runtime_result.get("refs", {}),
+        "goal_runtime_result": GOAL_RUNTIME_RESULT_REF,
+        "verified_runtime_result": VERIFIED_GOAL_RUNTIME_RESULT_REF,
+        "worker_input_manifest": "attempts/001/input_manifest.json",
+        "worker_execution_report": "attempts/001/execution_report.json",
+        "worker_transcript": "attempts/001/worker_transcript.log",
+        "worker_diff": "attempts/001/output_diff.patch",
+        "skillfoundry_verification_result": "verifier/verification_result.json",
+        "acceptance_coverage_result": "qa/acceptance_coverage_result.json",
+        "contextforge_verification_result": "contextforge/verification_result.json",
+    }
+    if final_report is not None:
+        refs["final_report"] = "final_report.json"
+
+    ids: dict[str, JsonValue] = {
+        **goal_harness.runtime_result.get("ids", {}),
+        "skillfoundry_verification_result_id": verifier_result.result_id,
+        "acceptance_coverage_result_id": acceptance_coverage_result.result_id,
+        "contextforge_verification_result_id": contextforge_verification_result.verification_result_id,
+    }
+    if registry_entry is not None:
+        ids["registry_skill_id"] = registry_entry.skill_id
+        ids["registry_version"] = registry_entry.version
+
+    hashes = {
+        **goal_harness.runtime_result.get("hashes", {}),
+        "skillfoundry_verification_result": sha256_file(
+            workspace.resolve_path("verifier/verification_result.json", must_exist=True)
+        ),
+        "acceptance_coverage_result": sha256_file(
+            workspace.resolve_path("qa/acceptance_coverage_result.json", must_exist=True)
+        ),
+        "contextforge_verification_result": sha256_file(
+            workspace.resolve_path("contextforge/verification_result.json", must_exist=True)
+        ),
+    }
+    if registry_entry is not None:
+        hashes["registry_entry"] = sha256_json(registry_entry.to_dict())
+
     payload = {
         "schema_version": VERIFIED_GOAL_RUNTIME_RESULT_SCHEMA_VERSION,
         "job_id": workspace.job_id,
         "created_at": created_at,
-        "refs": {
-            **goal_harness.runtime_result.get("refs", {}),
-            "goal_runtime_result": GOAL_RUNTIME_RESULT_REF,
-            "verified_runtime_result": VERIFIED_GOAL_RUNTIME_RESULT_REF,
-            "worker_input_manifest": "attempts/001/input_manifest.json",
-            "worker_execution_report": "attempts/001/execution_report.json",
-            "worker_transcript": "attempts/001/worker_transcript.log",
-            "worker_diff": "attempts/001/output_diff.patch",
-            "skillfoundry_verification_result": "verifier/verification_result.json",
-            "acceptance_coverage_result": "qa/acceptance_coverage_result.json",
-            "contextforge_verification_result": "contextforge/verification_result.json",
-            "final_report": "final_report.json",
-        },
-        "ids": {
-            **goal_harness.runtime_result.get("ids", {}),
-            "skillfoundry_verification_result_id": verifier_result.result_id,
-            "acceptance_coverage_result_id": acceptance_coverage_result.result_id,
-            "contextforge_verification_result_id": contextforge_verification_result.verification_result_id,
-            "registry_skill_id": registry_entry.skill_id,
-            "registry_version": registry_entry.version,
-        },
+        "refs": refs,
+        "ids": ids,
         "status": {
             **goal_harness.runtime_result.get("status", {}),
             "skillfoundry_verification_passed": verifier_result.passed,
             "acceptance_coverage_passed": acceptance_coverage_result.passed,
             "contextforge_verification": contextforge_verification_result.status,
-            "registry_approved": registry_entry.approval_status == "approved",
-            "final_status": final_report.get("final_status"),
+            "registry_approved": registry_approved,
+            "final_status": final_report.get("final_status") if final_report is not None else "verified_pending_registry",
         },
-        "hashes": {
-            **goal_harness.runtime_result.get("hashes", {}),
-            "skillfoundry_verification_result": sha256_file(
-                workspace.resolve_path("verifier/verification_result.json", must_exist=True)
-            ),
-            "acceptance_coverage_result": sha256_file(
-                workspace.resolve_path("qa/acceptance_coverage_result.json", must_exist=True)
-            ),
-            "contextforge_verification_result": sha256_file(
-                workspace.resolve_path("contextforge/verification_result.json", must_exist=True)
-            ),
-            "registry_entry": sha256_json(registry_entry.to_dict()),
-        },
+        "hashes": hashes,
         "trust_boundaries": {
             "worker_self_report_is_not_acceptance": True,
             "registry_requires_contextforge_verification": True,

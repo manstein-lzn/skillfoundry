@@ -4,6 +4,8 @@
 审核方：独立 `gpt-5.5 xhigh` agent
 审核对象：`docs/FRONT_DESK_AGENT_ROADMAP.md`、README、主 roadmap、当前 Front Desk 实现和测试
 
+> 历史状态说明：本文是 Front Desk WP13-WP17 设计阶段的独立审核记录。WP15B Front Desk Loop、WP16 Acceptance Coverage Bridge、WP17 Owned LLM Builder Pilot 已在后续实现中完成。当前 v2 技术执行源是 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`，当前接手状态见 `HANDOFF.md`；`docs/DEVELOPMENT_ROADMAP.md` 仅作为 v0 / WP0-WP17 能力基线和产品经验记录。
+
 ## 1. 结论
 
 审核结论：`conditional-go / approve_with_changes`。
@@ -39,17 +41,17 @@
 
 ### P0：WP15 不是端到端闭环完成
 
-当前 `RequirementsElicitor`、`SpecAuditor`、`FrontDeskFreezeGate` 都能独立工作，但还没有真正的 LangGraph 多轮状态机。也就是说：
+审核时 `RequirementsElicitor`、`SpecAuditor`、`FrontDeskFreezeGate` 都能独立工作，但还没有真正的 LangGraph 多轮状态机。也就是说：
 
 ```text
 ask_user -> elicit -> audit -> freeze/human/reject
 ```
 
-这条链路还没有作为可执行产品闭环完成。后续必须新增 `frontdesk_graph` 或等价 node 组合，并补 `tests/test_frontdesk_loop.py`。
+这条链路在审核时还没有作为可执行产品闭环完成。后续实现已补 `FrontDeskLoop` 和 `tests/test_frontdesk_loop.py`；当前 v2 状态以 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md` 与 `HANDOFF.md` 为准，`docs/DEVELOPMENT_ROADMAP.md` 只作为历史基线。
 
 ### P0：FreezeGate 风险、隐私、预算策略还不够硬
 
-当前 FreezeGate 已经是 deterministic gate，但风险、隐私和预算策略还不完整。特别是：
+审核时 FreezeGate 已经是 deterministic gate，但风险、隐私和预算策略还不完整。特别是：
 
 - high-risk / privacy / unsafe data access 不能只依赖 Auditor 自觉标记；
 - `redaction_status`、`risk_policy_ref`、`data_sensitivity` 等字段需要进入确定性 gate；
@@ -68,9 +70,9 @@ uncovered
 
 must criteria 不能停留在 `planned` 后进入 approved registry。
 
-### P1：Elicitor draft artifact 还没有自动物化
+### P1：Elicitor draft artifact 当时还没有自动物化
 
-`RequirementsElicitor` 当前会写 `elicitation_report_001.json`，但 draft spec 和 draft acceptance criteria 的 artifact 物化仍主要靠测试手工准备。Front Desk loop 中必须补齐：
+`RequirementsElicitor` 当时会写 `elicitation_report_001.json`，但 draft spec 和 draft acceptance criteria 的 artifact 物化仍主要靠测试手工准备。后续 Front Desk loop 中需要补齐：
 
 - `frontdesk/draft_skill_spec.yaml`
 - `frontdesk/acceptance_criteria.yaml`

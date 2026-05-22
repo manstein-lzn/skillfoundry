@@ -20,7 +20,9 @@ from skillfoundry import (
     SkillFoundryAPI,
     VERIFIED_GOAL_RUNTIME_RESULT_REF,
     run_offline_goal_harness,
+    run_repair_goal_harness,
     run_verified_offline_goal_harness,
+    run_verified_repair_goal_harness,
 )
 from skillfoundry.workspace import JobWorkspace, initialize_job_workspace
 
@@ -259,6 +261,44 @@ def test_verified_goal_harness_can_promote_owned_llm_worker_factory(tmp_path: Pa
     assert input_manifest["contextforge"]["prompt_view_ids"]
     assert workspace.resolve_path("attempts/001/owned_llm_worker_report.json", must_exist=True).is_file()
     assert client.calls
+
+
+def test_verified_repair_goal_harness_direct_helper_still_registers_by_default(tmp_path: Path) -> None:
+    workspace = initialize_job_workspace(tmp_path / "runs", "direct-repair-verified")
+    AcceptanceCriteriaSet(criteria=[_criterion()], job_id=workspace.job_id).write_yaml_file(
+        workspace.resolve_path("acceptance_criteria.yaml")
+    )
+    registry_path = tmp_path / "registry.json"
+
+    run_offline_goal_harness(
+        workspace,
+        verification_mode="fail_missing_coverage",
+        created_at=CREATED_AT,
+    )
+    repair = run_repair_goal_harness(
+        workspace,
+        attempt_id="002",
+        created_at=CREATED_AT,
+    )
+
+    result = run_verified_repair_goal_harness(
+        workspace,
+        registry_path=registry_path,
+        attempt_id="002",
+        created_at=CREATED_AT,
+    )
+
+    assert repair.repair_attempt.status == "completed"
+    assert result.contextforge_verification_result.status == "passed"
+    assert result.registry_entry is not None
+    assert result.registry_entry.approval_status == APPROVAL_APPROVED
+    assert result.final_report is not None
+    assert result.final_report["final_status"] == "registered"
+    assert result.verified_runtime_result["status"]["registry_approved"] is True
+    assert result.verified_runtime_result["status"]["final_status"] == "registered"
+    assert result.verified_runtime_result["refs"]["final_report"] == "final_report.json"
+    assert workspace.resolve_path("final_report.json", must_exist=True).is_file()
+    assert LocalSkillRegistry(registry_path).verify_entry(result.registry_entry).valid is True
 
 
 def test_default_frontdesk_frozen_job_promotes_through_verified_goal_harness(
