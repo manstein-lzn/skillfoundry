@@ -66,6 +66,7 @@ PLAN_REVIEW_REF_TEMPLATE = "frontdesk/plan_review_{sequence:03d}.json"
 BUILD_PATH_GRAPH_V2 = "graph_v2_goal_harness"
 BUILD_PATH_LEGACY_COMPATIBILITY = "legacy_offline_compatibility"
 BUILD_PATH_WORKSPACE_ONLY = "workspace_only"
+ALLOW_LEGACY_OFFLINE_JOBS_ENV = "SKILLFOUNDRY_ALLOW_LEGACY_OFFLINE_JOBS"
 FrontDeskClientFactory = Callable[[str, str, int], Any]
 
 
@@ -123,6 +124,7 @@ class SkillFoundryAPI:
         registry_path: str | Path | None = None,
         frontdesk_client_factory: FrontDeskClientFactory | None = None,
         frontdesk_model: str | None = None,
+        allow_legacy_offline_jobs: bool | None = None,
     ) -> None:
         self.runs_root = Path(runs_root).expanduser()
         self.runs_root.mkdir(parents=True, exist_ok=True)
@@ -130,12 +132,23 @@ class SkillFoundryAPI:
         self.registry_path = self._resolve_registry_path(registry_path)
         self.frontdesk_client_factory = frontdesk_client_factory
         self.frontdesk_model = frontdesk_model or os.environ.get("SKILLFOUNDRY_FRONTDESK_MODEL", DEFAULT_FRONTDESK_MODEL)
+        self.allow_legacy_offline_jobs = (
+            _query_bool(os.environ.get(ALLOW_LEGACY_OFFLINE_JOBS_ENV, ""))
+            if allow_legacy_offline_jobs is None
+            else bool(allow_legacy_offline_jobs)
+        )
 
     def create_job(self, payload: Mapping[str, Any]) -> dict[str, JsonValue]:
         """Create one synchronous offline job from a JSON-like payload."""
 
         if not isinstance(payload, Mapping):
             raise APIError(400, "invalid_json", "request body must be a JSON object")
+        if not self.allow_legacy_offline_jobs:
+            raise APIError(
+                403,
+                "legacy_offline_jobs_disabled",
+                "POST /jobs is a legacy compatibility route; use /frontdesk/jobs and /frontdesk/jobs/{job_id}/build, or enable legacy offline jobs explicitly.",
+            )
 
         job_id = payload.get("job_id")
         if job_id is None or job_id == "":
@@ -677,6 +690,7 @@ class SkillFoundryAPI:
         jobs = [self._job_summary(path.name) for path in self._job_dirs()]
         frontdesk_jobs = [self._frontdesk_job_summary(path.name) for path in self._frontdesk_job_dirs()]
         registry_entries = self.query_registry()["entries"]
+        legacy_form_html = self._legacy_offline_factory_form_html()
         return "\n".join(
             [
                 "<!doctype html>",
@@ -742,20 +756,7 @@ class SkillFoundryAPI:
                 '    <section class="panel">',
                 "      <details>",
                 "      <summary>内部调试</summary>",
-                "      <h2>离线工厂</h2>",
-                '      <form method="post" action="/jobs">',
-                '        <label>Job ID <input name="job_id" autocomplete="off"></label>',
-                '        <label>Worker Mode <select name="worker_mode">'
-                + "".join(
-                    f'<option value="{escape(mode.value)}">{escape(mode.value)}</option>'
-                    for mode in OfflineWorkerMode
-                )
-                + "</select></label>",
-                '        <label>Attempt Limit <input name="attempt_limit" inputmode="numeric" value="2"></label>',
-                '        <label>Requirement <textarea name="requirement" required></textarea></label>',
-                "        <button type=\"submit\">运行离线闭环</button>",
-                '          <div class="small muted" data-submit-status></div>',
-                "        </form>",
+                *legacy_form_html,
                 "      <h2>离线 Job</h2>",
                 self._jobs_table_html(jobs),
                 "      </details>",
@@ -766,6 +767,25 @@ class SkillFoundryAPI:
                 "</html>",
             ]
         )
+
+    def _legacy_offline_factory_form_html(self) -> list[str]:
+        if not self.allow_legacy_offline_jobs:
+            return []
+        return [
+            "      <h2>离线工厂</h2>",
+            '      <form method="post" action="/jobs">',
+            '        <label>Job ID <input name="job_id" autocomplete="off"></label>',
+            '        <label>Worker Mode <select name="worker_mode">'
+            + "".join(
+                f'<option value="{escape(mode.value)}">{escape(mode.value)}</option>' for mode in OfflineWorkerMode
+            )
+            + "</select></label>",
+            '        <label>Attempt Limit <input name="attempt_limit" inputmode="numeric" value="2"></label>',
+            '        <label>Requirement <textarea name="requirement" required></textarea></label>',
+            "        <button type=\"submit\">运行离线闭环</button>",
+            '          <div class="small muted" data-submit-status></div>',
+            "        </form>",
+        ]
 
     def render_frontdesk_job_html(self, job_id: str) -> str:
         """Render one user-facing Front Desk conversation page."""
@@ -2248,10 +2268,15 @@ def serve_http(
     registry_path: str | Path | None = None,
     host: str = DEFAULT_SERVE_HOST,
     port: int = DEFAULT_SERVE_PORT,
+    allow_legacy_offline_jobs: bool | None = None,
 ) -> None:
     """Serve the minimal internal API/UI until interrupted."""
 
-    api = SkillFoundryAPI(runs_root, registry_path=registry_path)
+    api = SkillFoundryAPI(
+        runs_root,
+        registry_path=registry_path,
+        allow_legacy_offline_jobs=allow_legacy_offline_jobs,
+    )
     server = make_server(api, host=host, port=port)
     try:
         server.serve_forever()

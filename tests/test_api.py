@@ -8,6 +8,7 @@ import zipfile
 from contextforge import ModelResponse, UsageDraft
 
 import skillfoundry
+from skillfoundry.cli import _build_parser
 from skillfoundry import (
     APPROVAL_APPROVED,
     CONTEXTFORGE_VERIFICATION_RESULT_REF,
@@ -70,8 +71,12 @@ class ScriptedAPIModelClient:
         )
 
 
-def make_api(tmp_path) -> SkillFoundryAPI:
-    return SkillFoundryAPI(tmp_path / "runs")
+def make_api(tmp_path, *, allow_legacy_offline_jobs: bool = False) -> SkillFoundryAPI:
+    return SkillFoundryAPI(tmp_path / "runs", allow_legacy_offline_jobs=allow_legacy_offline_jobs)
+
+
+def make_legacy_api(tmp_path) -> SkillFoundryAPI:
+    return make_api(tmp_path, allow_legacy_offline_jobs=True)
 
 
 def post_job(api: SkillFoundryAPI, **overrides):
@@ -96,8 +101,20 @@ def test_api_is_exported():
     assert skillfoundry.SkillFoundryAPI is SkillFoundryAPI
 
 
-def test_post_jobs_creates_registered_job_and_writes_final_report(tmp_path):
+def test_post_jobs_legacy_offline_route_is_disabled_by_default(tmp_path):
     api = make_api(tmp_path)
+
+    response = post_job(api)
+    payload = response_json(response)
+
+    assert response.status == 403
+    assert payload["error"]["code"] == "legacy_offline_jobs_disabled"
+    assert "/frontdesk/jobs/{job_id}/build" in payload["error"]["message"]
+    assert not (tmp_path / "runs" / "api-ok" / "final_report.json").exists()
+
+
+def test_post_jobs_legacy_offline_route_can_be_enabled_with_constructor_flag(tmp_path):
+    api = make_legacy_api(tmp_path)
 
     response = post_job(api)
     payload = response_json(response)
@@ -114,8 +131,30 @@ def test_post_jobs_creates_registered_job_and_writes_final_report(tmp_path):
     assert (tmp_path / "runs" / ".api_requirements" / "api-ok.md").is_file()
 
 
+def test_post_jobs_legacy_offline_route_can_be_enabled_with_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKILLFOUNDRY_ALLOW_LEGACY_OFFLINE_JOBS", "1")
+    api = SkillFoundryAPI(tmp_path / "runs")
+
+    response = post_job(api, job_id="api-env")
+    payload = response_json(response)
+
+    assert response.status == 201
+    assert payload["job_id"] == "api-env"
+    assert payload["build_path"]["mode"] == "legacy_offline_compatibility"
+
+
+def test_cli_serve_legacy_flag_preserves_env_default():
+    parser = _build_parser()
+
+    default_args = parser.parse_args(["serve", "--runs-root", "runs"])
+    enabled_args = parser.parse_args(["serve", "--runs-root", "runs", "--allow-legacy-offline-jobs"])
+
+    assert default_args.allow_legacy_offline_jobs is None
+    assert enabled_args.allow_legacy_offline_jobs is True
+
+
 def test_get_jobs_lists_created_jobs(tmp_path):
-    api = make_api(tmp_path)
+    api = make_legacy_api(tmp_path)
     post_job(api, job_id="api-list")
 
     response = api.handle("GET", "/jobs")
@@ -129,7 +168,7 @@ def test_get_jobs_lists_created_jobs(tmp_path):
 
 
 def test_get_job_report_returns_final_report(tmp_path):
-    api = make_api(tmp_path)
+    api = make_legacy_api(tmp_path)
     post_job(api, job_id="api-report")
 
     response = api.handle("GET", "/jobs/api-report/report")
@@ -496,7 +535,7 @@ def test_get_job_contextforge_status_directory_verification_artifact_uses_status
 
 
 def test_get_registry_returns_default_approved_entries(tmp_path):
-    api = make_api(tmp_path)
+    api = make_legacy_api(tmp_path)
     post_job(api, job_id="api-registry")
     post_job(
         api,
@@ -516,7 +555,7 @@ def test_get_registry_returns_default_approved_entries(tmp_path):
 
 
 def test_approved_package_download_returns_zip_with_skill_md(tmp_path):
-    api = make_api(tmp_path)
+    api = make_legacy_api(tmp_path)
     post_job(api, job_id="api-download")
 
     response = api.handle("GET", "/jobs/api-download/package.zip")
@@ -530,7 +569,7 @@ def test_approved_package_download_returns_zip_with_skill_md(tmp_path):
 
 
 def test_failed_job_package_download_is_denied(tmp_path):
-    api = make_api(tmp_path)
+    api = make_legacy_api(tmp_path)
     failed = post_job(
         api,
         job_id="api-failed",
@@ -550,7 +589,7 @@ def test_failed_job_package_download_is_denied(tmp_path):
 
 
 def test_rejected_unsafe_job_package_download_is_denied(tmp_path):
-    api = make_api(tmp_path)
+    api = make_legacy_api(tmp_path)
     rejected = post_job(
         api,
         job_id="api-rejected",
@@ -568,7 +607,7 @@ def test_rejected_unsafe_job_package_download_is_denied(tmp_path):
 
 
 def test_path_traversal_job_id_and_artifact_path_are_rejected(tmp_path):
-    api = make_api(tmp_path)
+    api = make_legacy_api(tmp_path)
     post_job(api, job_id="api-safe")
 
     create_response = api.handle(
@@ -585,8 +624,32 @@ def test_path_traversal_job_id_and_artifact_path_are_rejected(tmp_path):
     assert artifact_response.status == 400
 
 
-def test_html_ui_renders_links_and_does_not_mark_failed_jobs_as_downloadable(tmp_path):
+def test_html_ui_hides_legacy_offline_factory_form_by_default(tmp_path):
     api = make_api(tmp_path)
+
+    response = api.handle("GET", "/")
+    html = response.body.decode("utf-8")
+
+    assert response.status == 200
+    assert 'action="/frontdesk/jobs"' in html
+    assert 'action="/jobs"' not in html
+    assert "离线工厂" not in html
+    assert "离线 Job" in html
+
+
+def test_html_ui_shows_legacy_offline_factory_form_when_enabled(tmp_path):
+    api = make_legacy_api(tmp_path)
+
+    response = api.handle("GET", "/")
+    html = response.body.decode("utf-8")
+
+    assert response.status == 200
+    assert 'action="/jobs"' in html
+    assert "离线工厂" in html
+
+
+def test_html_ui_renders_links_and_does_not_mark_failed_jobs_as_downloadable(tmp_path):
+    api = make_legacy_api(tmp_path)
     post_job(api, job_id="ui-ok")
     post_job(
         api,

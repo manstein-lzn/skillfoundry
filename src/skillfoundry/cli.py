@@ -79,6 +79,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             registry_path=args.registry,
             host=args.host,
             port=args.port,
+            allow_legacy_offline_jobs=args.allow_legacy_offline_jobs,
         )
         return 0
 
@@ -138,6 +139,12 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--registry", type=Path, required=False)
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument(
+        "--allow-legacy-offline-jobs",
+        action="store_true",
+        default=None,
+        help="enable the legacy POST /jobs offline compatibility route",
+    )
 
     ops = subparsers.add_parser("ops", help="WP12 local operations helpers")
     ops.add_argument("--runs-root", type=Path, default=Path("runs"))

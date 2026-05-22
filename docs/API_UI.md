@@ -14,18 +14,28 @@ skillfoundry serve --runs-root runs --host 127.0.0.1 --port 8765
 The default registry path is `runs/registry.json`. Keep the service behind an
 internal network boundary or local tunnel controlled by the operator.
 
+Legacy offline `/jobs` creation is an explicit opt-in compatibility route and
+is disabled by default. For v0 fixture migration or local smoke tests, opt in
+explicitly with either:
+
+```bash
+SKILLFOUNDRY_ALLOW_LEGACY_OFFLINE_JOBS=1 skillfoundry serve --runs-root runs
+skillfoundry serve --runs-root runs --allow-legacy-offline-jobs
+```
+
 ## Routes
 
-- `GET /`: internal HTML page with a job form, job table, registry summary,
-  report links, and package links only for downloadable registered packages.
+- `GET /`: internal HTML page with the Front Desk job form, Front Desk job
+  table, registry summary, legacy job table, report links, and package links
+  only for downloadable registered packages. The legacy offline factory form is
+  hidden unless legacy offline jobs are explicitly enabled.
 - `POST /jobs`: legacy compatibility route that creates one synchronous
-  offline job from JSON or form data. It is retained for v0 fixtures and
-  internal smoke tests; the canonical product build path is the Front Desk
-  approved/frozen graph v2 route below.
-  It should not be used as the default product entry for new integrations; the
-  v2 refactor plan calls for this route to become explicit opt-in
-  compatibility so new users do not bypass Front Desk, graph v2, and
-  ContextForge Goal Harness evidence.
+  offline job from JSON or form data when legacy offline jobs are explicitly
+  enabled. It is retained for v0 fixtures and internal smoke tests; the
+  canonical product build path is the Front Desk approved/frozen graph v2 route
+  below. By default it returns `403` with
+  `legacy_offline_jobs_disabled` so new users do not bypass Front Desk,
+  graph v2, and ContextForge Goal Harness evidence.
   JSON fields are `requirement`, optional `job_id`, optional `worker_mode`, and
   optional `attempt_limit`.
 - `GET /jobs`: list known job workspaces below `runs_root`.
