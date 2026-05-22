@@ -274,6 +274,8 @@ from .workers_v2 import (
     CodexThreadSkillBuilderWorker,
     ExternalAgentSkillBuilderWorker,
     FakeSkillBuilderWorker,
+    OWNED_LLM_WORKER_OUTPUT_SCHEMA_VERSION,
+    OwnedLLMSkillBuilderWorker,
 )
 from .worker import (
     BuildWorker,
@@ -413,6 +415,7 @@ __all__ = [
     "LocalSkillRegistry",
     "MAX_V2_INLINE_STRING_BYTES",
     "OFFLINE_REPORT_VERSION",
+    "OWNED_LLM_WORKER_OUTPUT_SCHEMA_VERSION",
     "OPS_CLEANUP_REPORT_VERSION",
     "OPS_CONCURRENT_BUILD_REPORT_VERSION",
     "OPS_HEALTH_REPORT_VERSION",
@@ -422,6 +425,7 @@ __all__ = [
     "OfflineRunResult",
     "OfflineWorkerMode",
     "OwnedLLMCallResult",
+    "OwnedLLMSkillBuilderWorker",
     "PathSecurityError",
     "QA_LAB_VERSION",
     "QA_REPORT_VERSION",
