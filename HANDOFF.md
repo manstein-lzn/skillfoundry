@@ -173,17 +173,19 @@ uv run --extra test pytest -q
 .venv/bin/python -m pytest -q
 ```
 
-2. 若要继续 v2 重建，先读 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`。当前优先修通默认 Front Desk frozen job 到 verified build / verify / acceptance coverage / registry 的离线闭环：
+2. 若要继续 v2 重建，先读 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`。当前默认 Front Desk frozen job 已能通过 API build endpoint 进入 graph v2 verified build / verify / acceptance coverage / registry happy path：
 
-- Front Desk 生成的 `acceptance_criteria.yaml` 必须使用 deterministic `verifier_check_id`。
-- 如果验收项声明 raw conversation exclusion，需要 verifier/bridge 有对应的确定性 check，或引用现有等价 check。
-- 默认 no-key API job 应能 approve/freeze 后进入 `run_verified_offline_goal_harness(...)` 并通过 registry gate，或给出明确可审计失败。
-- 跑 `tests/test_frontdesk_loop.py tests/test_frontdesk_api.py tests/test_frontdesk_goal_runtime.py tests/test_goal_harness_verified_runtime.py tests/test_verification_bridge.py tests/test_registry.py tests/test_acceptance_coverage.py` 和全量 pytest。
+- `POST /frontdesk/jobs/{job_id}/build` 只接受 approved/frozen Front Desk jobs。
+- endpoint 通过 `graph_v2.py` 调用 verified Goal Harness build、SkillFoundry verifier、acceptance coverage、ContextForge verification bridge 和 registry gate。
+- graph v2 final state 持久化到 `contextforge/graph_v2_state.json`，仍是 refs/IDs/status-only。
+- `GET /jobs/{job_id}/contextforge` 会暴露 verified runtime、graph v2 state、verification 和 registry summary，不暴露 raw prompt / raw payload。
+- 相关 focused gates：`tests/test_frontdesk_api.py tests/test_api.py tests/test_graph_v2_runtime.py tests/test_graph_v2.py tests/test_goal_harness_verified_runtime.py tests/test_verification_bridge.py tests/test_registry.py tests/test_acceptance_coverage.py` 和全量 pytest。
 
-3. 后续继续 Phase 4/5：
+3. 后续继续 Phase 4/5/7：
 
-- 让 `graph_v2.py` 成为 build / verify / repair / registry 的产品主骨架。
-- 收敛 API/UI 到 v2 refs 和 ContextForge status。
+- 让 `graph_v2.py` 成为唯一产品 build / verify / repair / registry 主骨架，旧 `graph.py` 退役或隔离为 compatibility wrapper。
+- 把 repair 也收敛为 Goal Harness node，而不只是 refs-only planned state。
+- 继续完善 API/UI 的 registry outcome、repair/human-review route 和 evidence 摘要。
 - 真实 provider / Codex SDK thread 只做 opt-in pilot，不进入默认测试。
 
 4. 不要回退以下约束：

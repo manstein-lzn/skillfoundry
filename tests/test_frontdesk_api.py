@@ -3,11 +3,13 @@ import json
 from contextforge.schema import ModelResponse
 
 from skillfoundry.api import SkillFoundryAPI
+from skillfoundry import GRAPH_V2_STATE_REF, validate_v2_graph_state
 from skillfoundry.frontdesk_goal_runtime import (
     FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF,
     FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF,
     FRONTDESK_SPEC_AUDIT_RUNTIME_RESULT_REF,
 )
+from skillfoundry.frontdesk_schema import FrontDeskState
 from skillfoundry.frontdesk_schema import FrontDeskConfig
 
 
@@ -306,6 +308,120 @@ def test_frontdesk_api_defaults_to_offline_goal_harness_without_live_key(tmp_pat
     assert audit_runtime["refs"]["plan_review"] == "frontdesk/plan_review_001.json"
     assert audit_runtime["refs"]["spec_audit_report"] == "frontdesk/spec_audit_report_001.json"
     assert audit_runtime["trust_boundaries"]["raw_conversation_included"] is False
+
+
+def test_frontdesk_api_rejects_build_before_freeze(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    api = SkillFoundryAPI(tmp_path / "runs")
+
+    created = api.handle(
+        "POST",
+        "/frontdesk/jobs",
+        body={"job_id": "frontdesk-build-too-early", "message": "Build a governed skill."},
+    ).json()
+    assert created["state"]["readiness"] == "awaiting_plan_review"
+
+    response = api.handle("POST", "/frontdesk/jobs/frontdesk-build-too-early/build", body={})
+
+    assert response.status == 409
+    assert response.json()["error"]["code"] == "frontdesk_build_not_ready"
+
+
+def test_frontdesk_api_requires_consistent_frozen_route_to_build_state(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    api = SkillFoundryAPI(tmp_path / "runs")
+    job_id = "frontdesk-build-gate"
+    api.handle(
+        "POST",
+        "/frontdesk/jobs",
+        body={"job_id": job_id, "message": "Build a governed skill."},
+    )
+    run_root = tmp_path / "runs" / job_id
+    state_path = run_root / "frontdesk" / "state.json"
+    original = json.loads(state_path.read_text(encoding="utf-8"))
+
+    frozen_wrong_action = FrontDeskState.from_dict(
+        {
+            **original,
+            "readiness": "frozen",
+            "next_action": "freeze_spec",
+        }
+    )
+    state_path.write_text(frozen_wrong_action.to_json(), encoding="utf-8")
+    response = api.handle("POST", f"/frontdesk/jobs/{job_id}/build", body={})
+    html = api.handle("GET", f"/frontdesk/jobs/{job_id}", headers={"Accept": "text/html"}).body.decode("utf-8")
+    assert response.status == 409
+    assert response.json()["error"]["code"] == "frontdesk_build_not_ready"
+    assert "/build" not in html
+
+    wrong_readiness_route = FrontDeskState.from_dict(
+        {
+            **original,
+            "readiness": "plan_approved",
+            "next_action": "route_to_build",
+        }
+    )
+    state_path.write_text(wrong_readiness_route.to_json(), encoding="utf-8")
+    response = api.handle("POST", f"/frontdesk/jobs/{job_id}/build", body={})
+    html = api.handle("GET", f"/frontdesk/jobs/{job_id}", headers={"Accept": "text/html"}).body.decode("utf-8")
+    assert response.status == 409
+    assert response.json()["error"]["code"] == "frontdesk_build_not_ready"
+    assert "/build" not in html
+
+
+def test_frontdesk_api_builds_frozen_job_through_graph_v2_without_raw_leakage(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    api = SkillFoundryAPI(tmp_path / "runs")
+    marker = "RAW_API_GRAPH_V2_MARKER_SHOULD_NOT_LEAK"
+    job_id = "frontdesk-graph-v2-build"
+
+    created = api.handle(
+        "POST",
+        "/frontdesk/jobs",
+        body={"job_id": job_id, "message": f"Build a governed status skill. {marker}"},
+    ).json()
+    assert created["status"] == "await_user_plan_review"
+
+    approved = api.handle(
+        "POST",
+        f"/frontdesk/jobs/{job_id}/plan-review",
+        body={"decision": "approve", "reason": "The governed plan is ready to build."},
+    ).json()
+    assert approved["status"] == "route_to_build"
+    assert approved["state"]["readiness"] == "frozen"
+
+    build_response = api.handle("POST", f"/frontdesk/jobs/{job_id}/build", body={})
+
+    assert build_response.status == 200
+    assert marker not in build_response.body.decode("utf-8")
+    payload = build_response.json()
+    assert payload["schema_version"] == "skillfoundry.api.frontdesk_build.v1"
+    assert payload["status"] == "registered"
+    assert payload["graph_v2_state_ref"] == GRAPH_V2_STATE_REF
+    assert payload["final_report"]["final_status"] == "registered"
+    assert payload["graph_v2_state"]["stage"] == "emit_report"
+    assert payload["graph_v2_state"]["status"] == "report_emitted"
+    assert payload["graph_v2_state"]["contextforge"]["registry_approved"] is True
+    validate_v2_graph_state(payload["graph_v2_state"])
+
+    run_root = tmp_path / "runs" / job_id
+    graph_state_path = run_root / GRAPH_V2_STATE_REF
+    assert graph_state_path.is_file()
+    persisted_state = json.loads(graph_state_path.read_text(encoding="utf-8"))
+    validate_v2_graph_state(persisted_state)
+    assert marker not in json.dumps(persisted_state, sort_keys=True)
+
+    status = api.handle("GET", f"/jobs/{job_id}/contextforge").json()
+    assert status["refs"]["graph_v2_state"]["exists"] is True
+    assert status["refs"]["verified_runtime_result"]["exists"] is True
+    assert status["status"]["graph_v2"]["registry_approved"] is True
+    assert status["status"]["graph_v2"]["last_verification_status"] == "passed"
+    assert status["status"]["registry"]["approved"] is True
+    assert marker not in json.dumps(status, sort_keys=True)
+
+    job = api.handle("GET", f"/jobs/{job_id}").json()
+    assert job["status"] == "registered"
+    assert job["package_downloadable"] is True
 
 
 def test_frontdesk_retry_upgrades_legacy_low_model_call_budget(tmp_path):

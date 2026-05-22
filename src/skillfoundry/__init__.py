@@ -212,6 +212,7 @@ from .graph import (
     validate_graph_state,
 )
 from .graph_v2 import (
+    GRAPH_V2_STATE_REF,
     MAX_V2_INLINE_STRING_BYTES,
     SkillFoundryV2State,
     V2Route,
@@ -224,6 +225,7 @@ from .graph_v2 import (
     build_verified_registry_gate_node,
     compile_skillfoundry_v2_graph,
     route_after_verification,
+    run_verified_skillfoundry_v2_graph,
     validate_v2_graph_state,
 )
 from .verification_bridge import (
@@ -454,6 +456,7 @@ __all__ = [
     "GOAL_RUNTIME_RESULT_REF",
     "GOAL_RUNTIME_RESULT_SCHEMA_VERSION",
     "GOAL_RUNTIME_STATE_REF",
+    "GRAPH_V2_STATE_REF",
     "GOAL_RUNTIME_STATE_SCHEMA_VERSION",
     "GoalHarnessWorkerFactory",
     "VERIFIED_GOAL_RUNTIME_RESULT_REF",
@@ -590,6 +593,7 @@ __all__ = [
     "run_offline_attempt",
     "run_offline_goal_harness",
     "run_verified_offline_goal_harness",
+    "run_verified_skillfoundry_v2_graph",
     "run_frontdesk_core_need_goal_harness",
     "run_frontdesk_solution_planner_goal_harness",
     "run_frontdesk_spec_auditor_goal_harness",

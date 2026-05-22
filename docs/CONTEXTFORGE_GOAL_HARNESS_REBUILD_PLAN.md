@@ -206,14 +206,14 @@ third_party/contextforge = 2a0838bce6a7a2607b9ca1e095e044080fdc6759
 | --- | --- | --- | --- |
 | ContextForge submodule | implemented | Goal Harness 主线已接入，核心 schema/runtime 可导入。 | 不在 SkillFoundry 内重造 ContextForge。 |
 | `contracts.py` | implemented | Phase 1 contract bridge 已落地。 | 保持 raw context exclusion、hash、cache epoch 测试。 |
-| `goal_runtime.py` | implemented | 离线 verified Goal Harness runtime 已存在。 | 接收 Front Desk frozen job 作为默认 build 输入。 |
+| `goal_runtime.py` | implemented | 离线 verified Goal Harness runtime 已存在，并被 graph v2 API happy path 调用。 | 继续作为 graph v2 产品路径的 verified build node。 |
 | `workers_v2.py` | implemented / partial | Fake/owned LLM/Codex boundary/external worker taxonomy 已存在。 | live provider 和 real Codex 仍是 opt-in pilot。 |
-| `graph_v2.py` | partial | refs-only spine 已存在。 | 成为 build/verify/repair/registry 的产品主骨架。 |
+| `graph_v2.py` | implemented / partial | refs-only spine、verified build/registry nodes、API happy path runner 已存在。 | 继续收敛 repair Goal Harness node，并将旧 `graph.py` 退役或隔离为 compatibility wrapper。 |
 | `frontdesk_v2.py` | implemented | Front Desk node contracts 已存在。 | 继续把 raw conversation 固定为 forbidden provenance。 |
-| `frontdesk_goal_runtime.py` | implemented / partial | Core Need、Solution Planner、Spec Auditor Goal Harness slices 已存在，默认 no-key Front Desk 路径已接入。 | 硬化 Front Desk acceptance criteria，保证 frozen job 进入 verified build/registry。 |
-| `verification_bridge.py` | implemented / partial | Verifier / acceptance coverage 到 ContextForge VerificationResult 的桥已存在。 | 让 Front Desk 默认 criteria 使用 deterministic verifier check IDs。 |
-| Registry evidence gate | implemented / partial | Registry 会拒绝 missing/stale/fabricated/self-reported evidence。 | 用默认 Front Desk job 跑通 register。 |
-| API/UI | partial | Front Desk job、message、plan review、offline default path 已存在。 | 暴露 v2 build/verify/registry status，不泄漏 raw prompt/payload。 |
+| `frontdesk_goal_runtime.py` | implemented | Core Need、Solution Planner、Spec Auditor Goal Harness slices 已存在；默认 no-key Front Desk 路径已接入；Front Desk criteria 已使用 deterministic verifier check IDs。 | 保持 approved-review/freeze gate 和 raw conversation exclusion。 |
+| `verification_bridge.py` | implemented | Verifier / acceptance coverage 到 ContextForge VerificationResult 的桥已存在，并能消费 Front Desk deterministic criteria。 | 加强语义验收和 evidence hash binding。 |
+| Registry evidence gate | implemented / partial | Registry 会拒绝 missing/stale/fabricated/self-reported evidence；默认 Front Desk graph v2 happy path 能 register。 | 继续覆盖 repair/human-review/manual acceptance 场景。 |
+| API/UI | implemented / partial | Front Desk job、message、plan review、offline default path、`POST /frontdesk/jobs/{job_id}/build` graph v2 happy path 已存在；status 暴露 v2 refs 摘要。 | 完善 repair/human-review route 和 UI evidence 体验。 |
 | live provider / real Codex SDK thread | future opt-in | 不属于默认测试路径或生产承诺。 | 离线 v2 主路径稳定后再试点。 |
 
 ## 3. 不变的架构思想
@@ -989,11 +989,11 @@ Canonical phase map:
 | Original Phase 0: Entry Cleanup | Canonical Phase 0 | done |
 | Original Phase 1: Contract Bridge | Canonical Phase 1 | implemented |
 | Original Phase 2: Offline Goal Harness Slice | Canonical Phase 2 | implemented |
-| Original Phase 3: LangGraph v2 Spine | Canonical Phase 4 | partial |
+| Original Phase 3: LangGraph v2 Spine | Canonical Phase 4 | implemented / partial |
 | Original Phase 4: Worker Migration | Canonical Phase 5 | implemented / partial |
-| Original Phase 5: Verification Bridge And Registry Gate | Canonical Phase 6 | implemented / partial |
-| Original Phase 6: Front Desk Migration | Canonical Phase 3 | mostly implemented, bridge hardening remains |
-| Original Phase 7: API/UI Productization | Canonical Phase 7 | partial |
+| Original Phase 5: Verification Bridge And Registry Gate | Canonical Phase 6 | implemented |
+| Original Phase 6: Front Desk Migration | Canonical Phase 3 | mostly implemented |
+| Original Phase 7: API/UI Productization | Canonical Phase 7 | implemented / partial |
 
 ### Original Phase 0: Entry Cleanup And Dependency Alignment
 
@@ -1078,7 +1078,7 @@ and full suite remains green.
 
 Canonical phase: Phase 4.
 
-Status: partial. `src/skillfoundry/graph_v2.py` exists, but it is not yet the only product build/verify/repair/registry path.
+Status: implemented / partial. `src/skillfoundry/graph_v2.py` exists and the Front Desk API happy path can now call graph v2 verified build / registry, but graph v2 is not yet the only product build/verify/repair/registry path.
 
 Goal:
 
@@ -1140,7 +1140,7 @@ Tests:
 
 Canonical phase: Phase 6.
 
-Status: implemented / partial. `src/skillfoundry/verification_bridge.py` and registry evidence checks exist. The current hardening gap is that Front Desk-generated acceptance criteria must map to deterministic verifier check IDs before default frozen jobs can pass verified build/registry.
+Status: implemented. `src/skillfoundry/verification_bridge.py` and registry evidence checks exist. Front Desk-generated acceptance criteria now map to deterministic verifier check IDs, so default frozen jobs can pass verified build/registry on the offline happy path.
 
 Goal:
 
@@ -1164,7 +1164,7 @@ Tests:
 
 Canonical phase: Phase 3.
 
-Status: mostly implemented. Core Need Discovery, Solution Planner, and Spec Auditor Goal Harness slices exist; default no-key Front Desk API/loop paths use these slices. Remaining work is connecting Front Desk frozen outputs cleanly into the verified build/registry path.
+Status: mostly implemented. Core Need Discovery, Solution Planner, and Spec Auditor Goal Harness slices exist; default no-key Front Desk API/loop paths use these slices; approved/frozen jobs can enter graph v2 verified build/registry through the API build endpoint.
 
 Goal:
 
@@ -1190,7 +1190,7 @@ Tests:
 
 Canonical phase: Phase 7.
 
-Status: partial. API can create Front Desk jobs and plan reviews through the offline Goal Harness default path. Full v2 build/verify/registry status exposure is still unfinished.
+Status: implemented / partial. API can create Front Desk jobs, record plan reviews, freeze approved plans, run graph v2 verified build/registry happy path, and expose v2 refs/status summaries. Repair/human-review route UX and richer evidence summaries remain unfinished.
 
 Goal:
 
@@ -1296,7 +1296,7 @@ runs/<job_id>/contextforge/contract_manifest.json
 
 Historical warning: if Phase 1 cannot produce valid ContextForge contracts from frozen SkillFoundry artifacts, do not proceed to worker migration.
 
-Current next implementation slice:
+Completed implementation slice:
 
 ```text
 Make a default offline Front Desk job flow from:
@@ -1305,13 +1305,22 @@ create job -> governed Front Desk plan -> approved review -> freeze
 -> ContextForge VerificationResult -> registry approval or explicit failure.
 ```
 
-Concrete current gap:
+Resolved gaps:
 
 - Front Desk-generated `acceptance_criteria.yaml` must contain deterministic `verifier_check_id` values.
 - If a criterion asserts raw conversation exclusion, the verifier/bridge needs a deterministic check for that boundary or the criterion must reference an existing equivalent check.
 - The registry gate must pass only when verifier, acceptance coverage, and ContextForge verification evidence all match current artifacts.
+- `POST /frontdesk/jobs/{job_id}/build` must route approved/frozen Front Desk jobs through graph v2 and persist refs-only `contextforge/graph_v2_state.json`.
 
-This slice should not introduce live provider calls or real Codex SDK execution.
+These slices did not introduce live provider calls or real Codex SDK execution.
+
+Current next implementation direction:
+
+```text
+Make graph_v2 the only product build/verify/repair/registry route,
+turn repair into a Goal Harness node,
+and isolate or retire legacy graph/context/worker paths.
+```
 
 ## 20. Independent Reviewer Notes
 

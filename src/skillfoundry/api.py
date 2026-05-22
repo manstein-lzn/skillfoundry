@@ -34,7 +34,13 @@ from .frontdesk_workspace import (
     read_conversation_turns,
     write_frontdesk_artifact,
 )
-from .goal_runtime import GOAL_RUNTIME_LEDGER_REF, GOAL_RUNTIME_RESULT_REF, GOAL_RUNTIME_STATE_REF
+from .goal_runtime import (
+    GOAL_RUNTIME_LEDGER_REF,
+    GOAL_RUNTIME_RESULT_REF,
+    GOAL_RUNTIME_STATE_REF,
+    VERIFIED_GOAL_RUNTIME_RESULT_REF,
+)
+from .graph_v2 import GRAPH_V2_STATE_REF, run_verified_skillfoundry_v2_graph, validate_v2_graph_state
 from .live_llm import DEFAULT_FRONTDESK_MODEL
 from .offline import OfflineWorkerMode, build_offline, read_final_report
 from .registry import APPROVAL_APPROVED, LocalSkillRegistry, QUARANTINE_NONE
@@ -397,6 +403,60 @@ class SkillFoundryAPI:
         result = self._run_frontdesk_round(frontdesk, state=state)
         return self._frontdesk_payload(safe_job_id, result=result)
 
+    def build_frontdesk_job(self, job_id: str, payload: Mapping[str, Any] | None = None) -> dict[str, JsonValue]:
+        """Run a frozen Front Desk job through the v2 graph build/verify/register path."""
+
+        if payload is not None and not isinstance(payload, Mapping):
+            raise APIError(400, "invalid_json", "request body must be a JSON object")
+        payload = payload or {}
+        safe_job_id = self._validate_job_id(job_id)
+        job_root = self._require_job_root(safe_job_id)
+        workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
+        frontdesk = FrontDeskWorkspace(workspace)
+        state = self._read_frontdesk_state(frontdesk)
+        if state is None:
+            raise APIError(409, "frontdesk_state_missing", "frontdesk state is missing")
+        if state.readiness != "frozen" or state.next_action != "route_to_build":
+            raise APIError(
+                409,
+                "frontdesk_build_not_ready",
+                "frontdesk job must be approved and frozen before build",
+            )
+        attempt_limit = self._coerce_attempt_limit(payload.get("attempt_limit", 2))
+        try:
+            graph_state = run_verified_skillfoundry_v2_graph(
+                self._runs_root_resolved,
+                safe_job_id,
+                registry_path=self.registry_path,
+                attempt_limit=attempt_limit,
+            )
+            validate_v2_graph_state(graph_state)
+        except Exception as exc:
+            raise APIError(500, "frontdesk_build_failed", f"frontdesk v2 graph build failed: {exc}") from exc
+
+        final_report = self._try_read_report(safe_job_id)
+        if final_report is None:
+            raise APIError(500, "frontdesk_build_missing_report", "frontdesk v2 graph build did not write final_report")
+        contextforge_status = self.get_contextforge_status(safe_job_id)
+        result: dict[str, Any] = {
+            "schema_version": "skillfoundry.api.frontdesk_build.v1",
+            "job_id": safe_job_id,
+            "status": str(final_report.get("final_status") or graph_state.get("status") or "unknown"),
+            "frontdesk_status": state.next_action,
+            "graph_v2_state_ref": GRAPH_V2_STATE_REF,
+            "graph_v2_state": graph_state,
+            "final_report": final_report,
+            "contextforge_status": contextforge_status,
+            "links": {
+                "job": f"/jobs/{safe_job_id}",
+                "report": f"/jobs/{safe_job_id}/report",
+                "contextforge": f"/jobs/{safe_job_id}/contextforge",
+                "frontdesk": f"/frontdesk/jobs/{safe_job_id}",
+                "package": f"/jobs/{safe_job_id}/package.zip",
+            },
+        }
+        return ensure_json_compatible(result)  # type: ignore[return-value]
+
     def get_frontdesk_job(self, job_id: str) -> dict[str, JsonValue]:
         """Return Front Desk state, questions, and artifact refs for one job."""
 
@@ -444,6 +504,7 @@ class SkillFoundryAPI:
         workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
         runtime_result = self._read_optional_json_ref(workspace, GOAL_RUNTIME_RESULT_REF)
         graph_state = self._read_optional_json_ref(workspace, GOAL_RUNTIME_STATE_REF)
+        graph_v2_state = self._read_optional_json_ref(workspace, GRAPH_V2_STATE_REF)
         contextforge_verification_read = self._read_optional_json_ref_status(
             workspace,
             CONTEXTFORGE_VERIFICATION_RESULT_REF,
@@ -484,6 +545,8 @@ class SkillFoundryAPI:
                 "verification_gate": self._artifact_ref_status(workspace, VERIFICATION_GATE_REF),
                 "goal_runtime_result": self._artifact_ref_status(workspace, GOAL_RUNTIME_RESULT_REF),
                 "goal_runtime_state": self._artifact_ref_status(workspace, GOAL_RUNTIME_STATE_REF),
+                "verified_runtime_result": self._artifact_ref_status(workspace, VERIFIED_GOAL_RUNTIME_RESULT_REF),
+                "graph_v2_state": self._artifact_ref_status(workspace, GRAPH_V2_STATE_REF),
                 "goal_runtime_ledger": self._artifact_ref_status(workspace, GOAL_RUNTIME_LEDGER_REF),
                 "contextforge_verification_result": contextforge_verification_ref_status,
                 "frontdesk_v2_goal_contract": self._artifact_ref_status(workspace, FRONTDESK_V2_GOAL_CONTRACT_REF),
@@ -497,6 +560,7 @@ class SkillFoundryAPI:
             "status": {
                 "runtime": _json_mapping(runtime_result.get("status")) if runtime_result else {},
                 "graph": _json_mapping(graph_state.get("contextforge")) if graph_state else {},
+                "graph_v2": _graph_v2_status_summary(graph_v2_state),
                 "verification": {
                     "status": verification_status,
                     "passed": verification_passed,
@@ -753,6 +817,7 @@ class SkillFoundryAPI:
                 self._conversation_html(turns, workspace=workspace, state=state_map),
                 self._questions_html(question_list, readiness=readiness, next_action=next_action),
                 self._solution_plan_review_html(job_id, solution_plan_map, readiness=readiness),
+                self._frontdesk_build_form_html(job_id, readiness=readiness, next_action=next_action),
                 self._frontdesk_answer_form_html(job_id, readiness=readiness, next_action=next_action),
                 "      </div>",
                 '      <aside class="panel stack">',
@@ -896,6 +961,19 @@ class SkillFoundryAPI:
                         "text/plain; charset=utf-8",
                         b"",
                         headers=(("Location", f"/frontdesk/jobs/{result['job_id']}"),),
+                    )
+                return self._json_response(result)
+
+            if method == "POST" and len(route) == 4 and route[:2] == ["frontdesk", "jobs"] and route[3] == "build":
+                content_type = _header(headers, "content-type")
+                payload = self._parse_body(body, content_type=content_type)
+                result = self.build_frontdesk_job(route[2], payload)
+                if content_type.startswith("application/x-www-form-urlencoded"):
+                    return APIHTTPResult(
+                        303,
+                        "text/plain; charset=utf-8",
+                        b"",
+                        headers=(("Location", f"/jobs/{result['job_id']}"),),
                     )
                 return self._json_response(result)
 
@@ -1113,6 +1191,7 @@ class SkillFoundryAPI:
                 "core_need": f"/frontdesk/jobs/{job_id}/core-need",
                 "solution_plan": f"/frontdesk/jobs/{job_id}/solution-plan",
                 "plan_review": f"/frontdesk/jobs/{job_id}/plan-review",
+                "build": f"/frontdesk/jobs/{job_id}/build",
             },
         }
         return ensure_json_compatible(payload)  # type: ignore[return-value]
@@ -1745,6 +1824,18 @@ class SkillFoundryAPI:
             ]
         )
 
+    def _frontdesk_build_form_html(self, job_id: str, *, readiness: str, next_action: str) -> str:
+        if readiness != "frozen" or next_action != "route_to_build":
+            return ""
+        return "\n".join(
+            [
+                f'<form class="answer-form" method="post" action="/frontdesk/jobs/{escape(job_id)}/build">',
+                "  <button type=\"submit\">开始构建和验收</button>",
+                '  <div class="small muted" data-submit-status>将通过 graph_v2、ContextForge Goal Harness、Verifier 和 Registry 运行。</div>',
+                "</form>",
+            ]
+        )
+
     def _solution_plan_review_html(self, job_id: str, solution_plan: Mapping[str, Any], *, readiness: str) -> str:
         if readiness not in {"awaiting_plan_review", "plan_revision_requested"} or not solution_plan:
             return ""
@@ -2064,6 +2155,27 @@ def _json_mapping(value: Any) -> dict[str, JsonValue]:
     return ensure_json_compatible(value) if isinstance(value, Mapping) else {}  # type: ignore[return-value]
 
 
+def _graph_v2_status_summary(state: Mapping[str, Any] | None) -> dict[str, JsonValue]:
+    if not isinstance(state, Mapping):
+        return {}
+    return ensure_json_compatible(
+        {
+            "stage": _json_str(state.get("stage")),
+            "status": _json_str(state.get("status")),
+            "next_route": _json_str(state.get("next_route")),
+            "attempt_count": state.get("attempt_count") if isinstance(state.get("attempt_count"), int) else None,
+            "attempt_limit": state.get("attempt_limit") if isinstance(state.get("attempt_limit"), int) else None,
+            "human_review_required": state.get("human_review_required")
+            if isinstance(state.get("human_review_required"), bool)
+            else None,
+            "registry_approved": _nested_json_bool(state, ("contextforge", "registry_approved")),
+            "last_verification_status": _nested_json_str(state, ("contextforge", "last_verification_status")),
+            "registry_skill_id": _nested_json_str(state, ("contextforge", "registry_skill_id")),
+            "registry_version": _nested_json_str(state, ("contextforge", "registry_version")),
+        }
+    )  # type: ignore[return-value]
+
+
 def _empty_contextforge_ledger_summary() -> dict[str, dict[str, JsonValue] | list[dict[str, JsonValue]]]:
     return {
         "cache": {
@@ -2162,6 +2274,15 @@ def _nested_json_str(payload: Mapping[str, Any] | None, path: tuple[str, ...]) -
             return None
         current = current.get(key)
     return _json_str(current)
+
+
+def _nested_json_bool(payload: Mapping[str, Any] | None, path: tuple[str, ...]) -> bool | None:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key)
+    return current if isinstance(current, bool) else None
 
 
 _FRONTDESK_OPTION_MARKER_RE = re.compile(r"(?:^|[\s：:；;，,。?？])([A-Z])\s*[\)\.、:：]\s*")

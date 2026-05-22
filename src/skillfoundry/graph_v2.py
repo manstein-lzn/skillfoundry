@@ -87,6 +87,7 @@ class SkillFoundryV2State(TypedDict, total=False):
 V2Node = Callable[[SkillFoundryV2State], SkillFoundryV2State]
 
 _STATE_SCHEMA_VERSION = "skillfoundry.graph_v2_state.v1"
+GRAPH_V2_STATE_REF = "contextforge/graph_v2_state.json"
 _ALLOWED_STATE_KEYS = frozenset(SkillFoundryV2State.__annotations__)
 _FORBIDDEN_RAW_KEYS = frozenset(
     {
@@ -264,6 +265,41 @@ def compile_skillfoundry_v2_graph(
         interrupt_after=interrupt_after,
         debug=debug,
     )
+
+
+def run_verified_skillfoundry_v2_graph(
+    runs_root: str | Path,
+    job_id: str,
+    *,
+    registry_path: str | Path,
+    attempt_limit: int = 2,
+    version: str = DEFAULT_REGISTRY_VERSION,
+    created_at: str | None = None,
+    worker_factory: GoalHarnessWorkerFactory | None = None,
+) -> SkillFoundryV2State:
+    """Run the canonical offline v2 graph and persist its refs-only final state."""
+
+    runs_path = Path(runs_root)
+    safe_job_id = _job_id({"job_id": job_id})
+    workspace = _graph_workspace(runs_path, safe_job_id)
+    graph = compile_skillfoundry_v2_graph(
+        build_node_callable=build_verified_goal_harness_node(
+            runs_path,
+            registry_path=registry_path,
+            version=version,
+            created_at=created_at,
+            worker_factory=worker_factory,
+        ),
+        registry_gate_callable=build_verified_registry_gate_node(
+            runs_path,
+            registry_path=registry_path,
+            created_at=created_at,
+        ),
+    )
+    result = graph.invoke({"job_id": safe_job_id, "attempt_limit": attempt_limit})
+    validate_v2_graph_state(result)
+    _write_json_ref(workspace, GRAPH_V2_STATE_REF, result)
+    return result
 
 
 def freeze_contracts_node(state: SkillFoundryV2State) -> SkillFoundryV2State:
@@ -844,6 +880,7 @@ def _write_json_ref(workspace: JobWorkspace, ref: str, payload: Mapping[str, Any
     if not isinstance(compatible, dict):
         raise V2StateValidationError(f"{ref} payload must be a JSON object")
     path = workspace.resolve_path(ref)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(compatible, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
 
 
@@ -984,6 +1021,7 @@ def _optional_nested_bool(payload: Mapping[str, Any], path: tuple[str, ...]) -> 
 
 __all__ = [
     "MAX_V2_INLINE_STRING_BYTES",
+    "GRAPH_V2_STATE_REF",
     "SkillFoundryV2State",
     "V2Route",
     "V2Stage",
@@ -1004,6 +1042,7 @@ __all__ = [
     "repair_goal_node",
     "route_after_verification",
     "route_after_verification_node",
+    "run_verified_skillfoundry_v2_graph",
     "validate_v2_graph_state",
     "verify_node",
 ]
