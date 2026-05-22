@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 from typing import Literal
@@ -20,6 +20,7 @@ from contextforge import (
     estimate_tokens,
 )
 
+from .acceptance import AcceptanceCoverageEvaluator, AcceptanceCriteriaPlanner, AcceptanceCoverageResult
 from .contracts import (
     BUILD_NODE_CONTRACT_REF,
     CONTRACT_MANIFEST_REF,
@@ -28,7 +29,19 @@ from .contracts import (
     ContextForgeContractArtifacts,
     write_contextforge_contract_artifacts,
 )
-from .schema import JsonValue, ensure_json_compatible, sha256_file, sha256_json, utc_now
+from .registry import DEFAULT_REGISTRY_VERSION, DuplicatePolicy, LocalSkillRegistry
+from .schema import (
+    ExecutionReport,
+    JsonValue,
+    RegistryEntry,
+    VerificationResult,
+    ensure_json_compatible,
+    sha256_file,
+    sha256_json,
+    utc_now,
+)
+from .verification_bridge import bridge_skillfoundry_verification_result
+from .verifier import Verifier
 from .workers_v2 import FakeSkillBuilderWorker
 from .workspace import JobWorkspace
 
@@ -36,8 +49,10 @@ from .workspace import JobWorkspace
 GOAL_RUNTIME_LEDGER_REF = "contextforge/ledger.sqlite3"
 GOAL_RUNTIME_RESULT_REF = "contextforge/goal_runtime_result.json"
 GOAL_RUNTIME_STATE_REF = "contextforge/goal_harness_state.json"
+VERIFIED_GOAL_RUNTIME_RESULT_REF = "contextforge/verified_goal_runtime_result.json"
 GOAL_RUNTIME_RESULT_SCHEMA_VERSION = "skillfoundry.goal_runtime_result.v1"
 GOAL_RUNTIME_STATE_SCHEMA_VERSION = "skillfoundry.goal_harness_state.v1"
+VERIFIED_GOAL_RUNTIME_RESULT_SCHEMA_VERSION = "skillfoundry.verified_goal_runtime_result.v1"
 
 _GRAPH_ID = "skillfoundry-v2"
 _BUILD_NODE_ID = "build_skill"
@@ -46,6 +61,7 @@ _RAW_CONVERSATION_REF = "frontdesk/conversation.jsonl"
 
 
 OfflineVerificationMode = Literal["pass", "fail_missing_coverage"]
+GoalRuntimeVerificationMode = Literal["pass", "fail_missing_coverage", "verified"]
 
 
 @dataclass(frozen=True)
@@ -61,6 +77,20 @@ class SkillFoundryGoalHarnessResult:
     ledger_ref: str
     runtime_result_ref: str
     graph_state_ref: str
+
+
+@dataclass(frozen=True)
+class VerifiedSkillFoundryGoalHarnessResult:
+    """A v2 Goal Harness run promoted through SkillFoundry quality gates."""
+
+    goal_harness: SkillFoundryGoalHarnessResult
+    verifier_result: VerificationResult
+    acceptance_coverage_result: AcceptanceCoverageResult
+    contextforge_verification_result: ContextForgeVerificationResult
+    registry_entry: RegistryEntry
+    final_report: dict[str, JsonValue]
+    verified_runtime_result: dict[str, JsonValue]
+    verified_runtime_result_ref: str
 
 
 def run_offline_goal_harness(
@@ -95,7 +125,7 @@ def run_offline_goal_harness(
             run_id=resolved_run_id,
             task_id=_TASK_ID,
             created_at=timestamp,
-            metadata={"skillfoundry_job_id": workspace.job_id},
+            metadata={"skillfoundry_job_id": workspace.job_id, "attempt_id": "001"},
         )
         _write_offline_verification_evidence(workspace, verification_mode, created_at=timestamp)
         verification_result = VerificationRunner(workspace.root).run(
@@ -143,6 +173,95 @@ def run_offline_goal_harness(
         )
     finally:
         ledger.close()
+
+
+def run_verified_offline_goal_harness(
+    workspace: JobWorkspace,
+    *,
+    registry_path: str | Path,
+    version: str = DEFAULT_REGISTRY_VERSION,
+    run_id: str | None = None,
+    created_at: str | None = None,
+) -> VerifiedSkillFoundryGoalHarnessResult:
+    """Run the offline v2 build node and promote only through real quality gates."""
+
+    timestamp = created_at or utc_now()
+    _check_verified_runtime_inputs(workspace)
+    goal_harness = run_offline_goal_harness(
+        workspace,
+        verification_mode="fail_missing_coverage",
+        run_id=run_id,
+        created_at=timestamp,
+    )
+    _write_goal_harness_attempt_artifacts(workspace, goal_harness.harness_result, created_at=timestamp)
+    verifier_result = Verifier().verify(workspace, attempt_id="001")
+    coverage_plan = AcceptanceCriteriaPlanner().plan(workspace)
+    acceptance_coverage_result = AcceptanceCoverageEvaluator().evaluate(workspace, plan=coverage_plan)
+    contextforge_verification_result = bridge_skillfoundry_verification_result(
+        workspace,
+        goal_harness.contracts.verification_gate,
+        goal_run_id=goal_harness.goal_run.goal_run_id,
+        worker_id=goal_harness.harness_result.worker_run.worker_name,
+        expected_gate_hash=goal_harness.contracts.verification_gate.gate_hash,
+        created_at=timestamp,
+    )
+    goal_harness = _finalize_goal_harness_verification(
+        workspace,
+        goal_harness,
+        contextforge_verification_result,
+        verification_mode="verified",
+        created_at=timestamp,
+    )
+    registry_entry = LocalSkillRegistry(
+        registry_path,
+        duplicate_policy=DuplicatePolicy.IDEMPOTENT,
+    ).add_verified(
+        workspace,
+        version=version,
+        review_status="v2_goal_harness_verified",
+        require_contextforge_verification=True,
+    )
+
+    from .graph import WorkflowStatus
+    from .offline import emit_final_report
+
+    final_report = emit_final_report(
+        workspace.root,
+        final_status=WorkflowStatus.REGISTERED,
+        registry_path=registry_path,
+        registry_entry=registry_entry,
+    )
+    verified_runtime_result = _verified_runtime_result_payload(
+        workspace,
+        goal_harness,
+        verifier_result,
+        acceptance_coverage_result,
+        contextforge_verification_result,
+        registry_entry,
+        final_report,
+        created_at=timestamp,
+    )
+    _write_json(workspace, VERIFIED_GOAL_RUNTIME_RESULT_REF, verified_runtime_result)
+    return VerifiedSkillFoundryGoalHarnessResult(
+        goal_harness=goal_harness,
+        verifier_result=verifier_result,
+        acceptance_coverage_result=acceptance_coverage_result,
+        contextforge_verification_result=contextforge_verification_result,
+        registry_entry=registry_entry,
+        final_report=final_report,
+        verified_runtime_result=verified_runtime_result,
+        verified_runtime_result_ref=VERIFIED_GOAL_RUNTIME_RESULT_REF,
+    )
+
+
+def _check_verified_runtime_inputs(workspace: JobWorkspace) -> None:
+    try:
+        workspace.resolve_path("acceptance_criteria.yaml", must_exist=True)
+    except Exception as exc:
+        raise ValueError(
+            "verified Goal Harness runtime requires frozen root acceptance_criteria.yaml "
+            "before any runtime evidence is persisted"
+        ) from exc
 
 
 def seed_goal_harness_context(
@@ -343,6 +462,144 @@ def _write_offline_verification_evidence(
         coverage_path.unlink()
 
 
+def _write_goal_harness_attempt_artifacts(
+    workspace: JobWorkspace,
+    harness_result: GoalHarnessRunResult,
+    *,
+    created_at: str,
+    attempt_id: str = "001",
+) -> None:
+    """Write SkillFoundry verifier-compatible attempt evidence for a v2 WorkerRun."""
+
+    worker_run = harness_result.worker_run
+    attempt_dir_ref = f"attempts/{attempt_id}"
+    attempt_dir = workspace.resolve_path(attempt_dir_ref)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    invocation_id = worker_run.worker_run_id
+    input_manifest_ref = f"{attempt_dir_ref}/input_manifest.json"
+    execution_report_ref = f"{attempt_dir_ref}/execution_report.json"
+    transcript_ref = f"{attempt_dir_ref}/worker_transcript.log"
+    diff_ref = f"{attempt_dir_ref}/output_diff.patch"
+    artifact_refs = [
+        ref
+        for ref in worker_run.metadata.get("artifact_refs", [])
+        if isinstance(ref, str) and ref.startswith("package/")
+    ]
+    input_manifest = {
+        "schema_version": "skillfoundry.worker_input_manifest.v2",
+        "adapter_version": "skillfoundry.goal_runtime.v2",
+        "generated_at": created_at,
+        "invocation_id": invocation_id,
+        "job_id": workspace.job_id,
+        "attempt_id": attempt_id,
+        "worker_type": f"contextforge:{worker_run.worker_kind}",
+        "build_contract_ref": "build_contract.yaml",
+        "skill_spec_ref": "skill_spec.yaml",
+        "verification_spec_ref": "verification_spec.yaml",
+        "worker_input_ref": "worker_input.md",
+        "artifact_manifest_ref": "artifact_manifest.json",
+        "contextforge": {
+            "goal_run_id": worker_run.goal_run_id,
+            "worker_run_id": worker_run.worker_run_id,
+            "context_view_id": worker_run.input_context_view_id,
+            "prompt_view_ids": worker_run.prompt_view_ids,
+        },
+        "declared_allowed_write_paths": list(harness_result.goal_run.metadata.get("allowed_write_paths", [])),
+        "writable_paths": ["package", attempt_dir_ref],
+        "worker_config": {"runtime": "contextforge_goal_harness_v2"},
+    }
+    _write_json(workspace, input_manifest_ref, input_manifest)
+    exit_status = "success" if worker_run.status == "completed" else worker_run.failure_class or worker_run.status
+    report = ExecutionReport(
+        report_id=f"report-{invocation_id}",
+        invocation_id=invocation_id,
+        job_id=workspace.job_id,
+        attempt_id=attempt_id,
+        status=worker_run.status,
+        started_at=worker_run.created_at,
+        finished_at=worker_run.completed_at or created_at,
+        duration_ms=0,
+        exit_status=exit_status,
+        summary=str(worker_run.metadata.get("summary") or "ContextForge Goal Harness worker run."),
+        artifacts=artifact_refs,
+        failures=[] if exit_status == "success" else [worker_run.failure_class or worker_run.status],
+    )
+    report.write_json_file(workspace.resolve_path(execution_report_ref))
+    _write_text(
+        workspace,
+        transcript_ref,
+        "\n".join(
+            [
+                "ContextForge Goal Harness v2 worker boundary evidence.",
+                f"goal_run_id={worker_run.goal_run_id}",
+                f"worker_run_id={worker_run.worker_run_id}",
+                f"worker_kind={worker_run.worker_kind}",
+                f"status={worker_run.status}",
+                "worker_self_report_is_not_acceptance=true",
+                "",
+            ]
+        ),
+    )
+    _write_text(
+        workspace,
+        diff_ref,
+        "\n".join(
+            [
+                "ContextForge Goal Harness v2 changed files:",
+                *[f"- {item}" for item in worker_run.metadata.get("changed_files", []) if isinstance(item, str)],
+                "",
+            ]
+        ),
+    )
+
+
+def _finalize_goal_harness_verification(
+    workspace: JobWorkspace,
+    goal_harness: SkillFoundryGoalHarnessResult,
+    verification_result: ContextForgeVerificationResult,
+    *,
+    verification_mode: GoalRuntimeVerificationMode,
+    created_at: str,
+) -> SkillFoundryGoalHarnessResult:
+    final_goal_run = _goal_run_with_verification(
+        goal_harness.harness_result.goal_run,
+        verification_result,
+        created_at=created_at,
+    )
+    graph_state = build_goal_harness_state(
+        workspace,
+        goal_harness.contracts,
+        goal_harness.harness_result,
+        verification_result,
+        final_goal_run,
+    )
+    runtime_result = _runtime_result_payload(
+        workspace,
+        goal_harness.contracts,
+        goal_harness.harness_result,
+        verification_result,
+        final_goal_run,
+        graph_state,
+        verification_mode,
+        created_at=created_at,
+    )
+    ledger = ContextLedger.connect(workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF, must_exist=True))
+    try:
+        ledger.record_verification_result(verification_result)
+        ledger.record_goal_run_record(final_goal_run)
+    finally:
+        ledger.close()
+    _write_json(workspace, GOAL_RUNTIME_STATE_REF, graph_state)
+    _write_json(workspace, GOAL_RUNTIME_RESULT_REF, runtime_result)
+    return replace(
+        goal_harness,
+        verification_result=verification_result,
+        goal_run=final_goal_run,
+        graph_state=graph_state,
+        runtime_result=runtime_result,
+    )
+
+
 def _goal_run_with_verification(
     goal_run: GoalRunRecord,
     verification_result: ContextForgeVerificationResult,
@@ -395,7 +652,7 @@ def _runtime_result_payload(
     verification_result: ContextForgeVerificationResult,
     goal_run: GoalRunRecord,
     graph_state: dict[str, JsonValue],
-    verification_mode: OfflineVerificationMode,
+    verification_mode: GoalRuntimeVerificationMode,
     *,
     created_at: str,
 ) -> dict[str, JsonValue]:
@@ -435,6 +692,73 @@ def _runtime_result_payload(
             "graph_state": sha256_json(graph_state),
         },
     }
+
+
+def _verified_runtime_result_payload(
+    workspace: JobWorkspace,
+    goal_harness: SkillFoundryGoalHarnessResult,
+    verifier_result: VerificationResult,
+    acceptance_coverage_result: AcceptanceCoverageResult,
+    contextforge_verification_result: ContextForgeVerificationResult,
+    registry_entry: RegistryEntry,
+    final_report: dict[str, JsonValue],
+    *,
+    created_at: str,
+) -> dict[str, JsonValue]:
+    payload = {
+        "schema_version": VERIFIED_GOAL_RUNTIME_RESULT_SCHEMA_VERSION,
+        "job_id": workspace.job_id,
+        "created_at": created_at,
+        "refs": {
+            **goal_harness.runtime_result.get("refs", {}),
+            "goal_runtime_result": GOAL_RUNTIME_RESULT_REF,
+            "verified_runtime_result": VERIFIED_GOAL_RUNTIME_RESULT_REF,
+            "worker_input_manifest": "attempts/001/input_manifest.json",
+            "worker_execution_report": "attempts/001/execution_report.json",
+            "worker_transcript": "attempts/001/worker_transcript.log",
+            "worker_diff": "attempts/001/output_diff.patch",
+            "skillfoundry_verification_result": "verifier/verification_result.json",
+            "acceptance_coverage_result": "qa/acceptance_coverage_result.json",
+            "contextforge_verification_result": "contextforge/verification_result.json",
+            "final_report": "final_report.json",
+        },
+        "ids": {
+            **goal_harness.runtime_result.get("ids", {}),
+            "skillfoundry_verification_result_id": verifier_result.result_id,
+            "acceptance_coverage_result_id": acceptance_coverage_result.result_id,
+            "contextforge_verification_result_id": contextforge_verification_result.verification_result_id,
+            "registry_skill_id": registry_entry.skill_id,
+            "registry_version": registry_entry.version,
+        },
+        "status": {
+            **goal_harness.runtime_result.get("status", {}),
+            "skillfoundry_verification_passed": verifier_result.passed,
+            "acceptance_coverage_passed": acceptance_coverage_result.passed,
+            "contextforge_verification": contextforge_verification_result.status,
+            "registry_approved": registry_entry.approval_status == "approved",
+            "final_status": final_report.get("final_status"),
+        },
+        "hashes": {
+            **goal_harness.runtime_result.get("hashes", {}),
+            "skillfoundry_verification_result": sha256_file(
+                workspace.resolve_path("verifier/verification_result.json", must_exist=True)
+            ),
+            "acceptance_coverage_result": sha256_file(
+                workspace.resolve_path("qa/acceptance_coverage_result.json", must_exist=True)
+            ),
+            "contextforge_verification_result": sha256_file(
+                workspace.resolve_path("contextforge/verification_result.json", must_exist=True)
+            ),
+            "registry_entry": sha256_json(registry_entry.to_dict()),
+        },
+        "trust_boundaries": {
+            "worker_self_report_is_not_acceptance": True,
+            "registry_requires_contextforge_verification": True,
+            "verifier_is_quality_fact_source": True,
+            "acceptance_coverage_required": True,
+        },
+    }
+    return ensure_json_compatible(payload)  # type: ignore[return-value]
 
 
 def _verification_gate_summary(contracts: ContextForgeContractArtifacts) -> str:
@@ -482,6 +806,12 @@ def _write_json(workspace: JobWorkspace, relative_path: str, payload: dict[str, 
         json.dumps(compatible, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
         encoding="utf-8",
     )
+
+
+def _write_text(workspace: JobWorkspace, relative_path: str, content: str) -> None:
+    path = workspace.resolve_path(relative_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
 
 
 def _dedupe(values: list[str]) -> list[str]:
