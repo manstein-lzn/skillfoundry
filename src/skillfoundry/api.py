@@ -38,6 +38,10 @@ from .goal_runtime import (
     GOAL_RUNTIME_LEDGER_REF,
     GOAL_RUNTIME_RESULT_REF,
     GOAL_RUNTIME_STATE_REF,
+    REPAIR_ATTEMPT_REF_TEMPLATE,
+    REPAIR_GOAL_RUNTIME_RESULT_REF_TEMPLATE,
+    REPAIR_GOAL_RUNTIME_STATE_REF_TEMPLATE,
+    REPAIR_INSTRUCTIONS_REF_TEMPLATE,
     VERIFIED_GOAL_RUNTIME_RESULT_REF,
 )
 from .graph_v2 import GRAPH_V2_STATE_REF, run_verified_skillfoundry_v2_graph, validate_v2_graph_state
@@ -59,6 +63,9 @@ FRONTDESK_CORE_NEED_BRIEF_REF = "frontdesk/core_need_brief.json"
 FRONTDESK_SOLUTION_PLAN_REF = "frontdesk/solution_plan.json"
 FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF = "frontdesk/solution_plan.md"
 PLAN_REVIEW_REF_TEMPLATE = "frontdesk/plan_review_{sequence:03d}.json"
+BUILD_PATH_GRAPH_V2 = "graph_v2_goal_harness"
+BUILD_PATH_LEGACY_COMPATIBILITY = "legacy_offline_compatibility"
+BUILD_PATH_WORKSPACE_ONLY = "workspace_only"
 FrontDeskClientFactory = Callable[[str, str, int], Any]
 
 
@@ -443,6 +450,7 @@ class SkillFoundryAPI:
             "job_id": safe_job_id,
             "status": str(final_report.get("final_status") or graph_state.get("status") or "unknown"),
             "frontdesk_status": state.next_action,
+            "build_path": self._build_path_summary(safe_job_id),
             "graph_v2_state_ref": GRAPH_V2_STATE_REF,
             "graph_v2_state": graph_state,
             "final_report": final_report,
@@ -504,7 +512,14 @@ class SkillFoundryAPI:
         workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
         runtime_result = self._read_optional_json_ref(workspace, GOAL_RUNTIME_RESULT_REF)
         graph_state = self._read_optional_json_ref(workspace, GOAL_RUNTIME_STATE_REF)
-        graph_v2_state = self._read_optional_json_ref(workspace, GRAPH_V2_STATE_REF)
+        graph_v2_state_read = self._read_optional_json_ref_status(workspace, GRAPH_V2_STATE_REF)
+        graph_v2_state = graph_v2_state_read.payload if graph_v2_state_read.valid else None
+        graph_v2_state_valid = (
+            not graph_v2_state_read.exists
+            or (graph_v2_state_read.valid and self._validate_optional_graph_v2_state(graph_v2_state))
+        )
+        if not graph_v2_state_valid:
+            graph_v2_state = None
         contextforge_verification_read = self._read_optional_json_ref_status(
             workspace,
             CONTEXTFORGE_VERIFICATION_RESULT_REF,
@@ -535,10 +550,12 @@ class SkillFoundryAPI:
         final_report = self._try_read_report(safe_job_id)
         registry_entry = self._approved_registry_entry_for_report(safe_job_id, final_report) if final_report else None
         ledger_summary = self._contextforge_ledger_summary(workspace, runtime_result, graph_state)
+        build_path = self._build_path_summary(safe_job_id)
 
         payload = {
             "schema_version": "skillfoundry.api.contextforge_status.v1",
             "job_id": safe_job_id,
+            "build_path": build_path,
             "refs": {
                 "goal_contract": self._artifact_ref_status(workspace, GOAL_CONTRACT_REF),
                 "build_node_contract": self._artifact_ref_status(workspace, BUILD_NODE_CONTRACT_REF),
@@ -572,6 +589,8 @@ class SkillFoundryAPI:
                     "version": registry_entry.version if registry_entry is not None else None,
                 },
             },
+            "repair_evidence": self._graph_v2_repair_evidence_summary(workspace, graph_v2_state),
+            "human_review": self._graph_v2_human_review_summary(workspace, graph_v2_state),
             "cache": {
                 "cache_plan_id": _nested_json_str(runtime_result, ("ids", "cache_plan_id")),
                 **ledger_summary["cache"],
@@ -585,6 +604,15 @@ class SkillFoundryAPI:
             },
             "raw_context_included": False,
         }
+        if not graph_v2_state_valid:
+            graph_v2_ref = payload["refs"]["graph_v2_state"]
+            if isinstance(graph_v2_ref, dict):
+                graph_v2_ref["valid_json"] = graph_v2_state_read.valid
+                graph_v2_ref["error_code"] = graph_v2_state_read.error_code or "invalid_graph_v2_state"
+            payload["status"]["graph_v2"] = {
+                "valid": False,
+                "error_code": "invalid_graph_v2_state",
+            }
         return ensure_json_compatible(payload)  # type: ignore[return-value]
 
     def query_registry(
@@ -1441,6 +1469,110 @@ class SkillFoundryAPI:
             "provider_usage": payload.get("provider_usage") if isinstance(payload.get("provider_usage"), Mapping) else {},
         }
 
+    def _graph_v2_repair_evidence_summary(
+        self,
+        workspace: JobWorkspace,
+        state: Mapping[str, Any] | None,
+    ) -> dict[str, JsonValue]:
+        if not isinstance(state, Mapping):
+            return {
+                "available": False,
+                "attempt_id": None,
+                "refs": {},
+                "worker_self_report_is_not_acceptance": True,
+                "raw_transcript_included": False,
+            }
+        contextforge = state.get("contextforge") if isinstance(state.get("contextforge"), Mapping) else {}
+        refs = state.get("refs") if isinstance(state.get("refs"), Mapping) else {}
+        assert isinstance(contextforge, Mapping)
+        assert isinstance(refs, Mapping)
+        attempt_id = _json_str(contextforge.get("last_repair_attempt_id")) or _repair_attempt_id_from_refs(refs)
+        if attempt_id is None:
+            return {
+                "available": False,
+                "attempt_id": None,
+                "refs": {},
+                "worker_self_report_is_not_acceptance": True,
+                "raw_transcript_included": False,
+            }
+
+        evidence_refs = {
+            "repair_attempt": _mapping_str(refs, "repair_attempt")
+            or REPAIR_ATTEMPT_REF_TEMPLATE.format(attempt_id=attempt_id),
+            "repair_instructions": _mapping_str(refs, "repair_instructions")
+            or REPAIR_INSTRUCTIONS_REF_TEMPLATE.format(attempt_id=attempt_id),
+            "repair_runtime_result": _mapping_str(refs, "repair_runtime_result")
+            or _json_str(contextforge.get("repair_runtime_result_ref"))
+            or REPAIR_GOAL_RUNTIME_RESULT_REF_TEMPLATE.format(attempt_id=attempt_id),
+            "repair_graph_state": _mapping_str(refs, "repair_graph_state")
+            or REPAIR_GOAL_RUNTIME_STATE_REF_TEMPLATE.format(attempt_id=attempt_id),
+        }
+        verified_runtime_ref = _json_str(contextforge.get("repair_verified_runtime_result_ref"))
+        if verified_runtime_ref is not None:
+            evidence_refs["repair_verified_runtime_result"] = verified_runtime_ref
+
+        return ensure_json_compatible(
+            {
+                "available": True,
+                "attempt_id": attempt_id,
+                "status": _json_str(contextforge.get("repair_status")),
+                "verification_requested": contextforge.get("repair_verification_requested")
+                if isinstance(contextforge.get("repair_verification_requested"), bool)
+                else None,
+                "requires_followup_verification": contextforge.get("repair_requires_followup_verification")
+                if isinstance(contextforge.get("repair_requires_followup_verification"), bool)
+                else None,
+                "last_goal_run_id": _json_str(contextforge.get("last_repair_goal_run_id")),
+                "last_worker_run_id": _json_str(contextforge.get("last_repair_worker_run_id")),
+                "last_context_view_id": _json_str(contextforge.get("last_repair_context_view_id")),
+                "last_prompt_cache_plan_id": _json_str(contextforge.get("last_repair_prompt_cache_plan_id")),
+                "last_checkpoint_id": _json_str(contextforge.get("last_repair_checkpoint_id"))
+                or _json_str(contextforge.get("last_repair_verification_checkpoint_id")),
+                "last_verification_status": _json_str(contextforge.get("last_verification_status")),
+                "worker_self_report_is_not_acceptance": contextforge.get("worker_self_report_is_not_acceptance") is True,
+                "raw_transcript_included": False,
+                "refs": {
+                    key: self._artifact_ref_status(workspace, ref)
+                    for key, ref in evidence_refs.items()
+                },
+            }
+        )  # type: ignore[return-value]
+
+    def _graph_v2_human_review_summary(
+        self,
+        workspace: JobWorkspace,
+        state: Mapping[str, Any] | None,
+    ) -> dict[str, JsonValue]:
+        if not isinstance(state, Mapping):
+            return {"required": False, "request": None, "raw_prompt_included": False}
+        stage = _json_str(state.get("stage"))
+        status = _json_str(state.get("status"))
+        next_route = _json_str(state.get("next_route"))
+        required = (
+            state.get("human_review_required") is True
+            or stage == "human_review"
+            or status == "human_review_required"
+            or next_route == "human_review"
+        )
+        refs = state.get("refs") if isinstance(state.get("refs"), Mapping) else {}
+        assert isinstance(refs, Mapping)
+        request_ref = _mapping_str(refs, "human_review_request") if required else None
+        contextforge = state.get("contextforge") if isinstance(state.get("contextforge"), Mapping) else {}
+        assert isinstance(contextforge, Mapping)
+        return ensure_json_compatible(
+            {
+                "required": required,
+                "stage": stage,
+                "status": status,
+                "next_route": next_route,
+                "last_verification_status": _json_str(contextforge.get("last_verification_status")),
+                "last_repair_attempt_id": _json_str(contextforge.get("last_repair_attempt_id")),
+                "request": self._artifact_ref_status(workspace, request_ref) if request_ref else None,
+                "raw_prompt_included": False,
+                "raw_payload_included": False,
+            }
+        )  # type: ignore[return-value]
+
     def _frontdesk_job_dirs(self) -> list[Path]:
         candidates: list[Path] = []
         for path in sorted(self._runs_root_resolved.iterdir(), key=lambda item: item.name):
@@ -1493,6 +1625,7 @@ class SkillFoundryAPI:
             "status": final_status or "workspace",
             "final_status": final_status,
             "route": report.get("route") if report is not None else None,
+            "build_path": self._build_path_summary(job_id),
             "created_at": report.get("created_at") if report is not None else None,
             "verifier_passed": self._verifier_passed(report),
             "package_downloadable": approved_entry is not None,
@@ -1522,12 +1655,54 @@ class SkillFoundryAPI:
                 "job_id": job_id,
                 "status": final_status or "workspace",
                 "final_status": final_status,
+                "build_path": self._build_path_summary(job_id),
                 "created_at": created_at,
                 "verifier_passed": verifier_passed,
                 "package_downloadable": approved_entry is not None,
                 "links": self._links(job_id, package_downloadable=approved_entry is not None),
             }
         )  # type: ignore[return-value]
+
+    def _build_path_summary(self, job_id: str) -> dict[str, JsonValue]:
+        job_root = self._job_root(job_id)
+        graph_v2_state_path = job_root / GRAPH_V2_STATE_REF
+        final_report_path = job_root / "final_report.json"
+        graph_v2_state_valid = self._graph_v2_state_file_valid(job_id) if graph_v2_state_path.is_file() else False
+        if graph_v2_state_valid:
+            mode = BUILD_PATH_GRAPH_V2
+        elif final_report_path.is_file():
+            mode = BUILD_PATH_LEGACY_COMPATIBILITY
+        else:
+            mode = BUILD_PATH_WORKSPACE_ONLY
+        canonical = mode == BUILD_PATH_GRAPH_V2
+        return ensure_json_compatible(
+            {
+                "mode": mode,
+                "canonical": canonical,
+                "legacy_compatibility": mode == BUILD_PATH_LEGACY_COMPATIBILITY,
+                "canonical_entrypoint": "POST /frontdesk/jobs/{job_id}/build",
+                "graph_v2_state_ref": GRAPH_V2_STATE_REF if canonical else None,
+                "graph_v2_state_valid": graph_v2_state_valid if graph_v2_state_path.exists() else None,
+            }
+        )  # type: ignore[return-value]
+
+    def _graph_v2_state_file_valid(self, job_id: str) -> bool:
+        workspace = JobWorkspace(root=self._job_root(job_id), job_id=job_id)
+        read = self._read_optional_json_ref_status(workspace, GRAPH_V2_STATE_REF)
+        if not read.exists:
+            return False
+        if not read.valid:
+            return False
+        return self._validate_optional_graph_v2_state(read.payload)
+
+    def _validate_optional_graph_v2_state(self, state: Mapping[str, Any] | None) -> bool:
+        if state is None:
+            return True
+        try:
+            validate_v2_graph_state(state)
+        except Exception:
+            return False
+        return True
 
     def _approved_registry_entry_for_report(
         self,
@@ -2170,6 +2345,20 @@ def _graph_v2_status_summary(state: Mapping[str, Any] | None) -> dict[str, JsonV
             else None,
             "registry_approved": _nested_json_bool(state, ("contextforge", "registry_approved")),
             "last_verification_status": _nested_json_str(state, ("contextforge", "last_verification_status")),
+            "last_repair_attempt_id": _nested_json_str(state, ("contextforge", "last_repair_attempt_id")),
+            "repair_status": _nested_json_str(state, ("contextforge", "repair_status")),
+            "repair_verification_requested": _nested_json_bool(
+                state,
+                ("contextforge", "repair_verification_requested"),
+            ),
+            "repair_requires_followup_verification": _nested_json_bool(
+                state,
+                ("contextforge", "repair_requires_followup_verification"),
+            ),
+            "worker_self_report_is_not_acceptance": _nested_json_bool(
+                state,
+                ("contextforge", "worker_self_report_is_not_acceptance"),
+            ),
             "registry_skill_id": _nested_json_str(state, ("contextforge", "registry_skill_id")),
             "registry_version": _nested_json_str(state, ("contextforge", "registry_version")),
         }
@@ -2265,6 +2454,21 @@ def _unreadable_model_call_summary(model_call_id: str) -> dict[str, JsonValue]:
 
 def _json_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
+
+
+def _mapping_str(value: Mapping[str, Any], key: str) -> str | None:
+    return _json_str(value.get(key))
+
+
+def _repair_attempt_id_from_refs(refs: Mapping[str, Any]) -> str | None:
+    for key in ("repair_attempt", "repair_instructions", "repair_runtime_result", "repair_graph_state"):
+        ref = _mapping_str(refs, key)
+        if ref is None:
+            continue
+        match = re.search(r"(?:attempts/|_)(\d{3,})(?:/|\.|_)", ref)
+        if match is not None:
+            return match.group(1)
+    return None
 
 
 def _nested_json_str(payload: Mapping[str, Any] | None, path: tuple[str, ...]) -> str | None:

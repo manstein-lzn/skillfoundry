@@ -11,6 +11,7 @@ import skillfoundry
 from skillfoundry import (
     APPROVAL_APPROVED,
     CONTEXTFORGE_VERIFICATION_RESULT_REF,
+    GRAPH_V2_STATE_REF,
     GOAL_RUNTIME_LEDGER_REF,
     OWNED_LLM_WORKER_OUTPUT_SCHEMA_VERSION,
     OfflineWorkerMode,
@@ -19,6 +20,7 @@ from skillfoundry import (
     initialize_frontdesk_workspace,
     initialize_job_workspace,
     run_offline_goal_harness,
+    validate_v2_graph_state,
     write_frontdesk_artifact,
     write_frontdesk_v2_contract_artifacts,
 )
@@ -103,6 +105,9 @@ def test_post_jobs_creates_registered_job_and_writes_final_report(tmp_path):
     assert response.status == 201
     assert payload["job_id"] == "api-ok"
     assert payload["final_status"] == "registered"
+    assert payload["build_path"]["mode"] == "legacy_offline_compatibility"
+    assert payload["build_path"]["canonical"] is False
+    assert payload["build_path"]["legacy_compatibility"] is True
     assert payload["report"]["final_status"] == "registered"
     assert payload["package_downloadable"] is True
     assert (tmp_path / "runs" / "api-ok" / "final_report.json").is_file()
@@ -120,6 +125,7 @@ def test_get_jobs_lists_created_jobs(tmp_path):
     assert payload["count"] == 1
     assert payload["jobs"][0]["job_id"] == "api-list"
     assert payload["jobs"][0]["final_status"] == "registered"
+    assert payload["jobs"][0]["build_path"]["mode"] == "legacy_offline_compatibility"
 
 
 def test_get_job_report_returns_final_report(tmp_path):
@@ -163,6 +169,112 @@ def test_get_job_contextforge_status_exposes_v2_refs_without_raw_content(tmp_pat
     assert payload["raw_context_included"] is False
     assert payload["cache"]["raw_prompt_included"] is False
     assert "Offline Goal Harness Skill" not in body_text
+
+
+def test_get_job_contextforge_status_exposes_repair_and_human_review_refs_without_raw_content(tmp_path):
+    workspace = initialize_job_workspace(tmp_path / "runs", "api-v2-repair-status")
+    marker = "RAW_API_REPAIR_MARKER_SHOULD_NOT_LEAK"
+    repair_dir = workspace.resolve_path("attempts/002")
+    repair_dir.mkdir(parents=True, exist_ok=True)
+    contextforge_dir = workspace.resolve_path("contextforge")
+    contextforge_dir.mkdir(parents=True, exist_ok=True)
+    human_review_dir = workspace.resolve_path("human_review")
+    human_review_dir.mkdir(parents=True, exist_ok=True)
+
+    refs = {
+        "repair_attempt": "attempts/002/repair_attempt.json",
+        "repair_instructions": "attempts/002/repair_instructions.md",
+        "repair_runtime_result": "contextforge/repair_goal_runtime_result_002.json",
+        "repair_graph_state": "contextforge/repair_goal_harness_state_002.json",
+        "human_review_request": "human_review/request.json",
+    }
+    workspace.resolve_path(refs["repair_attempt"]).write_text(
+        json.dumps({"attempt_id": "002", "raw": marker}),
+        encoding="utf-8",
+    )
+    workspace.resolve_path(refs["repair_instructions"]).write_text(marker, encoding="utf-8")
+    workspace.resolve_path(refs["repair_runtime_result"]).write_text(
+        json.dumps({"status": "failed", "raw": marker}),
+        encoding="utf-8",
+    )
+    workspace.resolve_path(refs["repair_graph_state"]).write_text(
+        json.dumps({"status": "failed", "raw": marker}),
+        encoding="utf-8",
+    )
+    workspace.resolve_path(refs["human_review_request"]).write_text(
+        json.dumps({"reason": "verification_failed", "raw": marker}),
+        encoding="utf-8",
+    )
+    state = {
+        "schema_version": "skillfoundry.graph_v2_state.v1",
+        "job_id": workspace.job_id,
+        "stage": "human_review",
+        "status": "human_review_required",
+        "attempt_count": 2,
+        "attempt_limit": 2,
+        "refs": refs,
+        "hashes": {},
+        "contextforge": {
+            "last_repair_attempt_id": "002",
+            "repair_status": "completed",
+            "last_repair_goal_run_id": "repair-goal-run",
+            "last_repair_worker_run_id": "repair-worker-run",
+            "last_repair_context_view_id": "repair-context-view",
+            "last_repair_prompt_cache_plan_id": "repair-cache-plan",
+            "last_verification_status": "failed",
+            "registry_approved": False,
+            "worker_self_report_is_not_acceptance": True,
+        },
+        "human_review_required": True,
+        "next_route": "continue",
+    }
+    validate_v2_graph_state(state)
+    workspace.resolve_path(GRAPH_V2_STATE_REF).parent.mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path(GRAPH_V2_STATE_REF).write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    api = make_api(tmp_path)
+
+    response = api.handle("GET", f"/jobs/{workspace.job_id}/contextforge")
+    payload = response_json(response)
+    body_text = response.body.decode("utf-8")
+
+    assert response.status == 200
+    assert payload["build_path"]["mode"] == "graph_v2_goal_harness"
+    assert payload["status"]["graph_v2"]["last_repair_attempt_id"] == "002"
+    assert payload["status"]["graph_v2"]["repair_status"] == "completed"
+    assert payload["status"]["graph_v2"]["worker_self_report_is_not_acceptance"] is True
+    assert payload["repair_evidence"]["available"] is True
+    assert payload["repair_evidence"]["attempt_id"] == "002"
+    assert payload["repair_evidence"]["refs"]["repair_attempt"]["exists"] is True
+    assert payload["repair_evidence"]["refs"]["repair_runtime_result"]["exists"] is True
+    assert payload["repair_evidence"]["raw_transcript_included"] is False
+    assert payload["human_review"]["required"] is True
+    assert payload["human_review"]["request"]["exists"] is True
+    assert payload["human_review"]["raw_prompt_included"] is False
+    assert marker not in body_text
+    assert "worker_transcript" not in body_text
+
+
+def test_get_job_contextforge_status_rejects_invalid_graph_v2_state_as_canonical(tmp_path):
+    workspace = initialize_job_workspace(tmp_path / "runs", "api-v2-invalid-graph-state")
+    workspace.resolve_path("contextforge").mkdir(parents=True, exist_ok=True)
+    graph_state_path = workspace.resolve_path(GRAPH_V2_STATE_REF)
+    graph_state_path.write_text("{invalid-json", encoding="utf-8")
+    api = make_api(tmp_path)
+
+    response = api.handle("GET", f"/jobs/{workspace.job_id}/contextforge")
+    payload = response_json(response)
+
+    assert response.status == 200
+    assert payload["refs"]["graph_v2_state"]["exists"] is True
+    assert payload["refs"]["graph_v2_state"]["valid_json"] is False
+    assert payload["refs"]["graph_v2_state"]["error_code"] == "invalid_json"
+    assert payload["build_path"]["mode"] == "workspace_only"
+    assert payload["build_path"]["canonical"] is False
+    assert payload["build_path"]["graph_v2_state_valid"] is False
+    assert payload["status"]["graph_v2"] == {
+        "valid": False,
+        "error_code": "invalid_graph_v2_state",
+    }
 
 
 def test_get_job_contextforge_status_exposes_owned_llm_usage_without_raw_payload(tmp_path):

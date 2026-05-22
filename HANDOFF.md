@@ -182,7 +182,7 @@ uv run --extra test pytest -q
 - endpoint 通过 `graph_v2.py` 调用 verified Goal Harness build、SkillFoundry verifier、acceptance coverage、ContextForge verification bridge 和 registry gate。
 - failed verification route 可以进入 Goal Harness-backed repair node，记录 governed verifier-failure context、WorkerRun、ContextView、PromptCachePlan、checkpoint、repair instructions、repair runtime result 和 `RepairAttempt`；repair 后会重新进入 SkillFoundry verifier、acceptance coverage、ContextForge verification bridge 和 registry gate。repair worker self-report 仍不是验收或注册依据。
 - graph v2 final state 持久化到 `contextforge/graph_v2_state.json`，仍是 refs/IDs/status-only。
-- `GET /jobs/{job_id}/contextforge` 会暴露 verified runtime、graph v2 state、verification 和 registry summary，不暴露 raw prompt / raw payload。
+- `GET /jobs/{job_id}/contextforge` 会暴露 build path、verified runtime、graph v2 state、repair evidence、human-review、verification 和 registry summary，不暴露 raw prompt / raw payload / raw conversation / transcript / package content。
 - 相关 focused gates：`tests/test_frontdesk_api.py tests/test_api.py tests/test_graph_v2_runtime.py tests/test_graph_v2.py tests/test_goal_harness_verified_runtime.py tests/test_verification_bridge.py tests/test_registry.py tests/test_acceptance_coverage.py` 和全量 pytest。
 
 3. 后续继续 Phase 4/5/7：

@@ -397,6 +397,8 @@ def test_frontdesk_api_builds_frozen_job_through_graph_v2_without_raw_leakage(tm
     payload = build_response.json()
     assert payload["schema_version"] == "skillfoundry.api.frontdesk_build.v1"
     assert payload["status"] == "registered"
+    assert payload["build_path"]["mode"] == "graph_v2_goal_harness"
+    assert payload["build_path"]["canonical"] is True
     assert payload["graph_v2_state_ref"] == GRAPH_V2_STATE_REF
     assert payload["final_report"]["final_status"] == "registered"
     assert payload["graph_v2_state"]["stage"] == "emit_report"
@@ -421,6 +423,7 @@ def test_frontdesk_api_builds_frozen_job_through_graph_v2_without_raw_leakage(tm
 
     job = api.handle("GET", f"/jobs/{job_id}").json()
     assert job["status"] == "registered"
+    assert job["build_path"]["mode"] == "graph_v2_goal_harness"
     assert job["package_downloadable"] is True
 
 

@@ -213,7 +213,7 @@ third_party/contextforge = 2a0838bce6a7a2607b9ca1e095e044080fdc6759
 | `frontdesk_goal_runtime.py` | implemented | Core Need、Solution Planner、Spec Auditor Goal Harness slices 已存在；默认 no-key Front Desk 路径已接入；Front Desk criteria 已使用 deterministic verifier check IDs。 | 保持 approved-review/freeze gate 和 raw conversation exclusion。 |
 | `verification_bridge.py` | implemented | Verifier / acceptance coverage 到 ContextForge VerificationResult 的桥已存在，并能消费 Front Desk deterministic criteria。 | 加强语义验收和 evidence hash binding。 |
 | Registry evidence gate | implemented / partial | Registry 会拒绝 missing/stale/fabricated/self-reported evidence；默认 Front Desk graph v2 happy path 能 register。 | 继续覆盖 repair/human-review/manual acceptance 场景。 |
-| API/UI | implemented / partial | Front Desk job、message、plan review、offline default path、`POST /frontdesk/jobs/{job_id}/build` graph v2 happy path 已存在；status 暴露 v2 refs 摘要。 | 完善 repair/human-review route 和 UI evidence 体验。 |
+| API/UI | implemented / partial | Front Desk job、message、plan review、offline default path、`POST /frontdesk/jobs/{job_id}/build` graph v2 happy path 已存在；status 暴露 build path、v2 refs、repair evidence、human-review、verification 和 registry 摘要。 | 完善 human-review workbench 和 UI evidence 体验。 |
 | live provider / real Codex SDK thread | future opt-in | 不属于默认测试路径或生产承诺。 | 离线 v2 主路径稳定后再试点。 |
 
 ## 3. 不变的架构思想
@@ -1190,7 +1190,7 @@ Tests:
 
 Canonical phase: Phase 7.
 
-Status: implemented / partial. API can create Front Desk jobs, record plan reviews, freeze approved plans, run graph v2 verified build/registry happy path, and expose v2 refs/status summaries. Repair/human-review route UX and richer evidence summaries remain unfinished.
+Status: implemented / partial. API can create Front Desk jobs, record plan reviews, freeze approved plans, run graph v2 verified build/registry happy path, and expose build path, v2 refs, repair evidence, human-review, verification, and registry summaries. Human-review workbench and richer UI evidence remain unfinished.
 
 Goal:
 
