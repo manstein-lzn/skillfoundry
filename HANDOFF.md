@@ -1,12 +1,12 @@
 # SkillFoundry Handoff
 
-更新日期：2026-05-21
+更新日期：2026-05-22
 
 ## 当前状态
 
-当前主线已经完成 Front Desk core-need clarification refactor，并通过 MetaLoop 验证和独立 reviewer 审查。
+当前主线已经从 v0 Front Desk / worker / graph 原型，推进到 ContextForge Goal Harness v2 骨架的混合迁移阶段。
 
-重要更新：SkillFoundry 目前没有线上用户、外部兼容性承诺或生产数据迁移负担。后续可以基于新版 ContextForge Goal Harness 重新设计技术实现；旧 WP0-WP17 代码和文档是 v0 原型与知识资产，不是 v2 技术约束。v2 技术重建当前执行源是 `docs/CONTEXTFORGE_GOAL_HARNESS_REBUILD_PLAN.md`，前提说明见 `docs/SKILLFOUNDRY_V2_BASELINE.md`。
+重要更新：SkillFoundry 目前没有线上用户、外部兼容性承诺或生产数据迁移负担。后续可以基于新版 ContextForge Goal Harness 重新设计技术实现；旧 WP0-WP17 代码和文档是 v0 原型与知识资产，不是 v2 技术约束。v2 当前集成蓝图是 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`，阶段实现计划和历史执行证据见 `docs/CONTEXTFORGE_GOAL_HARNESS_REBUILD_PLAN.md`，前提说明见 `docs/SKILLFOUNDRY_V2_BASELINE.md`。
 
 核心行为现在是：
 
@@ -20,10 +20,29 @@ Core Need Discovery
 
 用户不再被无限追问技术细节。Front Desk 会先理解痛点、使用场景、目标用户、期望结果和成功信号；随后由 Agent 生成方案文档，用户确认或要求修改。只有用户批准过的方案才能进入 deterministic freeze。
 
+当前不能说“v2 重构已经完成”。更准确的状态是：
+
+```text
+ContextForge contract bridge 已存在。
+Offline Goal Harness build path 已存在。
+workers_v2 / graph_v2 / verification bridge / registry evidence gate 已存在。
+Front Desk v2 Goal Harness slices 已存在。
+产品主路径还需要继续收敛到这套 v2 骨架。
+```
+
 ## 最近完成的关键改动
 
 - ContextForge 已作为 Git submodule 接入：`third_party/contextforge`。
 - `pyproject.toml` 通过 editable path source 使用 `contextforge==0.1.0`，默认 `uv` index 设置为清华源。
+- `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md` 已创建，并由独立 `gpt-5.5 xhigh` reviewer 审查为 `approved_with_residual_risks`、无 blocking findings。
+- v2 核心桥接模块已经存在：
+  - `src/skillfoundry/contracts.py`
+  - `src/skillfoundry/goal_runtime.py`
+  - `src/skillfoundry/workers_v2.py`
+  - `src/skillfoundry/graph_v2.py`
+  - `src/skillfoundry/frontdesk_v2.py`
+  - `src/skillfoundry/frontdesk_goal_runtime.py`
+  - `src/skillfoundry/verification_bridge.py`
 - Front Desk schema 增加：
   - `CoreNeedBrief`
   - `CoreNeedDiscoveryReport`
@@ -85,15 +104,29 @@ Core Need Discovery
   - acceptance coverage 和 manual-only artifact gate。
 - `src/skillfoundry/registry.py`
   - Registry provenance gate 和 manual acceptance record revalidation。
+- `src/skillfoundry/contracts.py`
+  - SkillFoundry frozen artifacts 到 ContextForge contracts 的 bridge。
+- `src/skillfoundry/goal_runtime.py`
+  - Offline Goal Harness build runtime。
+- `src/skillfoundry/workers_v2.py`
+  - Fake / owned LLM / Codex thread boundary / external agent worker。
+- `src/skillfoundry/graph_v2.py`
+  - refs-only LangGraph v2 spine。
+- `src/skillfoundry/frontdesk_goal_runtime.py`
+  - Core Need、Solution Planner、Spec Auditor 的 Goal Harness runtime slices。
+- `src/skillfoundry/verification_bridge.py`
+  - SkillFoundry verifier / acceptance coverage 到 ContextForge VerificationResult 的桥接。
 
 ## 关键文档
 
 - `README.md`
   - 项目入口、开发环境、submodule 初始化方式。
+- `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`
+  - v2 当前集成蓝图：解释 ContextForge / LangGraph / worker / verifier / registry 边界，列出 Phase 0-9 迁移计划和验收门。
 - `docs/SKILLFOUNDRY_V2_BASELINE.md`
   - v2 重建基线：保留 SkillFoundry agent 协作思想，围绕新版 ContextForge Goal Harness 重建技术骨架。
 - `docs/CONTEXTFORGE_GOAL_HARNESS_REBUILD_PLAN.md`
-  - v2 技术重建当前执行源，已合入第三方 `gpt-5.5 xhigh` reviewer 审查意见。
+  - v2 阶段实现计划和历史执行证据，已合入第三方 `gpt-5.5 xhigh` reviewer 审查意见。
 - `docs/CONTEXTFORGE_AGENT_EXOSKELETON_PRODUCT_VISION.md`
   - SkillFoundry 作为 ContextForge Agent Exoskeleton Runtime 第一个产品化应用的长期愿景。
 - `docs/DEVELOPMENT_ROADMAP.md`
@@ -105,7 +138,7 @@ Core Need Discovery
 
 ## 验证结果
 
-最后一次全量验证：
+代码实现切片需要继续使用全量验证：
 
 ```bash
 uv run --extra test pytest -q
@@ -117,20 +150,13 @@ uv run --extra test pytest -q
 .venv/bin/python -m pytest -q
 ```
 
-结果：
+当前 MetaLoop 状态请以本地命令为准：
 
-```text
-290 passed
+```bash
+python3 /home/mansteinl/.codex/skills/metaloop/scripts/metaloop_kernel.py --workspace . status
 ```
 
-MetaLoop 状态：
-
-```text
-verification: completed_verified
-review: approved
-```
-
-独立 reviewer 结论：approved，无 blocker。
+`docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md` 的独立 reviewer 结论：`approved_with_residual_risks`，无 blocker。后续代码切片仍需按对应 focused tests 和全量测试重新验证。
 
 ## 接手后建议先做
 
@@ -147,30 +173,28 @@ uv run --extra test pytest -q
 .venv/bin/python -m pytest -q
 ```
 
-2. 若要继续 v2 重建，优先做 `docs/CONTEXTFORGE_GOAL_HARNESS_REBUILD_PLAN.md` 的 Phase 1：
+2. 若要继续 v2 重建，先读 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`，当前优先做 Phase 3：
 
-- 新增 `src/skillfoundry/contracts.py`。
-- 新增 `tests/test_contracts.py`。
-- 实现 `FrozenSkillSpec -> GoalContract`。
-- 实现 `Build node -> AgentNodeContract`。
-- 实现 `VerificationSpec / AcceptanceCoverage -> VerificationGate`。
-- 只生成 contract artifacts，不迁移 graph、Front Desk、API/UI、real Codex 或 live provider。
+- 把 `FrontDeskLoop` approved-plan audit/freeze 路径接到 `run_frontdesk_spec_auditor_goal_harness(...)`。
+- 保留 user plan review gate 和 source-hash check。
+- 保留 deterministic `FrontDeskFreezeGate`。
+- 跑 `tests/test_frontdesk_loop.py tests/test_frontdesk_api.py tests/test_frontdesk_goal_runtime.py` 和全量 pytest。
 
-3. 若要继续旧 Phase A 原型路线，优先做：
+3. 后续继续 Phase 4/5：
 
-- 更强的 conversation summary / redaction / retention。
-- 真正聚合 live provider usage/token/cost，而不是只记录 usage unavailable reason。
-- 用 Playwright 或等价浏览器测试覆盖 Front Desk HTML plan-review 提交流程。
-- 让 `SpecAuditor` 更明确审查 `solution_plan.json` / `solution_plan.md`，而不是主要审查旧 draft spec。
-- 增加 3-5 个内部真实需求样例，记录澄清轮数、方案修改次数、冻结成功率和失败分类。
+- 让 `graph_v2.py` 成为 build / verify / repair / registry 的产品主骨架。
+- 收敛 API/UI 到 v2 refs 和 ContextForge status。
+- 真实 provider / Codex SDK thread 只做 opt-in pilot，不进入默认测试。
 
-3. 不要回退以下约束：
+4. 不要回退以下约束：
 
 - `FrontDeskState` 必须 refs-only，不保存 raw conversation、raw prompt、raw model output。
 - Builder 不得读取 raw Front Desk conversation。
 - 没有 approved plan review 不得 freeze。
 - risk/privacy/budget/manual acceptance 证据必须进入 deterministic gate 或 Registry gate。
 - 默认测试路径必须保持 fake/scripted/offline，不依赖 live provider。
+- Worker self-report is never acceptance。
+- ContextForge 不控制 Codex SDK thread 内部 prompt/cache/tool loop，只记录边界证据。
 
 ## Git 注意事项
 
