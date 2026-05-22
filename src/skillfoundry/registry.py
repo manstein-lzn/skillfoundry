@@ -14,6 +14,8 @@ from typing import Any, Mapping
 
 import fcntl
 
+from contextforge import VerificationResult as ContextForgeVerificationResult
+
 from .acceptance import ACCEPTANCE_COVERAGE_RESULT_REF, MANUAL_ACCEPTANCE_RECORD_REF
 from .schema import (
     ArtifactManifest,
@@ -29,6 +31,11 @@ from .schema import (
     utc_now,
 )
 from .security import PathSecurityError, assert_under_root, resolve_under_root, validate_relative_path
+from .verification_bridge import (
+    CONTEXTFORGE_VERIFICATION_RESULT_REF,
+    SKILLFOUNDRY_VERIFICATION_RESULT_REF,
+    VERIFICATION_BRIDGE_VERSION,
+)
 from .workspace import JobWorkspace
 
 
@@ -45,6 +52,21 @@ _EXECUTION_REPORT_RE = re.compile(r"^attempts/(?P<attempt_id>[0-9]+)/execution_r
 _REGISTRY_THREAD_LOCKS: dict[Path, threading.RLock] = {}
 _REGISTRY_THREAD_LOCKS_GUARD = threading.Lock()
 _REGISTRY_LOCK_STATE = threading.local()
+_SHA256_REF_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_REQUIRED_CONTEXTFORGE_BRIDGE_VALIDATORS = (
+    "skillfoundry_verification_result_present",
+    "acceptance_coverage_result_present",
+    "verification_gate_hash_self_consistent",
+    "verification_gate_hash_current",
+    "verification_gate_required_evidence_present",
+    "skillfoundry_verifier_passed",
+    "skillfoundry_verifier_fresh_for_workspace",
+    "acceptance_coverage_passed",
+    "acceptance_coverage_fresh",
+    "worker_self_report_not_acceptance",
+    "contextforge_gate_metric_gates_supported",
+    "contextforge_gate_runner_completed",
+)
 
 
 class DuplicatePolicy(StrEnum):
@@ -118,6 +140,7 @@ class LocalSkillRegistry:
         skill_id: str | None = None,
         version: str = DEFAULT_REGISTRY_VERSION,
         review_status: str = "not_reviewed",
+        require_contextforge_verification: bool = False,
     ) -> RegistryEntry:
         """Register a package only after the independent verifier and hash gates pass."""
 
@@ -126,6 +149,7 @@ class LocalSkillRegistry:
             skill_id=skill_id,
             version=version,
             review_status=review_status,
+            require_contextforge_verification=require_contextforge_verification,
         )
         report = self.verify_entry(entry)
         if not report.valid:
@@ -246,6 +270,7 @@ class LocalSkillRegistry:
                 _check_input_manifest_against_entry(entry, workspace_root, report, failures)
 
         _check_acceptance_coverage_against_entry(entry, workspace_root, failures)
+        _check_contextforge_verification_against_entry(entry, workspace_root, failures)
 
         return RegistryVerificationReport(
             skill_id=entry.skill_id,
@@ -396,6 +421,7 @@ def _build_verified_entry(
     skill_id: str | None,
     version: str,
     review_status: str,
+    require_contextforge_verification: bool,
 ) -> RegistryEntry:
     failures: list[str] = []
     _require_non_empty(version, "version")
@@ -422,6 +448,14 @@ def _build_verified_entry(
     execution_report, execution_report_ref = _execution_report_for_registration(workspace, result, failures)
     worker_invocation = _worker_invocation_for_registration(workspace, execution_report, failures)
     acceptance_coverage = _acceptance_coverage_for_registration(workspace, failures)
+    contextforge_verification = _contextforge_verification_for_registration(
+        workspace,
+        result,
+        package_hash,
+        acceptance_coverage,
+        failures,
+        required=require_contextforge_verification,
+    )
 
     if failures:
         raise RegistryGateError(failures)
@@ -489,6 +523,8 @@ def _build_verified_entry(
     )
     if acceptance_coverage is not None:
         provenance["acceptance_coverage_result"] = acceptance_coverage
+    if contextforge_verification is not None:
+        provenance["contextforge_verification_result"] = contextforge_verification
 
     entry = RegistryEntry(
         skill_id=resolved_skill_id,
@@ -725,6 +761,157 @@ def _acceptance_coverage_for_registration(
             "provenance": _acceptance_coverage_provenance_refs(provenance),
         }
     )  # type: ignore[return-value]
+
+
+def _contextforge_verification_for_registration(
+    workspace: JobWorkspace,
+    skillfoundry_result: VerificationResult | None,
+    package_hash: str | None,
+    acceptance_coverage: Mapping[str, JsonValue] | None,
+    failures: list[str],
+    *,
+    required: bool,
+) -> dict[str, JsonValue] | None:
+    ref = CONTEXTFORGE_VERIFICATION_RESULT_REF
+    try:
+        path = workspace.resolve_path(ref, must_exist=True)
+    except Exception as exc:
+        if required:
+            failures.append(f"contextforge_verification_result: missing or unsafe: {exc}")
+        return None
+
+    digest = sha256_file(path)
+    try:
+        result = ContextForgeVerificationResult.from_json(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        if required:
+            failures.append(f"contextforge_verification_result: missing or invalid: {exc}")
+        return None
+
+    contextforge_failures: list[str] = []
+    _check_contextforge_result_for_registration(
+        result,
+        workspace,
+        skillfoundry_result,
+        package_hash,
+        acceptance_coverage,
+        contextforge_failures,
+    )
+    if contextforge_failures:
+        if required:
+            failures.extend(contextforge_failures)
+        return None
+
+    return ensure_json_compatible(
+        {
+            "ref": ref,
+            "verification_result_id": result.verification_result_id,
+            "verification_gate_id": result.verification_gate_id,
+            "goal_id": result.goal_id,
+            "goal_run_id": result.goal_run_id,
+            "status": result.status,
+            "passed": result.passed,
+            "sha256": digest,
+            "verification_gate_hash": _json_str(result.metadata.get("verification_gate_hash")),
+            "skillfoundry_verification_result_hash": _json_str(
+                result.metadata.get("skillfoundry_verification_result_hash")
+            ),
+            "acceptance_coverage_result_hash": _json_str(result.metadata.get("acceptance_coverage_result_hash")),
+            "current_package_hash": _json_str(result.metadata.get("current_package_hash")),
+        }
+    )  # type: ignore[return-value]
+
+
+def _check_contextforge_result_for_registration(
+    result: ContextForgeVerificationResult,
+    workspace: JobWorkspace,
+    skillfoundry_result: VerificationResult | None,
+    package_hash: str | None,
+    acceptance_coverage: Mapping[str, JsonValue] | None,
+    failures: list[str],
+) -> None:
+    _check_contextforge_result_semantics(result, failures)
+    if result.status != "passed" or not result.passed:
+        failures.append(f"contextforge_verification_result.status: expected passed, got {result.status}")
+    if result.metadata.get("job_id") != workspace.job_id:
+        failures.append(
+            f"contextforge_verification_result.metadata.job_id: expected {workspace.job_id}, "
+            f"got {result.metadata.get('job_id')!r}"
+        )
+    if result.metadata.get("skillfoundry_verification_result_ref") not in {
+        SKILLFOUNDRY_VERIFICATION_RESULT_REF,
+    }:
+        failures.append("contextforge_verification_result.metadata.skillfoundry_verification_result_ref: mismatch")
+
+    expected_verifier_hash = _hash_workspace_ref_or_none(workspace, SKILLFOUNDRY_VERIFICATION_RESULT_REF)
+    recorded_verifier_hash = result.metadata.get("skillfoundry_verification_result_hash")
+    if expected_verifier_hash is not None and recorded_verifier_hash != expected_verifier_hash:
+        failures.append(
+            "contextforge_verification_result.skillfoundry_verification_result_hash: "
+            f"expected {expected_verifier_hash}, got {recorded_verifier_hash!r}"
+        )
+    recorded_package_hash = result.metadata.get("current_package_hash")
+    if package_hash is not None and recorded_package_hash != package_hash:
+        failures.append(
+            f"contextforge_verification_result.current_package_hash: expected {package_hash}, "
+            f"got {recorded_package_hash!r}"
+        )
+
+    coverage_hash = _json_str(acceptance_coverage.get("sha256")) if acceptance_coverage is not None else None
+    recorded_coverage_hash = result.metadata.get("acceptance_coverage_result_hash")
+    if coverage_hash is not None and recorded_coverage_hash != coverage_hash:
+        failures.append(
+            "contextforge_verification_result.acceptance_coverage_result_hash: "
+            f"expected {coverage_hash}, got {recorded_coverage_hash!r}"
+        )
+
+
+def _check_contextforge_result_semantics(
+    result: ContextForgeVerificationResult,
+    failures: list[str],
+) -> None:
+    if result.metadata.get("bridge") != VERIFICATION_BRIDGE_VERSION:
+        failures.append(
+            "contextforge_verification_result.metadata.bridge: "
+            f"expected {VERIFICATION_BRIDGE_VERSION}, got {result.metadata.get('bridge')!r}"
+        )
+    gate_hash = _json_str(result.metadata.get("verification_gate_hash"))
+    if gate_hash is None or not _SHA256_REF_RE.fullmatch(gate_hash):
+        failures.append("contextforge_verification_result.verification_gate_hash: missing or invalid")
+
+    for validator_id in _REQUIRED_CONTEXTFORGE_BRIDGE_VALIDATORS:
+        if not _contextforge_validator_passed(result, validator_id):
+            failures.append(
+                "contextforge_verification_result.validator_results: "
+                f"missing passed bridge validator {validator_id!r}"
+            )
+
+    runner_result = _contextforge_validator(result, "contextforge_gate_runner_completed")
+    if runner_result is not None:
+        if runner_result.evidence.get("status") != "passed" or runner_result.evidence.get("passed") is not True:
+            failures.append(
+                "contextforge_verification_result.contextforge_gate_runner_completed: "
+                "runner evidence did not record passed status"
+            )
+
+    for index, validator in enumerate(result.validator_results):
+        if validator.severity == "blocking" and not validator.passed:
+            failures.append(
+                "contextforge_verification_result.validator_results"
+                f"[{index}]: blocking validator {validator.validator_id!r} did not pass"
+            )
+            break
+
+
+def _contextforge_validator(
+    result: ContextForgeVerificationResult,
+    validator_id: str,
+):
+    return next((item for item in result.validator_results if item.validator_id == validator_id), None)
+
+
+def _contextforge_validator_passed(result: ContextForgeVerificationResult, validator_id: str) -> bool:
+    return any(item.validator_id == validator_id and item.passed for item in result.validator_results)
 
 
 def _workspace_has_root_acceptance_criteria(workspace: JobWorkspace) -> bool:
@@ -1032,6 +1219,87 @@ def _check_acceptance_coverage_against_entry(
     _check_manual_acceptance_record_against_coverage(entry, workspace_root, payload, failures)
 
 
+def _check_contextforge_verification_against_entry(
+    entry: RegistryEntry,
+    workspace_root: Path | None,
+    failures: list[str],
+) -> None:
+    contextforge_value = entry.provenance.get("contextforge_verification_result")
+    if contextforge_value is None:
+        return
+    if not isinstance(contextforge_value, Mapping):
+        failures.append("contextforge_verification_result: provenance must be a JSON object")
+        return
+    if workspace_root is None:
+        failures.append("contextforge_verification_result: cannot resolve without workspace_root")
+        return
+
+    ref = _nested_str(entry.provenance, ("contextforge_verification_result", "ref"))
+    if ref is None:
+        failures.append("contextforge_verification_result.ref: missing from provenance")
+        return
+    try:
+        path = resolve_under_root(workspace_root, ref, must_exist=True)
+    except Exception as exc:
+        failures.append(f"contextforge_verification_result: missing or unsafe ref {ref!r}: {exc}")
+        return
+
+    expected_hash = _nested_str(entry.provenance, ("contextforge_verification_result", "sha256"))
+    if expected_hash is None:
+        failures.append("contextforge_verification_result.sha256: missing from provenance")
+    actual_hash = _hash_file_or_failure(path, "contextforge_verification_result_hash", failures)
+    if expected_hash is not None and actual_hash is not None and actual_hash != expected_hash:
+        failures.append(f"contextforge_verification_result_hash: expected {expected_hash}, got {actual_hash}")
+
+    try:
+        result = ContextForgeVerificationResult.from_json(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        failures.append(f"contextforge_verification_result: missing or invalid: {exc}")
+        return
+
+    _check_contextforge_result_semantics(result, failures)
+
+    expected_result_id = _nested_str(
+        entry.provenance,
+        ("contextforge_verification_result", "verification_result_id"),
+    )
+    if expected_result_id is not None and result.verification_result_id != expected_result_id:
+        failures.append(
+            "contextforge_verification_result.verification_result_id: "
+            f"expected {expected_result_id}, got {result.verification_result_id}"
+        )
+    if result.status != "passed" or not result.passed:
+        failures.append(f"contextforge_verification_result.status: expected passed, got {result.status}")
+    if result.metadata.get("skillfoundry_verification_result_ref") != SKILLFOUNDRY_VERIFICATION_RESULT_REF:
+        failures.append("contextforge_verification_result.metadata.skillfoundry_verification_result_ref: mismatch")
+
+    metadata_job_id = result.metadata.get("job_id")
+    if metadata_job_id != entry.build_job_id:
+        failures.append(
+            f"contextforge_verification_result.metadata.job_id: expected {entry.build_job_id}, got {metadata_job_id!r}"
+        )
+    verifier_hash = result.metadata.get("skillfoundry_verification_result_hash")
+    if verifier_hash != entry.verification_result_hash:
+        failures.append(
+            "contextforge_verification_result.skillfoundry_verification_result_hash: "
+            f"expected {entry.verification_result_hash}, got {verifier_hash!r}"
+        )
+    package_hash = result.metadata.get("current_package_hash")
+    if package_hash != entry.package_hash:
+        failures.append(
+            f"contextforge_verification_result.current_package_hash: expected {entry.package_hash}, "
+            f"got {package_hash!r}"
+        )
+
+    expected_coverage_hash = _nested_str(entry.provenance, ("acceptance_coverage_result", "sha256"))
+    recorded_coverage_hash = result.metadata.get("acceptance_coverage_result_hash")
+    if expected_coverage_hash is not None and recorded_coverage_hash != expected_coverage_hash:
+        failures.append(
+            "contextforge_verification_result.acceptance_coverage_result_hash: "
+            f"expected {expected_coverage_hash}, got {recorded_coverage_hash!r}"
+        )
+
+
 def _check_manual_acceptance_record_against_coverage(
     entry: RegistryEntry,
     workspace_root: Path,
@@ -1154,6 +1422,19 @@ def _nested_str(payload: Mapping[str, Any], path: tuple[str, ...]) -> str | None
     if isinstance(current, str) and current.strip():
         return current
     return None
+
+
+def _json_str(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def _hash_workspace_ref_or_none(workspace: JobWorkspace, ref: str) -> str | None:
+    try:
+        return sha256_file(workspace.resolve_path(ref, must_exist=True))
+    except Exception:
+        return None
 
 
 def _find_entry(entries: list[RegistryEntry], skill_id: str, version: str) -> RegistryEntry | None:

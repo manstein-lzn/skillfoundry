@@ -8,6 +8,8 @@ import skillfoundry
 from skillfoundry import (
     APPROVAL_APPROVED,
     QUARANTINE_QUARANTINED,
+    AcceptanceCoverageEvaluator,
+    AcceptanceCriteriaPlanner,
     DuplicatePolicy,
     LocalSkillRegistry,
     RegistryDuplicateError,
@@ -17,9 +19,14 @@ from skillfoundry import (
     Verifier,
     WorkerAdapter,
     WorkerExecutionOutcome,
+    bridge_skillfoundry_verification_result,
+    build_goal_contract,
+    build_verification_gate,
     initialize_job_workspace,
 )
+from skillfoundry.frontdesk_schema import AcceptanceCriteriaSet, AcceptanceCriterion
 from skillfoundry.schema import sha256_file
+from skillfoundry.verification_bridge import CONTEXTFORGE_VERIFICATION_RESULT_REF
 
 
 VALID_REGISTRY_SKILL_MD = """---
@@ -112,6 +119,82 @@ def make_verified_workspace(
     workspace = make_workspace(tmp_path, job_id=job_id, skill_md=skill_md)
     result = Verifier().verify(workspace)
     return workspace, result
+
+
+def criterion(criterion_id: str = "AC-REGISTRY-CF") -> AcceptanceCriterion:
+    return AcceptanceCriterion(
+        id=criterion_id,
+        description="Registry ContextForge evidence is covered by verifier output.",
+        source_requirement="Register only independently verified packages.",
+        source_turn_ids=["turn-001"],
+        requirement_id=f"REQ-{criterion_id}",
+        test_method="static",
+        pass_condition="The mapped verifier check passes.",
+        failure_examples=["Verifier evidence is missing."],
+        required_evidence=[],
+        evidence_kind="verifier_check",
+        priority="must",
+        risk_tags=[],
+        data_sensitivity="internal",
+        coverage_status="planned",
+        verifier_check_id="package_skill_md_present",
+    )
+
+
+def write_contextforge_verified_evidence(workspace):
+    write_acceptance_coverage_evidence(workspace)
+    goal = build_goal_contract(workspace)
+    gate = build_verification_gate(workspace, goal.goal_id)
+    contextforge_result = bridge_skillfoundry_verification_result(
+        workspace,
+        gate,
+        expected_gate_hash=gate.gate_hash,
+    )
+    assert contextforge_result.passed is True
+    return contextforge_result
+
+
+def write_acceptance_coverage_evidence(workspace):
+    AcceptanceCriteriaSet(criteria=[criterion()], job_id=workspace.job_id).write_yaml_file(
+        workspace.resolve_path("acceptance_criteria.yaml")
+    )
+    plan = AcceptanceCriteriaPlanner().plan(workspace)
+    coverage = AcceptanceCoverageEvaluator().evaluate(workspace, plan=plan)
+    assert coverage.passed is True
+    return coverage
+
+
+def write_fake_contextforge_result(workspace, *, status: str = "passed", passed: bool = True) -> None:
+    coverage_path = workspace.root / "qa" / "acceptance_coverage_result.json"
+    payload = {
+        "schema": "contextforge.verification_result.v0.1",
+        "version": "0.1",
+        "verification_result_id": f"fake-cf-{workspace.job_id}",
+        "verification_gate_id": "fake-gate",
+        "goal_id": "fake-goal",
+        "goal_run_id": None,
+        "status": status,
+        "validator_results": [],
+        "passed": passed,
+        "created_at": "2026-05-22T00:00:00Z",
+        "metadata": {
+            "job_id": workspace.job_id,
+            "skillfoundry_verification_result_hash": sha256_file(
+                workspace.resolve_path("verifier/verification_result.json", must_exist=True)
+            ),
+            "acceptance_coverage_result_hash": (
+                sha256_file(coverage_path)
+                if coverage_path.exists()
+                else None
+            ),
+            "current_package_hash": VerificationResult.read_json_file(
+                workspace.resolve_path("verifier/verification_result.json", must_exist=True)
+            ).package_hash,
+        },
+    }
+    path = workspace.root / "contextforge" / "verification_result.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
 def test_registry_api_is_exported():
@@ -257,6 +340,92 @@ def test_approved_entry_traces_to_required_wp6_evidence(tmp_path):
     assert provenance["artifact_manifest"]["ref"] == "artifact_manifest.json"
     assert provenance["artifact_manifest"]["sha256"] == entry.artifact_manifest_hash
     assert provenance["verifier"]["version"] == entry.verifier_version
+
+
+def test_contextforge_verified_workspace_registers_with_v2_provenance(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path, job_id="registry-cf-pass")
+    contextforge_result = write_contextforge_verified_evidence(workspace)
+    registry = LocalSkillRegistry(tmp_path / "registry-cf-pass.json")
+
+    entry = registry.add_verified(workspace, version="1.0.0", require_contextforge_verification=True)
+    provenance = entry.provenance["contextforge_verification_result"]
+
+    assert provenance["ref"] == CONTEXTFORGE_VERIFICATION_RESULT_REF
+    assert provenance["verification_result_id"] == contextforge_result.verification_result_id
+    assert provenance["status"] == "passed"
+    assert provenance["passed"] is True
+    assert provenance["sha256"] == sha256_file(
+        workspace.resolve_path(CONTEXTFORGE_VERIFICATION_RESULT_REF, must_exist=True)
+    )
+    assert provenance["skillfoundry_verification_result_hash"] == entry.verification_result_hash
+    assert provenance["current_package_hash"] == entry.package_hash
+    assert registry.verify_entry(entry).valid is True
+
+
+def test_registry_can_require_contextforge_verification_result(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path, job_id="registry-cf-required")
+    registry = LocalSkillRegistry(tmp_path / "registry-cf-required.json")
+
+    with pytest.raises(RegistryGateError) as exc_info:
+        registry.add_verified(workspace, version="1.0.0", require_contextforge_verification=True)
+
+    assert any("contextforge_verification_result" in failure for failure in exc_info.value.failures)
+
+
+def test_failed_contextforge_verification_blocks_v2_registration(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path, job_id="registry-cf-failed")
+    write_contextforge_verified_evidence(workspace)
+    path = workspace.resolve_path(CONTEXTFORGE_VERIFICATION_RESULT_REF, must_exist=True)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["status"] = "failed"
+    payload["passed"] = False
+    path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    registry = LocalSkillRegistry(tmp_path / "registry-cf-failed.json")
+
+    with pytest.raises(RegistryGateError) as exc_info:
+        registry.add_verified(workspace, version="1.0.0", require_contextforge_verification=True)
+
+    assert any("contextforge_verification_result.status" in failure for failure in exc_info.value.failures)
+
+
+def test_fabricated_contextforge_pass_without_bridge_evidence_blocks_v2_registration(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path, job_id="registry-cf-fabricated")
+    write_acceptance_coverage_evidence(workspace)
+    write_fake_contextforge_result(workspace, status="passed", passed=True)
+    registry = LocalSkillRegistry(tmp_path / "registry-cf-fabricated.json")
+
+    with pytest.raises(RegistryGateError) as exc_info:
+        registry.add_verified(workspace, version="1.0.0", require_contextforge_verification=True)
+
+    assert any("metadata.bridge" in failure for failure in exc_info.value.failures)
+    assert any("missing passed bridge validator" in failure for failure in exc_info.value.failures)
+
+
+def test_default_registry_ignores_invalid_contextforge_result_when_not_required(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path, job_id="registry-cf-default-compat")
+    write_fake_contextforge_result(workspace, status="failed", passed=False)
+    registry = LocalSkillRegistry(tmp_path / "registry-cf-default-compat.json")
+
+    entry = registry.add_verified(workspace, version="1.0.0")
+
+    assert "contextforge_verification_result" not in entry.provenance
+    assert registry.verify_entry(entry).valid is True
+
+
+def test_registry_verify_fails_after_contextforge_result_tampering(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path, job_id="registry-cf-tamper")
+    write_contextforge_verified_evidence(workspace)
+    registry = LocalSkillRegistry(tmp_path / "registry-cf-tamper.json")
+    entry = registry.add_verified(workspace, version="1.0.0", require_contextforge_verification=True)
+    path = workspace.resolve_path(CONTEXTFORGE_VERIFICATION_RESULT_REF, must_exist=True)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["created_at"] = "2099-01-01T00:00:00Z"
+    path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+    report = registry.verify_entry(entry)
+
+    assert report.valid is False
+    assert any("contextforge_verification_result_hash" in failure for failure in report.failures)
 
 
 def test_quarantined_entry_is_excluded_from_default_list_and_reuse_candidates(tmp_path):
