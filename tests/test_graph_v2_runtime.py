@@ -371,6 +371,37 @@ def test_verified_registry_gate_rejects_tampered_verified_runtime(tmp_path: Path
         registry_gate(state)
 
 
+def test_verified_registry_gate_rejects_tampered_verified_runtime_hash_before_writes(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    registry_path = tmp_path / "registry.json"
+    workspace = initialize_job_workspace(runs_root, "graph-runtime-hash-tamper")
+    _write_acceptance_criteria(workspace)
+    build_node = build_verified_goal_harness_node(
+        runs_root,
+        registry_path=registry_path,
+        created_at=CREATED_AT,
+    )
+    state = build_node({"job_id": workspace.job_id, "attempt_limit": 2})
+    verified_path = workspace.resolve_path(VERIFIED_GOAL_RUNTIME_RESULT_REF, must_exist=True)
+    payload = json.loads(verified_path.read_text())
+    payload["hashes"]["contextforge_verification_result"] = "0" * 64
+    verified_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+
+    registry_gate = build_verified_registry_gate_node(
+        runs_root,
+        registry_path=registry_path,
+        created_at=CREATED_AT,
+    )
+    with pytest.raises(V2StateValidationError, match="ContextForge verification hash mismatch"):
+        registry_gate(state)
+
+    assert not registry_path.exists()
+    assert not workspace.resolve_path("final_report.json").exists()
+    assert not (workspace.root / "registry" / "decision.json").exists()
+    assert not (workspace.root / "registry" / "entry.json").exists()
+    assert LocalSkillRegistry(registry_path).list(status=None) == []
+
+
 def test_verified_registry_gate_rejects_cross_job_verified_runtime(tmp_path: Path) -> None:
     runs_root = tmp_path / "runs"
     registry_path = tmp_path / "registry.json"
@@ -503,6 +534,52 @@ def test_v2_graph_runs_repair_goal_harness_node_after_failed_verification(tmp_pa
         ledger.close()
     assert f"{workspace.job_id}:verifier_failure:002" in context_view.included_item_ids
     assert f"{workspace.job_id}:raw_frontdesk_conversation" not in context_view.included_item_ids
+
+
+def test_verified_repair_verification_node_defers_registry_approval_to_registry_gate(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    registry_path = tmp_path / "registry.json"
+    workspace = initialize_job_workspace(runs_root, "graph-runtime-repair-registry-timing")
+    _write_acceptance_criteria(workspace)
+    build_node = build_offline_goal_harness_node(
+        runs_root,
+        verification_mode="fail_missing_coverage",
+        created_at=CREATED_AT,
+    )
+    repair_node = build_repair_goal_harness_node(
+        runs_root,
+        created_at=CREATED_AT,
+        continue_to_verification=True,
+    )
+    verify_node_callable = build_verified_repair_verification_node(
+        runs_root,
+        registry_path=registry_path,
+        created_at=CREATED_AT,
+    )
+
+    failed_state = build_node({"job_id": workspace.job_id, "attempt_limit": 2})
+    repair_state = repair_node(failed_state)
+    verified_state = verify_node_callable(repair_state)
+
+    validate_v2_graph_state(verified_state)
+    assert verified_state["stage"] == V2Stage.VERIFY.value
+    assert verified_state["status"] == V2Status.VERIFIED.value
+    assert verified_state["refs"]["verified_runtime_result"] == VERIFIED_GOAL_RUNTIME_RESULT_REF
+    assert "final_report" not in verified_state["refs"]
+    assert "registry_entry" not in verified_state["refs"]
+    assert verified_state["contextforge"]["registry_approved"] is False
+    assert verified_state["contextforge"]["last_repair_attempt_id"] == "002"
+    assert not registry_path.exists()
+    assert not workspace.resolve_path("final_report.json").exists()
+
+    verified_runtime = json.loads(
+        workspace.resolve_path(VERIFIED_GOAL_RUNTIME_RESULT_REF, must_exist=True).read_text()
+    )
+    assert verified_runtime["status"]["contextforge_verification"] == "passed"
+    assert verified_runtime["status"]["registry_approved"] is False
+    assert verified_runtime["status"]["final_status"] == "not_registered"
+    assert "final_report" not in verified_runtime["refs"]
+    assert "registry_skill_id" not in verified_runtime["ids"]
 
 
 def test_v2_graph_reverifies_and_registers_after_repair(tmp_path: Path) -> None:

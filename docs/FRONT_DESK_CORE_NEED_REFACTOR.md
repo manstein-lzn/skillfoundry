@@ -13,7 +13,7 @@
 - `POST /frontdesk/jobs/<job_id>/plan-review` 记录 `frontdesk/plan_review_*.json`；只有 `approve` 后才会进入 audit 和 deterministic freeze。
 - `FrontDeskFreezeGate` 已把 solution plan、plan review hash、risk/privacy/budget report 和 acceptance criteria 纳入确定性 gate。
 - manual-only acceptance 已要求 `qa/manual_acceptance_record.json`，Registry 会校验该 artifact 的 hash 和覆盖项。
-- 测试覆盖：`uv run --extra test pytest -q`；若本机未安装 `uv` 但已有 `.venv`，可用 `.venv/bin/python -m pytest -q`。当前结果 `416 passed`。
+- 测试覆盖：`uv run --extra test pytest -q`；若本机未安装 `uv` 但已有 `.venv`，可用 `.venv/bin/python -m pytest -q`。当前结果 `418 passed`。
 
 剩余产品化工作主要集中在：更强的长对话摘要/脱敏治理、独立 Planner/Auditor 对 solution plan 的深度审查，以及更完整的前端体验。
 

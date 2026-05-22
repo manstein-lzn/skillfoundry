@@ -709,7 +709,7 @@ def build_verified_registry_gate_node(
             entry = registry.get(skill_id, registered_version)
             _require_registry_entry_for_workspace(entry, workspace)
         else:
-            _require_verified_runtime_ready_for_registry(verified_runtime, job_id=job_id)
+            _preflight_verified_runtime_before_registry_write(workspace, verified_runtime, job_id=job_id)
             entry = LocalSkillRegistry(
                 registry_file,
                 duplicate_policy=DuplicatePolicy.IDEMPOTENT,
@@ -1136,6 +1136,102 @@ def _require_verified_runtime_ready_for_registry(
         raise V2StateValidationError("verified runtime did not record passed SkillFoundry verification")
     if _optional_nested_bool(verified_runtime, ("status", "acceptance_coverage_passed")) is not True:
         raise V2StateValidationError("verified runtime did not record passed acceptance coverage")
+
+
+def _preflight_verified_runtime_before_registry_write(
+    workspace: JobWorkspace,
+    verified_runtime: Mapping[str, Any],
+    *,
+    job_id: str,
+) -> None:
+    _require_verified_runtime_ready_for_registry(verified_runtime, job_id=job_id)
+    verifier_payload = _require_verified_runtime_json_ref_hash(
+        workspace,
+        verified_runtime,
+        ref_key="skillfoundry_verification_result",
+        hash_key="skillfoundry_verification_result",
+        fallback_ref="verifier/verification_result.json",
+        label="SkillFoundry verification result",
+    )
+    coverage_payload = _require_verified_runtime_json_ref_hash(
+        workspace,
+        verified_runtime,
+        ref_key="acceptance_coverage_result",
+        hash_key="acceptance_coverage_result",
+        fallback_ref="qa/acceptance_coverage_result.json",
+        label="acceptance coverage result",
+    )
+    _require_verified_runtime_id_matches_payload(
+        verified_runtime,
+        id_key="skillfoundry_verification_result_id",
+        payload=verifier_payload,
+        payload_id_key="result_id",
+        label="SkillFoundry verification result",
+    )
+    _require_verified_runtime_id_matches_payload(
+        verified_runtime,
+        id_key="acceptance_coverage_result_id",
+        payload=coverage_payload,
+        payload_id_key="result_id",
+        label="acceptance coverage result",
+    )
+    verifier_package_hash = _json_str_at(
+        verifier_payload,
+        ("package_hash",),
+        "SkillFoundry verification package hash",
+    )
+    coverage_package_hash = _json_str_at(
+        coverage_payload,
+        ("package_hash",),
+        "acceptance coverage package hash",
+    )
+    if coverage_package_hash != verifier_package_hash:
+        raise V2StateValidationError(
+            "acceptance coverage package hash mismatch: "
+            f"expected {verifier_package_hash}, got {coverage_package_hash}"
+        )
+    contextforge_result = _read_current_contextforge_verification(workspace, verified_runtime)
+    _require_contextforge_result_for_workspace(
+        contextforge_result,
+        workspace,
+        verified_runtime,
+        verifier_package_hash,
+    )
+
+
+def _require_verified_runtime_json_ref_hash(
+    workspace: JobWorkspace,
+    verified_runtime: Mapping[str, Any],
+    *,
+    ref_key: str,
+    hash_key: str,
+    fallback_ref: str,
+    label: str,
+) -> dict[str, JsonValue]:
+    ref = _json_ref(verified_runtime, ("refs", ref_key), fallback_ref)
+    recorded_hash = _json_str_at(verified_runtime, ("hashes", hash_key), f"{label} hash")
+    try:
+        path = workspace.resolve_path(ref, must_exist=True)
+        actual_hash = sha256_file(path)
+    except Exception as exc:
+        raise V2StateValidationError(f"{label} is missing or unsafe at {ref}: {exc}") from exc
+    if recorded_hash != actual_hash:
+        raise V2StateValidationError(f"{label} hash mismatch: expected {recorded_hash!r}, got {actual_hash}")
+    return _read_json_ref(workspace, ref, label)
+
+
+def _require_verified_runtime_id_matches_payload(
+    verified_runtime: Mapping[str, Any],
+    *,
+    id_key: str,
+    payload: Mapping[str, Any],
+    payload_id_key: str,
+    label: str,
+) -> None:
+    recorded_id = _json_str_at(verified_runtime, ("ids", id_key), f"verified runtime {label} id")
+    actual_id = _json_str_at(payload, (payload_id_key,), f"{label} id")
+    if recorded_id != actual_id:
+        raise V2StateValidationError(f"verified runtime {label} id mismatch: expected {recorded_id!r}, got {actual_id}")
 
 
 def _verified_runtime_with_registry_approval(

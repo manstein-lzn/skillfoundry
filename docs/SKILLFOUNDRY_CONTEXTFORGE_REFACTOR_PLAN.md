@@ -2136,7 +2136,7 @@ residual_risks:
   - ToolPermission / WriteScope are auditable worker-boundary constraints, not an OS sandbox or production isolation layer.
   - Raw Front Desk conversation may be recorded as forbidden provenance, but future selector, prompt, API, and repair-context changes must keep leakage regression tests.
   - Worker self-report is blocked by verifier / acceptance coverage / ContextForge bridge / Registry gates, not by a universal semantic self-report scanner.
-  - Current graph v2 registry gate revalidates and snapshots registry evidence after verified runtime registration; future canonicalization may further consolidate first approval timing.
+  - At that review time, graph v2 registry gate revalidated and snapshotted registry evidence after verified runtime registration; later implementation updates below record the canonical registry timing fix.
 status: approved for use as canonical v2 refactor execution entry
 ```
 
@@ -2204,15 +2204,42 @@ implemented:
   - canonical graph_v2 verified build path now calls run_verified_offline_goal_harness(..., promote_to_registry=False).
   - canonical graph_v2 repair verification path now calls run_verified_repair_goal_harness(..., promote_to_registry=False).
   - graph_v2 registry gate now performs first LocalSkillRegistry.add_verified(), emits final_report.json, and writes registry decision / entry snapshot.
+  - graph_v2 registry gate now preflights verified runtime verifier / coverage / ContextForge refs, hashes, IDs, and package-hash binding before any registry or final_report write.
   - direct run_verified_offline_goal_harness() and run_verified_repair_goal_harness() still promote by default for compatibility callers.
   - direct verified repair helper compatibility now has a focused regression test for default registry promotion and final report emission.
+  - canonical repair verification timing now has a focused regression test proving repair verification does not register before registry gate.
+  - tampered verified-runtime ContextForge hash now fails before any registry store, registry decision, registry entry snapshot, or final_report write.
   - seed_goal_harness_context() now records raw Front Desk conversation provenance with prompt_include=False while keeping forbidden selector evidence.
 verification:
-  - tests/test_goal_harness_verified_runtime.py tests/test_graph_v2_runtime.py => 21 passed.
-  - tests/test_graph_v2.py tests/test_graph_v2_runtime.py tests/test_goal_harness_verified_runtime.py tests/test_registry.py tests/test_verification_bridge.py tests/test_frontdesk_api.py tests/test_api.py => 104 passed.
-  - full suite: .venv/bin/python -m pytest -q => 416 passed.
+  - tests/test_goal_harness_verified_runtime.py tests/test_graph_v2_runtime.py => 23 passed.
+  - tests/test_graph_v2.py tests/test_graph_v2_runtime.py tests/test_goal_harness_verified_runtime.py tests/test_registry.py tests/test_verification_bridge.py tests/test_frontdesk_api.py tests/test_api.py => 106 passed.
+  - PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_graph_v2_runtime.py tests/test_goal_harness_verified_runtime.py tests/test_goal_harness_slice.py tests/test_frontdesk_goal_runtime.py => 39 passed.
+  - full suite: .venv/bin/python -m pytest -q => 418 passed.
 remaining_risks:
   - SkillFoundry still has mixed migration and legacy modules; graph_v2 is the product path but old modules still exist as compatibility/historical surfaces.
   - Human review remains route/status rather than a full workbench.
   - Live provider / real Codex SDK pilot remains future opt-in after offline canonical route, evidence UI, and human-review operations are stronger.
+```
+
+第三方 trust-boundary reviewer 复审：
+
+```text
+reviewer: Bernoulli / independent gpt-5.5 xhigh reviewer
+initial_decision: blocked
+initial_blocker:
+  - graph_v2 registry gate previously could write registry.json and final_report.json before later rejecting a tampered verified_runtime ContextForge hash.
+fix:
+  - registry gate now preflights verified runtime verifier / coverage / ContextForge refs, hashes, IDs, and package-hash binding before LocalSkillRegistry.add_verified() or final_report emission.
+  - regression test proves tampered hashes.contextforge_verification_result raises before registry store, registry decision, registry entry snapshot, or final_report writes.
+  - repair verification timing test proves repair verification does not register before registry gate.
+final_decision: approved
+reviewer_verification:
+  - git diff --check => passed.
+  - focused graph verified runtime tests => 23 passed.
+  - focused graph/runtime/leakage tests => 39 passed.
+  - independent temp-workspace reproduction of prior blocker now leaves registry_entries=0 and final_report_exists=false.
+residual_risks:
+  - Individual tamper variants for verifier hash/id and coverage hash/id are covered by shared preflight code but not each represented as separate focused tests.
+  - Some final current-package validation remains in LocalSkillRegistry.add_verified(), which is acceptable because it validates before writing internally.
+status: approved for follow-up commit and push.
 ```
