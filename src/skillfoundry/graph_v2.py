@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import StrEnum
+from pathlib import Path
 import re
 from typing import Any, Mapping, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from .goal_runtime import OfflineVerificationMode, run_offline_goal_harness
 from .schema import SchemaValidationError, ensure_json_compatible
+from .workspace import JobWorkspace
 
 
 MAX_V2_INLINE_STRING_BYTES = 1024
@@ -70,6 +74,8 @@ class SkillFoundryV2State(TypedDict, total=False):
     next_route: str
     human_review_required: bool
 
+
+V2Node = Callable[[SkillFoundryV2State], SkillFoundryV2State]
 
 _STATE_SCHEMA_VERSION = "skillfoundry.graph_v2_state.v1"
 _ALLOWED_STATE_KEYS = frozenset(SkillFoundryV2State.__annotations__)
@@ -156,13 +162,8 @@ def route_after_verification(state: Mapping[str, Any]) -> str:
     if not isinstance(contextforge, Mapping):
         raise V2StateValidationError("contextforge must be a mapping")
 
-    explicit = _optional_str(state.get("next_route")) or _optional_str(contextforge.get("next_route"))
     verification_status = _optional_str(contextforge.get("last_verification_status"))
 
-    if explicit in {route.value for route in V2Route} and explicit != V2Route.CONTINUE.value:
-        if explicit == V2Route.REPAIR_GOAL_NODE.value and _attempts_exhausted(state):
-            return V2Route.HUMAN_REVIEW.value
-        return explicit
     if verification_status == "passed":
         return V2Route.REGISTRY_GATE.value
     if verification_status == "failed":
@@ -181,15 +182,24 @@ def route_after_verification(state: Mapping[str, Any]) -> str:
         return V2Route.REDESIGN.value
     if decision in {"escalate", "stop"}:
         return V2Route.HUMAN_REVIEW.value
+
+    explicit = _optional_str(state.get("next_route")) or _optional_str(contextforge.get("next_route"))
+    if explicit in {route.value for route in V2Route} and explicit != V2Route.CONTINUE.value:
+        if explicit == V2Route.REPAIR_GOAL_NODE.value and _attempts_exhausted(state):
+            return V2Route.HUMAN_REVIEW.value
+        return explicit
     return V2Route.CONTINUE.value
 
 
-def build_skillfoundry_v2_graph() -> StateGraph:
+def build_skillfoundry_v2_graph(
+    *,
+    build_node_callable: V2Node | None = None,
+) -> StateGraph:
     """Build the v2 refs-only LangGraph spine."""
 
     graph = StateGraph(SkillFoundryV2State)
     graph.add_node(V2Stage.FREEZE_CONTRACTS.value, freeze_contracts_node)
-    graph.add_node(V2Stage.BUILD_GOAL_NODE.value, build_goal_node)
+    graph.add_node(V2Stage.BUILD_GOAL_NODE.value, build_node_callable or build_goal_node)
     graph.add_node(V2Stage.VERIFY.value, verify_node)
     graph.add_node(V2Stage.ROUTE_AFTER_VERIFICATION.value, route_after_verification_node)
     graph.add_node(V2Stage.REPAIR_GOAL_NODE.value, repair_goal_node)
@@ -226,6 +236,7 @@ def build_skillfoundry_v2_graph() -> StateGraph:
 
 def compile_skillfoundry_v2_graph(
     *,
+    build_node_callable: V2Node | None = None,
     checkpointer: Any | None = None,
     interrupt_before: list[str] | str | None = None,
     interrupt_after: list[str] | str | None = None,
@@ -233,7 +244,7 @@ def compile_skillfoundry_v2_graph(
 ) -> Any:
     """Compile the v2 graph while preserving LangGraph checkpoint options."""
 
-    return build_skillfoundry_v2_graph().compile(
+    return build_skillfoundry_v2_graph(build_node_callable=build_node_callable).compile(
         checkpointer=checkpointer,
         interrupt_before=interrupt_before,
         interrupt_after=interrupt_after,
@@ -284,6 +295,52 @@ def build_goal_node(state: SkillFoundryV2State) -> SkillFoundryV2State:
         "next_route": V2Route.CONTINUE.value,
     }
     return _validated_update(state, update)
+
+
+def build_offline_goal_harness_node(
+    runs_root: str | Path,
+    *,
+    verification_mode: OfflineVerificationMode = "pass",
+    created_at: str | None = None,
+) -> V2Node:
+    """Return a v2 graph node backed by the offline Goal Harness slice."""
+
+    runs_path = Path(runs_root)
+
+    def _node(state: SkillFoundryV2State) -> SkillFoundryV2State:
+        validate_v2_graph_state(state)
+        job_id = _job_id(state)
+        workspace = JobWorkspace(root=runs_path / job_id, job_id=job_id)
+        result = run_offline_goal_harness(
+            workspace,
+            verification_mode=verification_mode,
+            created_at=created_at,
+        )
+        runtime_state = result.graph_state
+        refs = _merge_refs(state, **_string_mapping(runtime_state.get("refs", {}), "runtime refs"))
+        hashes = dict(state.get("hashes", {}))
+        hashes.update(_string_mapping(runtime_state.get("hashes", {}), "runtime hashes"))
+        contextforge = dict(state.get("contextforge", {}))
+        contextforge.update(_string_mapping(runtime_state.get("contextforge", {}), "runtime contextforge"))
+        contextforge["last_goal_status"] = result.goal_run.status
+        if result.goal_run.decision is not None:
+            contextforge["last_goal_decision"] = result.goal_run.decision
+        update: SkillFoundryV2State = {
+            "schema_version": _STATE_SCHEMA_VERSION,
+            "job_id": job_id,
+            "stage": V2Stage.BUILD_GOAL_NODE.value,
+            "status": V2Status.BUILD_RECORDED.value,
+            "attempt_count": max(int(state.get("attempt_count", 0)), int(runtime_state.get("attempt_count", 1))),
+            "attempt_limit": int(state.get("attempt_limit", 1)),
+            "refs": refs,
+            "hashes": hashes,
+            "contextforge": contextforge,
+            "human_review_required": bool(runtime_state.get("human_review_required", False)),
+            "next_route": str(runtime_state.get("next_route", V2Route.CONTINUE.value)),
+        }
+        return _validated_update(state, update)
+
+    return _node
 
 
 def verify_node(state: SkillFoundryV2State) -> SkillFoundryV2State:
@@ -423,6 +480,17 @@ def _merge_refs(state: Mapping[str, Any], **updates: str) -> dict[str, str]:
     return refs
 
 
+def _string_mapping(value: Any, field_name: str) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise V2StateValidationError(f"{field_name} must be a mapping")
+    result: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str):
+            raise V2StateValidationError(f"{field_name} must contain only string keys and values")
+        result[key] = item
+    return result
+
+
 def _required_context_id(state: Mapping[str, Any], key: str, fallback: str) -> str:
     contextforge = state.get("contextforge", {})
     if isinstance(contextforge, Mapping):
@@ -539,6 +607,7 @@ __all__ = [
     "V2StateValidationError",
     "V2Status",
     "build_goal_node",
+    "build_offline_goal_harness_node",
     "build_skillfoundry_v2_graph",
     "compile_skillfoundry_v2_graph",
     "emit_report_node",
