@@ -21,11 +21,18 @@ from contextforge import (
     estimate_tokens,
 )
 
-from .frontdesk_schema import CoreNeedBrief, CoreNeedDiscoveryReport
+from .frontdesk_schema import (
+    AcceptanceCriteriaSet,
+    AcceptanceCriterion,
+    CoreNeedBrief,
+    CoreNeedDiscoveryReport,
+    SolutionPlan,
+)
 from .frontdesk_v2 import (
     CORE_NEED_DISCOVERY_NODE_ID,
     FRONTDESK_V2_CONTRACT_DIR,
     FRONTDESK_V2_SCHEMA_VERSION,
+    SOLUTION_PLANNER_NODE_ID,
     write_frontdesk_v2_contract_artifacts,
 )
 from .frontdesk_workspace import (
@@ -36,7 +43,7 @@ from .frontdesk_workspace import (
     FrontDeskWorkspace,
     write_frontdesk_artifact,
 )
-from .schema import JsonValue, ensure_json_compatible, sha256_file, sha256_json, utc_now
+from .schema import JsonValue, SkillSpec, ensure_json_compatible, sha256_file, sha256_json, utc_now
 from .workspace import JobWorkspace
 
 
@@ -46,14 +53,32 @@ FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF = f"{FRONTDESK_V2_CONTRACT_DIR}/core_need
 FRONTDESK_CORE_NEED_RUNTIME_STATE_REF = f"{FRONTDESK_V2_CONTRACT_DIR}/core_need_runtime_state.json"
 FRONTDESK_CORE_NEED_BRIEF_REF = "frontdesk/core_need_brief.json"
 FRONTDESK_CORE_NEED_REPORT_REF = "frontdesk/core_need_discovery_report.json"
+FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF = f"{FRONTDESK_V2_CONTRACT_DIR}/solution_plan_runtime_result.json"
+FRONTDESK_SOLUTION_PLAN_RUNTIME_STATE_REF = f"{FRONTDESK_V2_CONTRACT_DIR}/solution_plan_runtime_state.json"
+FRONTDESK_SOLUTION_PLAN_REF = "frontdesk/solution_plan.json"
+FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF = "frontdesk/solution_plan.md"
+FRONTDESK_DRAFT_SKILL_SPEC_REF = "frontdesk/draft_skill_spec.yaml"
+FRONTDESK_ACCEPTANCE_CRITERIA_REF = "frontdesk/acceptance_criteria.yaml"
 
 _GRAPH_ID = "skillfoundry-frontdesk-v2"
-_RUN_TASK_ID = CORE_NEED_DISCOVERY_NODE_ID
 
 
 @dataclass(frozen=True)
 class FrontDeskCoreNeedGoalHarnessResult:
     """Artifacts produced by the Core Need Discovery Goal Harness slice."""
+
+    harness_result: GoalHarnessRunResult
+    goal_run: GoalRunRecord
+    runtime_result: dict[str, JsonValue]
+    runtime_state: dict[str, JsonValue]
+    ledger_ref: str
+    runtime_result_ref: str
+    runtime_state_ref: str
+
+
+@dataclass(frozen=True)
+class FrontDeskSolutionPlannerGoalHarnessResult:
+    """Artifacts produced by the Solution Planner Goal Harness slice."""
 
     harness_result: GoalHarnessRunResult
     goal_run: GoalRunRecord
@@ -88,6 +113,7 @@ class FrontDeskCoreNeedFakeWorker:
                 artifact_refs=[],
                 changed_files=[],
                 attempted_changed_files=changed_files,
+                model_name="frontdesk_core_need_deterministic_fixture",
                 metadata={"policy_error": str(exc)},
             )
 
@@ -123,7 +149,119 @@ class FrontDeskCoreNeedFakeWorker:
             artifact_refs=changed_files,
             changed_files=changed_files,
             attempted_changed_files=changed_files,
+            model_name="frontdesk_core_need_deterministic_fixture",
             metadata={"frontdesk_core_need_fake_worker": True},
+        )
+
+
+@dataclass(frozen=True)
+class FrontDeskSolutionPlannerFakeWorker:
+    """Deterministic worker used to prove the Solution Planner Goal Harness boundary."""
+
+    frontdesk: FrontDeskWorkspace
+    name: str = "frontdesk-solution-planner-deterministic-worker"
+
+    kind: str = "fake_model"
+
+    def run(self, request: WorkerRunRequest) -> WorkerRunResult:
+        changed_files = [
+            FRONTDESK_SOLUTION_PLAN_REF,
+            FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF,
+            FRONTDESK_DRAFT_SKILL_SPEC_REF,
+            FRONTDESK_ACCEPTANCE_CRITERIA_REF,
+        ]
+        try:
+            enforce_write_scope(changed_files, request.node_contract.write_scope)
+        except PolicyViolation as exc:
+            return _frontdesk_worker_result(
+                request,
+                worker_name=self.name,
+                status="failed",
+                final_output_ref=None,
+                summary="Front Desk Solution Planner worker failed closed on write scope policy.",
+                failure_class="write_scope_violation",
+                artifact_refs=[],
+                changed_files=[],
+                attempted_changed_files=changed_files,
+                model_name="frontdesk_solution_planner_deterministic_fixture",
+                metadata={"policy_error": str(exc)},
+            )
+
+        try:
+            brief = CoreNeedBrief.from_json(
+                self.frontdesk.workspace.resolve_path(FRONTDESK_CORE_NEED_BRIEF_REF, must_exist=True).read_text(
+                    encoding="utf-8"
+                )
+            )
+        except Exception as exc:
+            return _frontdesk_worker_result(
+                request,
+                worker_name=self.name,
+                status="failed",
+                final_output_ref=None,
+                summary="Front Desk Solution Planner worker requires a valid governed core-need brief.",
+                failure_class="missing_or_invalid_core_need_brief",
+                artifact_refs=[],
+                changed_files=[],
+                attempted_changed_files=changed_files,
+                model_name="frontdesk_solution_planner_deterministic_fixture",
+                metadata={"core_need_error": str(exc)},
+            )
+
+        skill_spec = _draft_skill_spec_from_core_need(brief)
+        acceptance_criteria = _acceptance_criteria_from_core_need(self.frontdesk, brief)
+        plan = SolutionPlan(
+            plan_id="solution-plan-001",
+            core_need_brief_ref=FRONTDESK_CORE_NEED_BRIEF_REF,
+            summary=brief.problem_statement,
+            proposed_skill_name=skill_spec.title,
+            target_user=brief.target_user,
+            user_problem=brief.problem_statement,
+            desired_outcome=brief.desired_outcome,
+            approach=(
+                "Create a governed SkillFoundry skill from frozen Front Desk artifacts after explicit user "
+                "review."
+            ),
+            implementation_outline=[
+                "Use the approved solution plan and acceptance criteria as frozen builder inputs.",
+                "Route build execution through ContextForge Goal Harness worker boundaries.",
+                "Require verifier and registry evidence before promotion.",
+            ],
+            key_decisions=[
+                "Input boundary: governed core_need_brief.json; clarification_summary.md; risk_report.json; budget.json",
+                "Output target: solution_plan.json; draft_skill_spec.yaml; acceptance_criteria.yaml",
+                "Raw conversation remains forbidden provenance and is not a planning input.",
+            ],
+            acceptance_summary=[
+                brief.success_signal,
+                "Builder receives frozen artifacts only after user approval.",
+                "Raw Front Desk conversation never enters builder context.",
+            ],
+            risks=list(brief.risk_flags),
+            open_confirmation_items=[
+                "User must approve or request changes before freeze.",
+            ],
+            status="awaiting_user_review",
+            draft_skill_spec_ref=FRONTDESK_DRAFT_SKILL_SPEC_REF,
+            acceptance_criteria_ref=FRONTDESK_ACCEPTANCE_CRITERIA_REF,
+            markdown_ref=FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF,
+        )
+        write_frontdesk_artifact(self.frontdesk, FRONTDESK_DRAFT_SKILL_SPEC_REF, skill_spec)
+        write_frontdesk_artifact(self.frontdesk, FRONTDESK_ACCEPTANCE_CRITERIA_REF, acceptance_criteria)
+        write_frontdesk_artifact(self.frontdesk, FRONTDESK_SOLUTION_PLAN_REF, plan)
+        write_frontdesk_artifact(self.frontdesk, FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF, _solution_plan_markdown(plan, brief))
+        return _frontdesk_worker_result(
+            request,
+            worker_name=self.name,
+            status="completed",
+            final_output_ref=FRONTDESK_SOLUTION_PLAN_REF,
+            summary="Front Desk Solution Planner worker wrote governed plan artifacts for user review.",
+            failure_class=None,
+            artifact_refs=changed_files,
+            changed_files=changed_files,
+            attempted_changed_files=changed_files,
+            model_name="frontdesk_solution_planner_deterministic_fixture",
+            metadata={"frontdesk_solution_planner_fake_worker": True},
         )
 
 
@@ -145,17 +283,26 @@ def run_frontdesk_core_need_goal_harness(
     ledger = ContextLedger.connect(frontdesk.workspace.resolve_path(FRONTDESK_GOAL_RUNTIME_LEDGER_REF))
     ledger.initialize()
     try:
-        _seed_frontdesk_context(frontdesk, ledger, run_id=resolved_run_id, created_at=timestamp)
+        _seed_frontdesk_context(
+            frontdesk,
+            ledger,
+            run_id=resolved_run_id,
+            task_id=CORE_NEED_DISCOVERY_NODE_ID,
+            node_id=CORE_NEED_DISCOVERY_NODE_ID,
+            created_at=timestamp,
+            legacy_item_ids=True,
+        )
         harness_result = GoalHarness(ContextKernel(ledger)).run_single_node(
             goal_contract,
             node_contract,
             FrontDeskCoreNeedFakeWorker(frontdesk),
             graph_id=_GRAPH_ID,
             run_id=resolved_run_id,
-            task_id=_RUN_TASK_ID,
+            task_id=CORE_NEED_DISCOVERY_NODE_ID,
             created_at=timestamp,
             metadata={
                 "skillfoundry_job_id": frontdesk.job_id,
+                "frontdesk_stage": CORE_NEED_DISCOVERY_NODE_ID,
                 "frontdesk_v2": FRONTDESK_V2_SCHEMA_VERSION,
                 "frontdesk_goal_runtime": FRONTDESK_GOAL_RUNTIME_SCHEMA_VERSION,
             },
@@ -165,8 +312,33 @@ def run_frontdesk_core_need_goal_harness(
             checkpoint_next_plan="Route governed core-need brief to solution planning.",
         )
         goal_run = harness_result.goal_run
-        runtime_state = _runtime_state(frontdesk, harness_result, goal_run)
-        runtime_result = _runtime_result(frontdesk, harness_result, goal_run, runtime_state, created_at=timestamp)
+        runtime_state = _runtime_state(
+            frontdesk,
+            harness_result,
+            goal_run,
+            stage=CORE_NEED_DISCOVERY_NODE_ID,
+            runtime_result_ref=FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF,
+            output_refs={
+                "core_need_brief": FRONTDESK_CORE_NEED_BRIEF_REF,
+                "core_need_report": FRONTDESK_CORE_NEED_REPORT_REF,
+            },
+        )
+        runtime_result = _runtime_result(
+            frontdesk,
+            harness_result,
+            goal_run,
+            runtime_state,
+            runtime_state_ref=FRONTDESK_CORE_NEED_RUNTIME_STATE_REF,
+            output_refs={
+                "core_need_brief": FRONTDESK_CORE_NEED_BRIEF_REF,
+                "core_need_report": FRONTDESK_CORE_NEED_REPORT_REF,
+            },
+            hash_refs={
+                "core_need_brief": FRONTDESK_CORE_NEED_BRIEF_REF,
+                "core_need_report": FRONTDESK_CORE_NEED_REPORT_REF,
+            },
+            created_at=timestamp,
+        )
         _write_json(frontdesk.workspace, FRONTDESK_CORE_NEED_RUNTIME_STATE_REF, runtime_state)
         _write_json(frontdesk.workspace, FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF, runtime_result)
         return FrontDeskCoreNeedGoalHarnessResult(
@@ -182,24 +354,126 @@ def run_frontdesk_core_need_goal_harness(
         ledger.close()
 
 
+def run_frontdesk_solution_planner_goal_harness(
+    workspace: FrontDeskWorkspace | JobWorkspace,
+    *,
+    run_id: str | None = None,
+    created_at: str | None = None,
+) -> FrontDeskSolutionPlannerGoalHarnessResult:
+    """Run Front Desk Solution Planner as a ContextForge Goal Harness node."""
+
+    frontdesk = _coerce_frontdesk(workspace)
+    frontdesk.workspace.check_locked_inputs()
+    timestamp = created_at or utc_now()
+    resolved_run_id = run_id or f"{frontdesk.job_id}-frontdesk-solution-planner-run"
+    artifacts = write_frontdesk_v2_contract_artifacts(frontdesk, created_at=timestamp)
+    goal_contract = _load_json_contract(frontdesk, artifacts.goal_contract_ref)
+    node_contract = _load_json_contract(frontdesk, artifacts.node_contract_refs[SOLUTION_PLANNER_NODE_ID])
+    ledger = ContextLedger.connect(frontdesk.workspace.resolve_path(FRONTDESK_GOAL_RUNTIME_LEDGER_REF))
+    ledger.initialize()
+    try:
+        _seed_frontdesk_context(
+            frontdesk,
+            ledger,
+            run_id=resolved_run_id,
+            task_id=SOLUTION_PLANNER_NODE_ID,
+            node_id=SOLUTION_PLANNER_NODE_ID,
+            created_at=timestamp,
+            include_core_need=True,
+        )
+        harness_result = GoalHarness(ContextKernel(ledger)).run_single_node(
+            goal_contract,
+            node_contract,
+            FrontDeskSolutionPlannerFakeWorker(frontdesk),
+            graph_id=_GRAPH_ID,
+            run_id=resolved_run_id,
+            task_id=SOLUTION_PLANNER_NODE_ID,
+            created_at=timestamp,
+            metadata={
+                "skillfoundry_job_id": frontdesk.job_id,
+                "frontdesk_stage": SOLUTION_PLANNER_NODE_ID,
+                "frontdesk_v2": FRONTDESK_V2_SCHEMA_VERSION,
+                "frontdesk_goal_runtime": FRONTDESK_GOAL_RUNTIME_SCHEMA_VERSION,
+            },
+            checkpoint_reason="phase_complete",
+            checkpoint_best_result="Solution Planner completed through Front Desk Goal Harness boundary.",
+            checkpoint_latest_diagnosis="Governed plan artifacts were written and raw conversation remained forbidden.",
+            checkpoint_next_plan="Wait for user review before freeze or route an approved plan to Spec Auditor.",
+        )
+        goal_run = harness_result.goal_run
+        output_refs = {
+            "core_need_brief": FRONTDESK_CORE_NEED_BRIEF_REF,
+            "solution_plan": FRONTDESK_SOLUTION_PLAN_REF,
+            "solution_plan_markdown": FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF,
+            "draft_skill_spec": FRONTDESK_DRAFT_SKILL_SPEC_REF,
+            "acceptance_criteria": FRONTDESK_ACCEPTANCE_CRITERIA_REF,
+        }
+        runtime_state = _runtime_state(
+            frontdesk,
+            harness_result,
+            goal_run,
+            stage=SOLUTION_PLANNER_NODE_ID,
+            runtime_result_ref=FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF,
+            output_refs=output_refs,
+        )
+        runtime_result = _runtime_result(
+            frontdesk,
+            harness_result,
+            goal_run,
+            runtime_state,
+            runtime_state_ref=FRONTDESK_SOLUTION_PLAN_RUNTIME_STATE_REF,
+            output_refs=output_refs,
+            hash_refs=output_refs,
+            created_at=timestamp,
+        )
+        _write_json(frontdesk.workspace, FRONTDESK_SOLUTION_PLAN_RUNTIME_STATE_REF, runtime_state)
+        _write_json(frontdesk.workspace, FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF, runtime_result)
+        return FrontDeskSolutionPlannerGoalHarnessResult(
+            harness_result=harness_result,
+            goal_run=goal_run,
+            runtime_result=runtime_result,
+            runtime_state=runtime_state,
+            ledger_ref=FRONTDESK_GOAL_RUNTIME_LEDGER_REF,
+            runtime_result_ref=FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF,
+            runtime_state_ref=FRONTDESK_SOLUTION_PLAN_RUNTIME_STATE_REF,
+        )
+    finally:
+        ledger.close()
+
+
 def _seed_frontdesk_context(
     frontdesk: FrontDeskWorkspace,
     ledger: ContextLedger,
     *,
     run_id: str,
+    task_id: str,
+    node_id: str,
     created_at: str,
+    include_core_need: bool = False,
+    legacy_item_ids: bool = False,
 ) -> list[str]:
     refs = [
         (FRONTDESK_CLARIFICATION_SUMMARY_REF, "artifact", "frontdesk_clarification_summary", ["governed_frontdesk"]),
         (FRONTDESK_RISK_REPORT_REF, "constraint", "frontdesk_risk_report", ["governed_frontdesk"]),
         (FRONTDESK_BUDGET_REF, "constraint", "frontdesk_budget", ["governed_frontdesk"]),
+    ]
+    if include_core_need:
+        refs.append(
+            (
+                FRONTDESK_CORE_NEED_BRIEF_REF,
+                "artifact",
+                "frontdesk_core_need_brief",
+                ["governed_frontdesk", "core_need_brief"],
+            )
+        )
+    refs.append(
         (
             FRONTDESK_CONVERSATION_REF,
             "user_message",
             "raw_frontdesk_conversation",
             ["raw_frontdesk_conversation"],
         ),
-    ]
+    )
     recorded: list[str] = []
     for ref, item_type, context_type, tags in refs:
         try:
@@ -209,14 +483,18 @@ def _seed_frontdesk_context(
                 content = ""
             else:
                 continue
-        item_id = f"{frontdesk.job_id}:{context_type}"
+        item_id = (
+            f"{frontdesk.job_id}:{context_type}"
+            if legacy_item_ids
+            else f"{frontdesk.job_id}:{node_id}:{context_type}"
+        )
         ledger.record_context_item(
             ContextItem(
                 id=item_id,
                 graph_id=_GRAPH_ID,
                 run_id=run_id,
-                task_id=_RUN_TASK_ID,
-                node_id=CORE_NEED_DISCOVERY_NODE_ID,
+                task_id=task_id,
+                node_id=node_id,
                 type=item_type,  # type: ignore[arg-type]
                 content=content,
                 source=ContextSource(
@@ -255,6 +533,7 @@ def _frontdesk_worker_result(
     artifact_refs: list[str],
     changed_files: list[str],
     attempted_changed_files: list[str],
+    model_name: str,
     metadata: dict[str, JsonValue],
 ) -> WorkerRunResult:
     return WorkerRunResult(
@@ -267,7 +546,7 @@ def _frontdesk_worker_result(
         artifact_ids=[_artifact_id(request.metadata.get("skillfoundry_job_id"), ref) for ref in artifact_refs],
         usage_summary={
             "provider": "offline",
-            "model": "frontdesk_core_need_deterministic_fixture",
+            "model": model_name,
             "expected_cacheable_tokens": request.cache_plan.expected_cacheable_tokens,
             "cache_telemetry_status": request.cache_plan.cache_telemetry_status,
             "usage_available": False,
@@ -289,17 +568,20 @@ def _runtime_state(
     frontdesk: FrontDeskWorkspace,
     harness_result: GoalHarnessRunResult,
     goal_run: GoalRunRecord,
+    *,
+    stage: str,
+    runtime_result_ref: str,
+    output_refs: dict[str, str],
 ) -> dict[str, JsonValue]:
     payload = {
         "schema_version": FRONTDESK_GOAL_RUNTIME_SCHEMA_VERSION,
         "job_id": frontdesk.job_id,
-        "stage": CORE_NEED_DISCOVERY_NODE_ID,
+        "stage": stage,
         "status": goal_run.status,
         "refs": {
             "ledger": FRONTDESK_GOAL_RUNTIME_LEDGER_REF,
-            "runtime_result": FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF,
-            "core_need_brief": FRONTDESK_CORE_NEED_BRIEF_REF,
-            "core_need_report": FRONTDESK_CORE_NEED_REPORT_REF,
+            "runtime_result": runtime_result_ref,
+            **output_refs,
         },
         "contextforge": {
             "goal_run_id": goal_run.goal_run_id,
@@ -320,6 +602,9 @@ def _runtime_result(
     goal_run: GoalRunRecord,
     runtime_state: dict[str, JsonValue],
     *,
+    runtime_state_ref: str,
+    output_refs: dict[str, str],
+    hash_refs: dict[str, str],
     created_at: str,
 ) -> dict[str, JsonValue]:
     payload = {
@@ -328,9 +613,8 @@ def _runtime_result(
         "created_at": created_at,
         "refs": {
             "ledger": FRONTDESK_GOAL_RUNTIME_LEDGER_REF,
-            "runtime_state": FRONTDESK_CORE_NEED_RUNTIME_STATE_REF,
-            "core_need_brief": FRONTDESK_CORE_NEED_BRIEF_REF,
-            "core_need_report": FRONTDESK_CORE_NEED_REPORT_REF,
+            "runtime_state": runtime_state_ref,
+            **output_refs,
         },
         "ids": {
             "goal_run_id": goal_run.goal_run_id,
@@ -347,8 +631,10 @@ def _runtime_result(
         "usage": harness_result.worker_run.usage_summary,
         "hashes": {
             "runtime_state": sha256_json(runtime_state),
-            "core_need_brief": sha256_file(frontdesk.workspace.resolve_path(FRONTDESK_CORE_NEED_BRIEF_REF)),
-            "core_need_report": sha256_file(frontdesk.workspace.resolve_path(FRONTDESK_CORE_NEED_REPORT_REF)),
+            **{
+                name: sha256_file(frontdesk.workspace.resolve_path(ref, must_exist=True))
+                for name, ref in hash_refs.items()
+            },
         },
         "trust_boundaries": {
             "worker_self_report_is_not_acceptance": True,
@@ -356,6 +642,87 @@ def _runtime_result(
         },
     }
     return ensure_json_compatible(payload)  # type: ignore[return-value]
+
+
+def _draft_skill_spec_from_core_need(brief: CoreNeedBrief) -> SkillSpec:
+    return SkillSpec(
+        skill_id="frontdesk-governed-skill",
+        title="Governed Requirement Skill",
+        description=brief.problem_statement,
+        trigger_scenarios=[brief.usage_moment],
+        non_trigger_scenarios=list(brief.non_goals)
+        or ["Do not run before the solution plan and acceptance criteria are approved."],
+        required_inputs=["Approved solution plan", "Frozen acceptance criteria"],
+        expected_outputs=[brief.desired_outcome],
+        constraints=[
+            "Use only frozen Front Desk artifacts as builder inputs.",
+            "Do not read raw Front Desk conversation during build.",
+        ],
+        acceptance_criteria=[brief.success_signal],
+        reference_materials=[FRONTDESK_CORE_NEED_BRIEF_REF, FRONTDESK_SOLUTION_PLAN_REF],
+        security_notes=["Raw conversation is forbidden provenance only."],
+    )
+
+
+def _acceptance_criteria_from_core_need(frontdesk: FrontDeskWorkspace, brief: CoreNeedBrief) -> AcceptanceCriteriaSet:
+    return AcceptanceCriteriaSet(
+        criteria=[
+            AcceptanceCriterion(
+                id="AC-001",
+                description=brief.success_signal,
+                source_requirement=brief.problem_statement,
+                requirement_id="REQ-001",
+                test_method="static",
+                pass_condition="Verifier evidence confirms the generated skill satisfies the approved core need.",
+                required_evidence=["verification_result.json", "acceptance coverage report"],
+                evidence_kind="verifier_check",
+                coverage_status="planned",
+            ),
+            AcceptanceCriterion(
+                id="AC-002",
+                description="Builder context must be based on frozen governed artifacts, not raw Front Desk conversation.",
+                source_requirement="Raw Front Desk conversation is provenance only.",
+                requirement_id="REQ-002",
+                test_method="static",
+                pass_condition="ContextForge evidence shows raw conversation was excluded from builder-visible context.",
+                required_evidence=["ContextForge ContextView", "ContextForge PromptView"],
+                evidence_kind="verifier_check",
+                coverage_status="planned",
+            ),
+        ],
+        job_id=frontdesk.job_id,
+    )
+
+
+def _solution_plan_markdown(plan: SolutionPlan, brief: CoreNeedBrief) -> str:
+    sections = [
+        "# Solution Plan",
+        "",
+        "## Core Problem",
+        brief.problem_statement,
+        "",
+        "## Recommended Skill",
+        plan.proposed_skill_name,
+        "",
+        "## Target User",
+        plan.target_user,
+        "",
+        "## Desired Outcome",
+        plan.desired_outcome,
+        "",
+        "## Approach",
+        plan.approach,
+        "",
+        "## Implementation Outline",
+        *[f"- {item}" for item in plan.implementation_outline],
+        "",
+        "## Acceptance Summary",
+        *[f"- {item}" for item in plan.acceptance_summary],
+        "",
+        "## Review Status",
+        plan.status,
+    ]
+    return "\n".join(sections).rstrip() + "\n"
 
 
 def _load_json_contract(frontdesk: FrontDeskWorkspace, ref: str) -> Any:
@@ -398,13 +765,22 @@ def _coerce_frontdesk(workspace: FrontDeskWorkspace | JobWorkspace) -> FrontDesk
 
 
 __all__ = [
+    "FRONTDESK_ACCEPTANCE_CRITERIA_REF",
     "FRONTDESK_CORE_NEED_BRIEF_REF",
     "FRONTDESK_CORE_NEED_REPORT_REF",
     "FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF",
     "FRONTDESK_CORE_NEED_RUNTIME_STATE_REF",
+    "FRONTDESK_DRAFT_SKILL_SPEC_REF",
     "FRONTDESK_GOAL_RUNTIME_LEDGER_REF",
     "FRONTDESK_GOAL_RUNTIME_SCHEMA_VERSION",
+    "FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF",
+    "FRONTDESK_SOLUTION_PLAN_REF",
+    "FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF",
+    "FRONTDESK_SOLUTION_PLAN_RUNTIME_STATE_REF",
     "FrontDeskCoreNeedFakeWorker",
     "FrontDeskCoreNeedGoalHarnessResult",
+    "FrontDeskSolutionPlannerFakeWorker",
+    "FrontDeskSolutionPlannerGoalHarnessResult",
     "run_frontdesk_core_need_goal_harness",
+    "run_frontdesk_solution_planner_goal_harness",
 ]

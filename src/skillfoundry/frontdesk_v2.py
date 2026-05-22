@@ -355,6 +355,8 @@ def _visible_context(node_id: str) -> list[dict[str, JsonValue]]:
                 FRONTDESK_CLARIFICATION_SUMMARY_REF,
                 FRONTDESK_RISK_REPORT_REF,
                 FRONTDESK_BUDGET_REF,
+                "frontdesk/core_need_brief.json",
+                _SOLUTION_PLAN_REF,
             },
             "reason": "Governed Front Desk artifact visible to this node.",
             "metadata": {
@@ -494,6 +496,7 @@ def _frontdesk_source_hashes(frontdesk: FrontDeskWorkspace) -> dict[str, JsonVal
         FRONTDESK_CLARIFICATION_SUMMARY_REF,
         FRONTDESK_RISK_REPORT_REF,
         FRONTDESK_BUDGET_REF,
+        "frontdesk/core_need_brief.json",
         _SOLUTION_PLAN_REF,
     ]
     hashes: dict[str, JsonValue] = {}

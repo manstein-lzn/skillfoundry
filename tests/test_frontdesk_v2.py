@@ -121,6 +121,11 @@ def test_frontdesk_v2_contracts_cover_expected_nodes(tmp_path) -> None:
     assert nodes[CORE_NEED_DISCOVERY_NODE_ID].role == "core_need_discovery"
     assert nodes[SOLUTION_PLANNER_NODE_ID].role == "solution_planner"
     assert nodes[SPEC_AUDITOR_NODE_ID].role == "spec_auditor"
+    solution_visible = {selector.value: selector.required for selector in nodes[SOLUTION_PLANNER_NODE_ID].visible_context}
+    spec_visible = {selector.value: selector.required for selector in nodes[SPEC_AUDITOR_NODE_ID].visible_context}
+    assert solution_visible["frontdesk/core_need_brief.json"] is True
+    assert spec_visible["frontdesk/core_need_brief.json"] is True
+    assert spec_visible["frontdesk/solution_plan.json"] is True
 
 
 def test_governance_blocks_when_redaction_is_incomplete(tmp_path) -> None:
