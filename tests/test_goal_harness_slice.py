@@ -12,7 +12,7 @@ from skillfoundry.goal_runtime import (
     GOAL_RUNTIME_STATE_REF,
     run_offline_goal_harness,
 )
-from skillfoundry.workers_v2 import WORKERS_V2_VERSION
+from skillfoundry.workers_v2 import WORKERS_V2_VERSION, FakeSkillBuilderWorker
 from skillfoundry.workspace import initialize_job_workspace
 
 
@@ -88,6 +88,30 @@ def test_offline_goal_harness_failed_verification_routes_to_repair(tmp_path: Pat
     assert result.goal_run.decision == "repair"
     assert result.graph_state["contextforge"]["next_route"] == "repair_goal_node"
     assert result.graph_state["next_route"] == "repair_goal_node"
+
+
+def test_offline_goal_harness_worker_failure_cannot_be_masked_by_pass_mode(tmp_path: Path) -> None:
+    workspace = initialize_job_workspace(tmp_path / "runs", "slice-worker-fail")
+
+    result = run_offline_goal_harness(
+        workspace,
+        verification_mode="pass",
+        created_at=CREATED_AT,
+        worker_factory=lambda worker_workspace: FakeSkillBuilderWorker(
+            worker_workspace,
+            status="failed",
+            failure_class="scripted_worker_failure",
+        ),
+    )
+
+    assert result.harness_result.worker_run.status == "failed"
+    assert result.harness_result.worker_run.failure_class == "scripted_worker_failure"
+    assert result.verification_result.status == "failed"
+    assert result.goal_run.status == "failed"
+    assert result.goal_run.decision == "repair"
+    assert result.runtime_result["verification_mode"] == "fail_missing_coverage"
+    assert not workspace.resolve_path("package/SKILL.md").exists()
+    assert not (workspace.root / "qa" / "acceptance_coverage_result.json").exists()
 
 
 def test_offline_goal_harness_forbids_raw_frontdesk_conversation_from_prompt_and_state(tmp_path: Path) -> None:

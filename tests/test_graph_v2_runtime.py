@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import shutil
 
-from contextforge import ContextLedger
+from contextforge import ContextLedger, ModelResponse
 import pytest
 
 from skillfoundry import (
@@ -14,6 +14,8 @@ from skillfoundry import (
     GOAL_RUNTIME_LEDGER_REF,
     GOAL_RUNTIME_RESULT_REF,
     LocalSkillRegistry,
+    OWNED_LLM_WORKER_OUTPUT_SCHEMA_VERSION,
+    OwnedLLMSkillBuilderWorker,
     VERIFIED_GOAL_RUNTIME_RESULT_REF,
     V2Route,
     V2Stage,
@@ -30,6 +32,72 @@ from skillfoundry.workspace import initialize_job_workspace
 
 
 CREATED_AT = "2026-05-22T00:00:00Z"
+
+GRAPH_OWNED_SKILL = """---
+name: graph-owned-runtime-skill
+description: Graph v2 owned worker runtime fixture.
+---
+
+# Graph Owned Runtime Skill
+
+## Overview
+
+This package is generated through the graph-routed owned LLM Goal Harness worker.
+
+## When To Use
+
+- Use when graph runtime selection needs an owned LLM worker fixture.
+
+## When Not To Use
+
+- Do not treat worker output as approval.
+
+## Inputs
+
+- Frozen graph build inputs.
+
+## Outputs
+
+- A package candidate.
+
+## Workflow
+
+- Use ContextForge prompt and cache boundaries.
+- Return strict JSON package files.
+
+## Safety
+
+- Keep verifier and registry gates authoritative.
+"""
+
+
+class ScriptedGraphModelClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def invoke(self, messages, model, params, tools=None):
+        self.calls.append({"messages": list(messages), "model": model, "params": dict(params), "tools": tools})
+        payload = {
+            "schema_version": OWNED_LLM_WORKER_OUTPUT_SCHEMA_VERSION,
+            "skill_markdown": GRAPH_OWNED_SKILL,
+            "reference_files": [{"path": "references/graph.md", "content": "# Graph\n\nOwned path.\n"}],
+            "script_files": [],
+            "test_files": [],
+        }
+        return (
+            ModelResponse(
+                text=json.dumps(payload, sort_keys=True),
+                raw_response_artifact_ref=None,
+                finish_reason="stop",
+                metadata={"scripted_graph": True},
+            ),
+            None,
+            None,
+        )
+
+
+def _owned_graph_worker_factory(client: ScriptedGraphModelClient):
+    return lambda workspace: OwnedLLMSkillBuilderWorker(workspace, client=client)
 
 
 def _criterion() -> AcceptanceCriterion:
@@ -87,6 +155,44 @@ def test_v2_graph_runs_offline_goal_harness_node_and_routes_success(tmp_path: Pa
         assert ledger.get_goal_run_record(result["contextforge"]["last_goal_run_id"])
         assert ledger.get_worker_run(result["contextforge"]["last_worker_run_id"])
         assert ledger.get_verification_result(result["contextforge"]["last_verification_result_id"])
+    finally:
+        ledger.close()
+
+
+def test_v2_graph_can_route_owned_llm_goal_harness_worker_without_prompt_leakage(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    workspace = initialize_job_workspace(runs_root, "graph-runtime-owned")
+    client = ScriptedGraphModelClient()
+    graph = compile_skillfoundry_v2_graph(
+        build_node_callable=build_offline_goal_harness_node(
+            runs_root,
+            verification_mode="pass",
+            created_at=CREATED_AT,
+            worker_factory=_owned_graph_worker_factory(client),
+        )
+    )
+
+    result = graph.invoke({"job_id": workspace.job_id, "attempt_limit": 2})
+
+    validate_v2_graph_state(result)
+    assert result["stage"] == V2Stage.EMIT_REPORT.value
+    assert result["status"] == V2Status.REPORT_EMITTED.value
+    assert result["contextforge"]["last_verification_status"] == "passed"
+    assert workspace.resolve_path("package/SKILL.md", must_exist=True).is_file()
+    assert workspace.resolve_path("package/references/graph.md", must_exist=True).is_file()
+    assert client.calls
+
+    state_text = json.dumps(result, sort_keys=True)
+    assert "Graph Owned Runtime Skill" not in state_text
+    assert "scripted_graph" not in state_text
+    assert "raw_response" not in state_text
+
+    ledger = ContextLedger.connect(workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF, must_exist=True))
+    try:
+        worker_run = ledger.get_worker_run(result["contextforge"]["last_worker_run_id"])
+        assert worker_run.worker_kind == "llm"
+        assert worker_run.model_call_ids
+        assert ledger.get_model_call(worker_run.model_call_ids[0])
     finally:
         ledger.close()
 

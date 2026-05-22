@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 from contextforge import (
     CheckpointManager,
@@ -18,6 +19,8 @@ from contextforge import (
     GoalRunRecord,
     VerificationResult as ContextForgeVerificationResult,
     VerificationRunner,
+    WorkerRunRequest,
+    WorkerRunResult,
     estimate_tokens,
 )
 
@@ -65,6 +68,19 @@ OfflineVerificationMode = Literal["pass", "fail_missing_coverage"]
 GoalRuntimeVerificationMode = Literal["pass", "fail_missing_coverage", "verified"]
 
 
+class GoalHarnessWorker(Protocol):
+    """Worker boundary accepted by the SkillFoundry v2 Goal Harness runtime."""
+
+    name: str
+    kind: str
+
+    def run(self, request: WorkerRunRequest) -> WorkerRunResult:
+        """Execute one ContextForge worker boundary."""
+
+
+GoalHarnessWorkerFactory = Callable[[JobWorkspace], GoalHarnessWorker]
+
+
 @dataclass(frozen=True)
 class SkillFoundryGoalHarnessResult:
     """Artifacts produced by one offline SkillFoundry Goal Harness run."""
@@ -94,12 +110,22 @@ class VerifiedSkillFoundryGoalHarnessResult:
     verified_runtime_result_ref: str
 
 
+def _goal_harness_worker(
+    workspace: JobWorkspace,
+    worker_factory: GoalHarnessWorkerFactory | None,
+) -> GoalHarnessWorker:
+    if worker_factory is None:
+        return FakeSkillBuilderWorker(workspace)
+    return worker_factory(workspace)
+
+
 def run_offline_goal_harness(
     workspace: JobWorkspace,
     *,
     verification_mode: OfflineVerificationMode = "pass",
     run_id: str | None = None,
     created_at: str | None = None,
+    worker_factory: GoalHarnessWorkerFactory | None = None,
 ) -> SkillFoundryGoalHarnessResult:
     """Run one deterministic SkillFoundry build node through ContextForge."""
 
@@ -118,10 +144,11 @@ def run_offline_goal_harness(
             created_at=timestamp,
         )
         harness = GoalHarness(ContextKernel(ledger))
+        worker = _goal_harness_worker(workspace, worker_factory)
         harness_result = harness.run_single_node(
             contracts.goal_contract,
             contracts.build_node_contract,
-            FakeSkillBuilderWorker(workspace),
+            worker,
             graph_id=_GRAPH_ID,
             run_id=resolved_run_id,
             task_id=_TASK_ID,
@@ -132,7 +159,10 @@ def run_offline_goal_harness(
             checkpoint_latest_diagnosis="Offline deterministic build node reached verification boundary.",
             checkpoint_next_plan="Run SkillFoundry verifier and bridge the result into ContextForge.",
         )
-        _write_offline_verification_evidence(workspace, verification_mode, created_at=timestamp)
+        effective_verification_mode = (
+            verification_mode if harness_result.worker_run.status == "completed" else "fail_missing_coverage"
+        )
+        _write_offline_verification_evidence(workspace, effective_verification_mode, created_at=timestamp)
         verification_result = VerificationRunner(workspace.root).run(
             contracts.verification_gate,
             goal_run_id=harness_result.goal_run.goal_run_id,
@@ -160,7 +190,7 @@ def run_offline_goal_harness(
             verification_result,
             goal_run,
             graph_state,
-            verification_mode,
+            effective_verification_mode,
             created_at=timestamp,
         )
         _write_json(workspace, GOAL_RUNTIME_STATE_REF, graph_state)
@@ -187,6 +217,7 @@ def run_verified_offline_goal_harness(
     version: str = DEFAULT_REGISTRY_VERSION,
     run_id: str | None = None,
     created_at: str | None = None,
+    worker_factory: GoalHarnessWorkerFactory | None = None,
 ) -> VerifiedSkillFoundryGoalHarnessResult:
     """Run the offline v2 build node and promote only through real quality gates."""
 
@@ -197,6 +228,7 @@ def run_verified_offline_goal_harness(
         verification_mode="fail_missing_coverage",
         run_id=run_id,
         created_at=timestamp,
+        worker_factory=worker_factory,
     )
     _write_goal_harness_attempt_artifacts(workspace, goal_harness.harness_result, created_at=timestamp)
     verifier_result = Verifier().verify(workspace, attempt_id="001")

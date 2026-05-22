@@ -13,6 +13,7 @@ from contextforge import VerificationResult as ContextForgeVerificationResult
 from langgraph.graph import END, START, StateGraph
 
 from .goal_runtime import (
+    GoalHarnessWorkerFactory,
     OfflineVerificationMode,
     VERIFIED_GOAL_RUNTIME_RESULT_REF,
     run_offline_goal_harness,
@@ -315,6 +316,7 @@ def build_offline_goal_harness_node(
     *,
     verification_mode: OfflineVerificationMode = "pass",
     created_at: str | None = None,
+    worker_factory: GoalHarnessWorkerFactory | None = None,
 ) -> V2Node:
     """Return a v2 graph node backed by the offline Goal Harness slice."""
 
@@ -328,6 +330,7 @@ def build_offline_goal_harness_node(
             workspace,
             verification_mode=verification_mode,
             created_at=created_at,
+            worker_factory=worker_factory,
         )
         runtime_state = result.graph_state
         refs = _merge_refs(state, **_string_mapping(runtime_state.get("refs", {}), "runtime refs"))
@@ -362,6 +365,7 @@ def build_verified_goal_harness_node(
     registry_path: str | Path,
     version: str = DEFAULT_REGISTRY_VERSION,
     created_at: str | None = None,
+    worker_factory: GoalHarnessWorkerFactory | None = None,
 ) -> V2Node:
     """Return a v2 graph build node backed by the verified Goal Harness runtime."""
 
@@ -377,6 +381,7 @@ def build_verified_goal_harness_node(
             registry_path=registry_file,
             version=version,
             created_at=created_at,
+            worker_factory=worker_factory,
         )
         runtime_state = result.goal_harness.graph_state
         verified_runtime = result.verified_runtime_result
