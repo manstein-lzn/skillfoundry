@@ -5,7 +5,17 @@ import json
 import zipfile
 
 import skillfoundry
-from skillfoundry import APPROVAL_APPROVED, OfflineWorkerMode, SkillFoundryAPI
+from skillfoundry import (
+    APPROVAL_APPROVED,
+    CONTEXTFORGE_VERIFICATION_RESULT_REF,
+    OfflineWorkerMode,
+    SkillFoundryAPI,
+    initialize_frontdesk_workspace,
+    initialize_job_workspace,
+    run_offline_goal_harness,
+    write_frontdesk_artifact,
+    write_frontdesk_v2_contract_artifacts,
+)
 
 
 REQ_TEXT = """# API pytest skill
@@ -80,6 +90,101 @@ def test_get_job_report_returns_final_report(tmp_path):
     assert payload["job_id"] == "api-report"
     assert payload["final_status"] == "registered"
     assert payload["refs"]["verifier_result"]["passed"] is True
+
+
+def test_get_job_contextforge_status_exposes_v2_refs_without_raw_content(tmp_path):
+    workspace = initialize_job_workspace(tmp_path / "runs", "api-v2-status")
+    result = run_offline_goal_harness(workspace, created_at="2026-05-22T00:00:00Z")
+    api = make_api(tmp_path)
+
+    response = api.handle("GET", "/jobs/api-v2-status/contextforge")
+    payload = response_json(response)
+    body_text = response.body.decode("utf-8")
+
+    assert response.status == 200
+    assert payload["schema_version"] == "skillfoundry.api.contextforge_status.v1"
+    assert payload["refs"]["goal_contract"]["exists"] is True
+    assert payload["refs"]["goal_runtime_result"]["exists"] is True
+    assert payload["cache"]["cache_plan_id"] == result.runtime_result["ids"]["cache_plan_id"]
+    assert payload["status"]["verification"]["status"] == "passed"
+    assert payload["raw_context_included"] is False
+    assert payload["cache"]["raw_prompt_included"] is False
+    assert "Offline Goal Harness Skill" not in body_text
+
+
+def test_get_job_contextforge_status_includes_frontdesk_v2_governance(tmp_path):
+    workspace = initialize_job_workspace(tmp_path / "runs", "api-frontdesk-v2-status")
+    frontdesk = initialize_frontdesk_workspace(workspace)
+    write_frontdesk_artifact(
+        frontdesk,
+        "risk_report.json",
+        {
+            "schema_version": "skillfoundry.frontdesk_risk_report.v1",
+            "risk_flags": [],
+            "redaction_status": "complete",
+            "provider_usage": {
+                "usage_available": False,
+                "usage_unavailable_reason": "Offline fixture does not expose provider usage.",
+            },
+        },
+    )
+    write_frontdesk_artifact(frontdesk, "solution_plan.json", {"status": "approved"})
+    write_frontdesk_v2_contract_artifacts(frontdesk, created_at="2026-05-22T00:00:00Z")
+    api = make_api(tmp_path)
+
+    response = api.handle("GET", "/jobs/api-frontdesk-v2-status/contextforge")
+    payload = response_json(response)
+
+    assert response.status == 200
+    assert payload["refs"]["frontdesk_v2_goal_contract"]["exists"] is True
+    assert payload["refs"]["frontdesk_v2_governance_report"]["exists"] is True
+    assert payload["frontdesk_v2"]["governance"]["status"] == "ready_for_freeze"
+    assert payload["frontdesk_v2"]["governance"]["provider_usage"]["usage_available"] is False
+
+
+def test_get_job_contextforge_status_missing_job_uses_api_error_model(tmp_path):
+    api = make_api(tmp_path)
+
+    response = api.handle("GET", "/jobs/missing-v2/contextforge")
+    payload = response_json(response)
+
+    assert response.status == 404
+    assert payload["error"]["code"] == "job_not_found"
+
+
+def test_get_job_contextforge_status_invalid_verification_artifact_does_not_fallback_to_passed(tmp_path):
+    workspace = initialize_job_workspace(tmp_path / "runs", "api-v2-invalid-verification")
+    run_offline_goal_harness(workspace, created_at="2026-05-22T00:00:00Z")
+    workspace.resolve_path(CONTEXTFORGE_VERIFICATION_RESULT_REF).write_text("{invalid-json", encoding="utf-8")
+    api = make_api(tmp_path)
+
+    response = api.handle("GET", "/jobs/api-v2-invalid-verification/contextforge")
+    payload = response_json(response)
+
+    assert response.status == 200
+    assert payload["refs"]["contextforge_verification_result"]["exists"] is True
+    assert payload["refs"]["contextforge_verification_result"]["valid_json"] is False
+    assert payload["refs"]["contextforge_verification_result"]["error_code"] == "invalid_json"
+    assert payload["status"]["verification"]["status"] == "invalid"
+    assert payload["status"]["verification"]["passed"] is False
+
+
+def test_get_job_contextforge_status_directory_verification_artifact_uses_status_model(tmp_path):
+    workspace = initialize_job_workspace(tmp_path / "runs", "api-v2-directory-verification")
+    run_offline_goal_harness(workspace, created_at="2026-05-22T00:00:00Z")
+    workspace.resolve_path(CONTEXTFORGE_VERIFICATION_RESULT_REF).mkdir()
+    api = make_api(tmp_path)
+
+    response = api.handle("GET", "/jobs/api-v2-directory-verification/contextforge")
+    payload = response_json(response)
+
+    assert response.status == 200
+    assert payload["refs"]["contextforge_verification_result"]["exists"] is True
+    assert payload["refs"]["contextforge_verification_result"]["kind"] == "directory"
+    assert payload["refs"]["contextforge_verification_result"]["valid_json"] is False
+    assert payload["refs"]["contextforge_verification_result"]["error_code"] == "not_file"
+    assert payload["status"]["verification"]["status"] == "invalid"
+    assert payload["status"]["verification"]["passed"] is False
 
 
 def test_get_registry_returns_default_approved_entries(tmp_path):

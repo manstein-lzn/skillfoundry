@@ -15,8 +15,14 @@ from urllib.parse import parse_qs, unquote, urlparse
 from uuid import uuid4
 import zipfile
 
+from .contracts import BUILD_NODE_CONTRACT_REF, GOAL_CONTRACT_REF, VERIFICATION_GATE_REF
 from .frontdesk_loop import FrontDeskLoopResult, run_frontdesk_round
 from .frontdesk_schema import ConversationTurn, FrontDeskConfig, FrontDeskState, PlanReviewRecord
+from .frontdesk_v2 import (
+    FRONTDESK_V2_GOAL_CONTRACT_REF,
+    FRONTDESK_V2_GOVERNANCE_REPORT_REF,
+    FRONTDESK_V2_MANIFEST_REF,
+)
 from .frontdesk_workspace import (
     FRONTDESK_BUDGET_REF,
     FRONTDESK_CONVERSATION_REF,
@@ -26,11 +32,13 @@ from .frontdesk_workspace import (
     read_conversation_turns,
     write_frontdesk_artifact,
 )
+from .goal_runtime import GOAL_RUNTIME_LEDGER_REF, GOAL_RUNTIME_RESULT_REF, GOAL_RUNTIME_STATE_REF
 from .live_llm import DEFAULT_FRONTDESK_MODEL, OpenAIChatCompletionsClient
 from .offline import OfflineWorkerMode, build_offline, read_final_report
 from .registry import APPROVAL_APPROVED, LocalSkillRegistry, QUARANTINE_NONE
 from .schema import JsonValue, RegistryEntry, ensure_json_compatible, sha256_file
 from .security import PathSecurityError, assert_under_root, resolve_under_root, validate_relative_path
+from .verification_bridge import CONTEXTFORGE_VERIFICATION_RESULT_REF
 from .workspace import JOB_ID_RE, JobWorkspace, initialize_job_workspace
 
 
@@ -73,6 +81,16 @@ class APIHTTPResult:
         if not isinstance(payload, dict):
             raise ValueError("response body is not a JSON object")
         return ensure_json_compatible(payload)  # type: ignore[return-value]
+
+
+@dataclass(frozen=True)
+class OptionalJsonRefRead:
+    """Result of reading an optional JSON workspace artifact."""
+
+    exists: bool
+    valid: bool
+    payload: dict[str, JsonValue] | None = None
+    error_code: str | None = None
 
 
 class SkillFoundryAPI:
@@ -425,6 +443,89 @@ class SkillFoundryAPI:
         self._require_job_root(safe_job_id)
         return self._read_report(safe_job_id)
 
+    def get_contextforge_status(self, job_id: str) -> dict[str, JsonValue]:
+        """Return refs, hashes, and IDs for v2 ContextForge artifacts."""
+
+        safe_job_id = self._validate_job_id(job_id)
+        job_root = self._require_job_root(safe_job_id)
+        workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
+        runtime_result = self._read_optional_json_ref(workspace, GOAL_RUNTIME_RESULT_REF)
+        graph_state = self._read_optional_json_ref(workspace, GOAL_RUNTIME_STATE_REF)
+        contextforge_verification_read = self._read_optional_json_ref_status(
+            workspace,
+            CONTEXTFORGE_VERIFICATION_RESULT_REF,
+        )
+        contextforge_verification = (
+            contextforge_verification_read.payload if contextforge_verification_read.valid else None
+        )
+        if contextforge_verification is not None:
+            verification_status = _json_str(contextforge_verification.get("status")) or "invalid"
+            verification_result_id = _json_str(contextforge_verification.get("verification_result_id"))
+            verification_passed = contextforge_verification.get("passed") is True and verification_status == "passed"
+        elif contextforge_verification_read.exists:
+            verification_status = "invalid"
+            verification_result_id = None
+            verification_passed = False
+        else:
+            verification_status = _nested_json_str(runtime_result, ("status", "verification"))
+            verification_result_id = _nested_json_str(runtime_result, ("ids", "verification_result_id"))
+            verification_passed = verification_status == "passed"
+        contextforge_verification_ref_status = self._artifact_ref_status(
+            workspace,
+            CONTEXTFORGE_VERIFICATION_RESULT_REF,
+        )
+        if contextforge_verification_read.exists:
+            contextforge_verification_ref_status["valid_json"] = contextforge_verification_read.valid
+            if contextforge_verification_read.error_code:
+                contextforge_verification_ref_status["error_code"] = contextforge_verification_read.error_code
+        final_report = self._try_read_report(safe_job_id)
+        registry_entry = self._approved_registry_entry_for_report(safe_job_id, final_report) if final_report else None
+
+        payload = {
+            "schema_version": "skillfoundry.api.contextforge_status.v1",
+            "job_id": safe_job_id,
+            "refs": {
+                "goal_contract": self._artifact_ref_status(workspace, GOAL_CONTRACT_REF),
+                "build_node_contract": self._artifact_ref_status(workspace, BUILD_NODE_CONTRACT_REF),
+                "verification_gate": self._artifact_ref_status(workspace, VERIFICATION_GATE_REF),
+                "goal_runtime_result": self._artifact_ref_status(workspace, GOAL_RUNTIME_RESULT_REF),
+                "goal_runtime_state": self._artifact_ref_status(workspace, GOAL_RUNTIME_STATE_REF),
+                "goal_runtime_ledger": self._artifact_ref_status(workspace, GOAL_RUNTIME_LEDGER_REF),
+                "contextforge_verification_result": contextforge_verification_ref_status,
+                "frontdesk_v2_goal_contract": self._artifact_ref_status(workspace, FRONTDESK_V2_GOAL_CONTRACT_REF),
+                "frontdesk_v2_governance_report": self._artifact_ref_status(
+                    workspace,
+                    FRONTDESK_V2_GOVERNANCE_REPORT_REF,
+                ),
+                "frontdesk_v2_manifest": self._artifact_ref_status(workspace, FRONTDESK_V2_MANIFEST_REF),
+            },
+            "ids": _json_mapping(runtime_result.get("ids")) if runtime_result else {},
+            "status": {
+                "runtime": _json_mapping(runtime_result.get("status")) if runtime_result else {},
+                "graph": _json_mapping(graph_state.get("contextforge")) if graph_state else {},
+                "verification": {
+                    "status": verification_status,
+                    "passed": verification_passed,
+                    "verification_result_id": verification_result_id,
+                },
+                "registry": {
+                    "approved": registry_entry is not None,
+                    "skill_id": registry_entry.skill_id if registry_entry is not None else None,
+                    "version": registry_entry.version if registry_entry is not None else None,
+                },
+            },
+            "cache": {
+                "cache_plan_id": _nested_json_str(runtime_result, ("ids", "cache_plan_id")),
+                "cache_telemetry_status": "unavailable",
+                "raw_prompt_included": False,
+            },
+            "frontdesk_v2": {
+                "governance": self._frontdesk_v2_governance_summary(workspace),
+            },
+            "raw_context_included": False,
+        }
+        return ensure_json_compatible(payload)  # type: ignore[return-value]
+
     def query_registry(
         self,
         *,
@@ -730,6 +831,9 @@ class SkillFoundryAPI:
             if method == "GET" and len(route) == 3 and route[0] == "jobs" and route[2] == "report":
                 return self._json_response(self.get_final_report(route[1]))
 
+            if method == "GET" and len(route) == 3 and route[0] == "jobs" and route[2] == "contextforge":
+                return self._json_response(self.get_contextforge_status(route[1]))
+
             if method == "GET" and len(route) == 3 and route[0] == "jobs" and route[2] == "package.zip":
                 data, filename = self.download_approved_package(route[1])
                 return APIHTTPResult(
@@ -897,6 +1001,12 @@ class SkillFoundryAPI:
         except Exception as exc:
             raise APIError(500, "invalid_report", f"final report is invalid: {exc}") from exc
 
+    def _try_read_report(self, job_id: str) -> dict[str, JsonValue] | None:
+        try:
+            return self._read_report(job_id)
+        except APIError:
+            return None
+
     def _run_frontdesk_round(
         self,
         frontdesk: FrontDeskWorkspace,
@@ -1009,18 +1119,95 @@ class SkillFoundryAPI:
         return ensure_json_compatible(payload)  # type: ignore[return-value]
 
     def _read_optional_json_ref(self, workspace: Any, ref: str | None) -> dict[str, JsonValue] | None:
+        result = self._read_optional_json_ref_status(workspace, ref)
+        return result.payload if result.valid else None
+
+    def _read_optional_json_ref_status(self, workspace: Any, ref: str | None) -> OptionalJsonRefRead:
         if not ref:
-            return None
-        path = workspace.resolve_path(ref)
-        if not path.exists() or path.suffix.lower() not in {".json", ".jsonl"}:
-            return None
+            return OptionalJsonRefRead(exists=False, valid=False)
+        try:
+            path = self._resolve_optional_ref_path(workspace, ref)
+        except Exception:
+            return OptionalJsonRefRead(exists=False, valid=False, error_code="invalid_ref")
+        if not path.exists():
+            return OptionalJsonRefRead(exists=False, valid=False)
+        if not path.is_file():
+            return OptionalJsonRefRead(exists=True, valid=False, error_code="not_file")
+        if path.suffix.lower() not in {".json", ".jsonl"}:
+            return OptionalJsonRefRead(exists=True, valid=False, error_code="unsupported_json_ref")
         if path.suffix.lower() == ".jsonl":
-            return None
+            return OptionalJsonRefRead(exists=True, valid=False, error_code="jsonl_not_loaded")
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
+            return OptionalJsonRefRead(exists=True, valid=False, error_code="invalid_json")
+        except UnicodeDecodeError:
+            return OptionalJsonRefRead(exists=True, valid=False, error_code="invalid_encoding")
+        except OSError:
+            return OptionalJsonRefRead(exists=True, valid=False, error_code="unreadable")
+        if not isinstance(payload, dict):
+            return OptionalJsonRefRead(exists=True, valid=False, error_code="not_json_object")
+        try:
+            compatible = ensure_json_compatible(payload)
+        except Exception:
+            return OptionalJsonRefRead(exists=True, valid=False, error_code="invalid_json_schema")
+        return OptionalJsonRefRead(exists=True, valid=True, payload=compatible)  # type: ignore[arg-type]
+
+    def _resolve_optional_ref_path(self, workspace: Any, ref: str) -> Path:
+        if isinstance(workspace, JobWorkspace):
+            root = Path(workspace.root).resolve(strict=True)
+            safe_relative = validate_relative_path(ref)
+            target = root.joinpath(*safe_relative.parts)
+            current = root
+            for part in safe_relative.parts:
+                current = current / part
+                if current.is_symlink():
+                    raise PathSecurityError(f"symlink components are not allowed: {current}")
+                if current.exists():
+                    assert_under_root(root, current)
+                else:
+                    break
+            return assert_under_root(root, target)
+        return workspace.resolve_path(ref)
+
+    def _artifact_ref_status(self, workspace: JobWorkspace, ref: str) -> dict[str, JsonValue]:
+        try:
+            path = self._resolve_optional_ref_path(workspace, ref)
+        except Exception:
+            return {"ref": ref, "exists": False, "error_code": "invalid_ref"}
+        if not path.exists():
+            return {"ref": ref, "exists": False}
+        kind = "file" if path.is_file() else "directory" if path.is_dir() else "other"
+        payload: dict[str, JsonValue] = {
+            "ref": ref,
+            "exists": True,
+            "sha256": None,
+            "kind": kind,
+            "size_bytes": None,
+        }
+        if not path.is_file():
+            payload["error_code"] = "not_file"
+            return ensure_json_compatible(payload)  # type: ignore[return-value]
+        try:
+            payload["sha256"] = sha256_file(path)
+            payload["size_bytes"] = path.stat().st_size
+        except OSError:
+            payload["error_code"] = "unreadable"
+        return ensure_json_compatible(payload)  # type: ignore[return-value]
+
+    def _frontdesk_v2_governance_summary(self, workspace: JobWorkspace) -> dict[str, JsonValue] | None:
+        payload = self._read_optional_json_ref(workspace, FRONTDESK_V2_GOVERNANCE_REPORT_REF)
+        if payload is None:
             return None
-        return ensure_json_compatible(payload) if isinstance(payload, dict) else None  # type: ignore[return-value]
+        return {
+            "status": payload.get("status"),
+            "blocking_reason_codes": [
+                item.get("code")
+                for item in payload.get("blocking_reasons", [])
+                if isinstance(item, Mapping) and isinstance(item.get("code"), str)
+            ],
+            "provider_usage": payload.get("provider_usage") if isinstance(payload.get("provider_usage"), Mapping) else {},
+        }
 
     def _frontdesk_job_dirs(self) -> list[Path]:
         candidates: list[Path] = []
@@ -1718,6 +1905,23 @@ def _frontdesk_status_description(readiness: str, next_action: str) -> str:
     if readiness == "failed" or next_action == "fail_closed":
         return "系统没有得到可信的结构化结果，可以重试或调整描述。"
     return "系统正在整理上下文，准备进入下一轮判断。"
+
+
+def _json_mapping(value: Any) -> dict[str, JsonValue]:
+    return ensure_json_compatible(value) if isinstance(value, Mapping) else {}  # type: ignore[return-value]
+
+
+def _json_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _nested_json_str(payload: Mapping[str, Any] | None, path: tuple[str, ...]) -> str | None:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key)
+    return _json_str(current)
 
 
 _FRONTDESK_OPTION_MARKER_RE = re.compile(r"(?:^|[\s：:；;，,。?？])([A-Z])\s*[\)\.、:：]\s*")
