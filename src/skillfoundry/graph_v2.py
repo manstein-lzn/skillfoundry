@@ -16,6 +16,7 @@ from .goal_runtime import (
     GoalHarnessWorkerFactory,
     OfflineVerificationMode,
     VERIFIED_GOAL_RUNTIME_RESULT_REF,
+    run_repair_goal_harness,
     run_offline_goal_harness,
     run_verified_offline_goal_harness,
 )
@@ -52,6 +53,7 @@ class V2Status(StrEnum):
     VERIFIED = "verified"
     VERIFICATION_FAILED = "verification_failed"
     REPAIR_PLANNED = "repair_planned"
+    REPAIR_RECORDED = "repair_recorded"
     REGISTERED = "registered"
     HUMAN_REVIEW_REQUIRED = "human_review_required"
     REDESIGN_REQUIRED = "redesign_required"
@@ -204,6 +206,7 @@ def route_after_verification(state: Mapping[str, Any]) -> str:
 def build_skillfoundry_v2_graph(
     *,
     build_node_callable: V2Node | None = None,
+    repair_node_callable: V2Node | None = None,
     registry_gate_callable: V2Node | None = None,
 ) -> StateGraph:
     """Build the v2 refs-only LangGraph spine."""
@@ -213,7 +216,7 @@ def build_skillfoundry_v2_graph(
     graph.add_node(V2Stage.BUILD_GOAL_NODE.value, build_node_callable or build_goal_node)
     graph.add_node(V2Stage.VERIFY.value, verify_node)
     graph.add_node(V2Stage.ROUTE_AFTER_VERIFICATION.value, route_after_verification_node)
-    graph.add_node(V2Stage.REPAIR_GOAL_NODE.value, repair_goal_node)
+    graph.add_node(V2Stage.REPAIR_GOAL_NODE.value, repair_node_callable or repair_goal_node)
     graph.add_node(V2Stage.REGISTRY_GATE.value, registry_gate_callable or registry_gate_node)
     graph.add_node(V2Stage.HUMAN_REVIEW.value, human_review_node)
     graph.add_node(V2Stage.REDESIGN.value, redesign_node)
@@ -248,6 +251,7 @@ def build_skillfoundry_v2_graph(
 def compile_skillfoundry_v2_graph(
     *,
     build_node_callable: V2Node | None = None,
+    repair_node_callable: V2Node | None = None,
     registry_gate_callable: V2Node | None = None,
     checkpointer: Any | None = None,
     interrupt_before: list[str] | str | None = None,
@@ -258,6 +262,7 @@ def compile_skillfoundry_v2_graph(
 
     return build_skillfoundry_v2_graph(
         build_node_callable=build_node_callable,
+        repair_node_callable=repair_node_callable,
         registry_gate_callable=registry_gate_callable,
     ).compile(
         checkpointer=checkpointer,
@@ -287,6 +292,11 @@ def run_verified_skillfoundry_v2_graph(
             runs_path,
             registry_path=registry_path,
             version=version,
+            created_at=created_at,
+            worker_factory=worker_factory,
+        ),
+        repair_node_callable=build_repair_goal_harness_node(
+            runs_path,
             created_at=created_at,
             worker_factory=worker_factory,
         ),
@@ -454,6 +464,63 @@ def build_verified_goal_harness_node(
             "contextforge": contextforge,
             "human_review_required": bool(runtime_state.get("human_review_required", False)),
             "next_route": str(runtime_state.get("next_route", V2Route.CONTINUE.value)),
+        }
+        return _validated_update(state, update)
+
+    return _node
+
+
+def build_repair_goal_harness_node(
+    runs_root: str | Path,
+    *,
+    created_at: str | None = None,
+    worker_factory: GoalHarnessWorkerFactory | None = None,
+) -> V2Node:
+    """Return a repair node backed by a ContextForge Goal Harness worker boundary."""
+
+    runs_path = Path(runs_root)
+
+    def _node(state: SkillFoundryV2State) -> SkillFoundryV2State:
+        validate_v2_graph_state(state)
+        if route_after_verification(state) != V2Route.REPAIR_GOAL_NODE.value:
+            raise V2StateValidationError("repair Goal Harness node requires a failed verification repair route")
+        job_id = _job_id(state)
+        workspace = _graph_workspace(runs_path, job_id)
+        next_attempt = int(state.get("attempt_count", 0)) + 1
+        attempt_id = f"{next_attempt:03d}"
+        contextforge = dict(state.get("contextforge", {}))
+        result = run_repair_goal_harness(
+            workspace,
+            attempt_id=attempt_id,
+            based_on_result_id=_optional_str(contextforge.get("last_verification_result_id")),
+            repair_basis_ref=_state_ref(state, "verification_result", "verifier/verification_result.json"),
+            created_at=created_at,
+            worker_factory=worker_factory,
+        )
+        runtime_state = result.graph_state
+        refs = _merge_refs(state, **_string_mapping(runtime_state.get("refs", {}), "repair runtime refs"))
+        refs["repair_instructions"] = result.repair_attempt.repair_instructions_ref
+        refs["repair_attempt"] = result.repair_attempt_ref
+        refs["repair_runtime_result"] = result.runtime_result_ref
+        hashes = dict(state.get("hashes", {}))
+        hashes.update(_string_mapping(runtime_state.get("hashes", {}), "repair runtime hashes"))
+        hashes["repair_runtime_result"] = sha256_file(
+            workspace.resolve_path(result.runtime_result_ref, must_exist=True)
+        )
+        contextforge.update(_contextforge_mapping(runtime_state.get("contextforge", {}), "repair contextforge"))
+        contextforge["repair_runtime_result_ref"] = result.runtime_result_ref
+        update: SkillFoundryV2State = {
+            "schema_version": _STATE_SCHEMA_VERSION,
+            "job_id": job_id,
+            "stage": V2Stage.REPAIR_GOAL_NODE.value,
+            "status": V2Status.REPAIR_RECORDED.value,
+            "attempt_count": next_attempt,
+            "attempt_limit": int(state.get("attempt_limit", 1)),
+            "refs": refs,
+            "hashes": hashes,
+            "contextforge": contextforge,
+            "human_review_required": False,
+            "next_route": V2Route.CONTINUE.value,
         }
         return _validated_update(state, update)
 
@@ -1029,6 +1096,7 @@ __all__ = [
     "V2Status",
     "build_goal_node",
     "build_offline_goal_harness_node",
+    "build_repair_goal_harness_node",
     "build_skillfoundry_v2_graph",
     "build_verified_goal_harness_node",
     "build_verified_registry_gate_node",

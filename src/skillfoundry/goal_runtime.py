@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from contextforge import (
+    AgentNodeContract,
     CheckpointManager,
     ContextItem,
     ContextKernel,
@@ -22,6 +23,7 @@ from contextforge import (
     WorkerRunRequest,
     WorkerRunResult,
     estimate_tokens,
+    with_computed_hash,
 )
 
 from .acceptance import AcceptanceCoverageEvaluator, AcceptanceCriteriaPlanner, AcceptanceCoverageResult
@@ -38,6 +40,7 @@ from .schema import (
     ExecutionReport,
     JsonValue,
     RegistryEntry,
+    RepairAttempt,
     VerificationResult,
     ensure_json_compatible,
     sha256_file,
@@ -54,14 +57,22 @@ GOAL_RUNTIME_LEDGER_REF = "contextforge/ledger.sqlite3"
 GOAL_RUNTIME_RESULT_REF = "contextforge/goal_runtime_result.json"
 GOAL_RUNTIME_STATE_REF = "contextforge/goal_harness_state.json"
 VERIFIED_GOAL_RUNTIME_RESULT_REF = "contextforge/verified_goal_runtime_result.json"
+REPAIR_GOAL_RUNTIME_RESULT_REF_TEMPLATE = "contextforge/repair_goal_runtime_result_{attempt_id}.json"
+REPAIR_GOAL_RUNTIME_STATE_REF_TEMPLATE = "contextforge/repair_goal_harness_state_{attempt_id}.json"
+REPAIR_ATTEMPT_REF_TEMPLATE = "attempts/{attempt_id}/repair_attempt.json"
+REPAIR_INSTRUCTIONS_REF_TEMPLATE = "attempts/{attempt_id}/repair_instructions.md"
 GOAL_RUNTIME_RESULT_SCHEMA_VERSION = "skillfoundry.goal_runtime_result.v1"
 GOAL_RUNTIME_STATE_SCHEMA_VERSION = "skillfoundry.goal_harness_state.v1"
 VERIFIED_GOAL_RUNTIME_RESULT_SCHEMA_VERSION = "skillfoundry.verified_goal_runtime_result.v1"
+REPAIR_GOAL_RUNTIME_RESULT_SCHEMA_VERSION = "skillfoundry.repair_goal_runtime_result.v1"
 
 _GRAPH_ID = "skillfoundry-v2"
 _BUILD_NODE_ID = "build_skill"
 _TASK_ID = "build_skill"
+_REPAIR_NODE_ID = "repair_skill"
+_REPAIR_TASK_ID = "repair_skill"
 _RAW_CONVERSATION_REF = "frontdesk/conversation.jsonl"
+_DEFAULT_REPAIR_BASIS_REF = "verifier/verification_result.json"
 
 
 OfflineVerificationMode = Literal["pass", "fail_missing_coverage"]
@@ -108,6 +119,21 @@ class VerifiedSkillFoundryGoalHarnessResult:
     final_report: dict[str, JsonValue]
     verified_runtime_result: dict[str, JsonValue]
     verified_runtime_result_ref: str
+
+
+@dataclass(frozen=True)
+class RepairSkillFoundryGoalHarnessResult:
+    """A repair worker boundary recorded through the v2 Goal Harness."""
+
+    contracts: ContextForgeContractArtifacts
+    harness_result: GoalHarnessRunResult
+    goal_run: GoalRunRecord
+    graph_state: dict[str, JsonValue]
+    runtime_result: dict[str, JsonValue]
+    repair_attempt: RepairAttempt
+    repair_attempt_ref: str
+    runtime_result_ref: str
+    graph_state_ref: str
 
 
 def _goal_harness_worker(
@@ -291,6 +317,145 @@ def run_verified_offline_goal_harness(
     )
 
 
+def run_repair_goal_harness(
+    workspace: JobWorkspace,
+    *,
+    attempt_id: str = "002",
+    based_on_result_id: str | None = None,
+    repair_basis_ref: str = _DEFAULT_REPAIR_BASIS_REF,
+    run_id: str | None = None,
+    created_at: str | None = None,
+    worker_factory: GoalHarnessWorkerFactory | None = None,
+) -> RepairSkillFoundryGoalHarnessResult:
+    """Run a repair worker boundary without treating worker output as acceptance."""
+
+    if not attempt_id.isdigit() or len(attempt_id) < 3:
+        raise ValueError("repair attempt_id must be a zero-padded numeric string such as '002'")
+    workspace.check_locked_inputs()
+    timestamp = created_at or utc_now()
+    resolved_run_id = run_id or f"{workspace.job_id}-repair-goal-run-{attempt_id}"
+    resolved_based_on = based_on_result_id or _sha256_or_unknown(workspace, repair_basis_ref)
+    contracts = write_contextforge_contract_artifacts(workspace, created_at=timestamp)
+    repair_contract = _repair_agent_node_contract(contracts.build_node_contract)
+    instructions_ref = REPAIR_INSTRUCTIONS_REF_TEMPLATE.format(attempt_id=attempt_id)
+    repair_attempt_ref = REPAIR_ATTEMPT_REF_TEMPLATE.format(attempt_id=attempt_id)
+    graph_state_ref = REPAIR_GOAL_RUNTIME_STATE_REF_TEMPLATE.format(attempt_id=attempt_id)
+    runtime_result_ref = REPAIR_GOAL_RUNTIME_RESULT_REF_TEMPLATE.format(attempt_id=attempt_id)
+    workspace.resolve_path("attempts").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path(f"attempts/{attempt_id}").mkdir(parents=True, exist_ok=True)
+    _write_text(
+        workspace,
+        instructions_ref,
+        _repair_instructions(
+            workspace,
+            attempt_id=attempt_id,
+            repair_basis_ref=repair_basis_ref,
+            based_on_result_id=resolved_based_on,
+        ),
+    )
+
+    ledger = ContextLedger.connect(workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF))
+    ledger.initialize()
+    try:
+        seed_goal_harness_context(
+            workspace,
+            ledger,
+            contracts,
+            run_id=resolved_run_id,
+            created_at=timestamp,
+            task_id=_REPAIR_TASK_ID,
+            node_id=_REPAIR_NODE_ID,
+        )
+        failure_item_id = _record_repair_failure_context(
+            workspace,
+            ledger,
+            run_id=resolved_run_id,
+            repair_basis_ref=repair_basis_ref,
+            attempt_id=attempt_id,
+            created_at=timestamp,
+        )
+        harness = GoalHarness(ContextKernel(ledger))
+        worker = _goal_harness_worker(workspace, worker_factory)
+        harness_result = harness.run_single_node(
+            contracts.goal_contract,
+            repair_contract,
+            worker,
+            graph_id=_GRAPH_ID,
+            run_id=resolved_run_id,
+            task_id=_REPAIR_TASK_ID,
+            created_at=timestamp,
+            metadata={
+                "skillfoundry_job_id": workspace.job_id,
+                "attempt_id": attempt_id,
+                "repair_attempt": True,
+                "repair_basis_ref": repair_basis_ref,
+                "repair_failure_context_item_id": failure_item_id,
+                "worker_self_report_is_not_acceptance": True,
+            },
+            checkpoint_reason="verifier_failed",
+            checkpoint_best_result="Repair worker boundary completed and repair evidence was recorded.",
+            checkpoint_latest_diagnosis="Previous governed verifier failure was provided as dynamic repair context.",
+            checkpoint_next_plan="Run SkillFoundry verifier and acceptance coverage before any registry decision.",
+        )
+        _write_goal_harness_attempt_artifacts(
+            workspace,
+            harness_result,
+            created_at=timestamp,
+            attempt_id=attempt_id,
+        )
+        output_refs = _repair_output_refs(harness_result, attempt_id)
+        input_hashes = {
+            "repair_basis": _sha256_or_unknown(workspace, repair_basis_ref),
+            "skill_spec": sha256_file(workspace.resolve_path("skill_spec.yaml", must_exist=True)),
+            "verification_spec": sha256_file(workspace.resolve_path("verification_spec.yaml", must_exist=True)),
+        }
+        repair_attempt = RepairAttempt(
+            attempt_id=attempt_id,
+            job_id=workspace.job_id,
+            based_on_result_id=resolved_based_on,
+            repair_instructions_ref=instructions_ref,
+            status=harness_result.worker_run.status,
+            created_at=timestamp,
+            input_hashes=input_hashes,
+            output_refs=output_refs,
+        )
+        repair_attempt.write_json_file(workspace.resolve_path(repair_attempt_ref))
+        graph_state = build_repair_goal_harness_state(
+            workspace,
+            contracts,
+            harness_result,
+            repair_attempt,
+            repair_attempt_ref=repair_attempt_ref,
+            runtime_result_ref=runtime_result_ref,
+            graph_state_ref=graph_state_ref,
+        )
+        runtime_result = _repair_runtime_result_payload(
+            workspace,
+            contracts,
+            harness_result,
+            repair_attempt,
+            repair_attempt_ref=repair_attempt_ref,
+            runtime_result_ref=runtime_result_ref,
+            graph_state=graph_state,
+            created_at=timestamp,
+        )
+        _write_json(workspace, graph_state_ref, graph_state)
+        _write_json(workspace, runtime_result_ref, runtime_result)
+        return RepairSkillFoundryGoalHarnessResult(
+            contracts=contracts,
+            harness_result=harness_result,
+            goal_run=harness_result.goal_run,
+            graph_state=graph_state,
+            runtime_result=runtime_result,
+            repair_attempt=repair_attempt,
+            repair_attempt_ref=repair_attempt_ref,
+            runtime_result_ref=runtime_result_ref,
+            graph_state_ref=graph_state_ref,
+        )
+    finally:
+        ledger.close()
+
+
 def _check_verified_runtime_inputs(workspace: JobWorkspace) -> None:
     try:
         workspace.resolve_path("acceptance_criteria.yaml", must_exist=True)
@@ -308,6 +473,8 @@ def seed_goal_harness_context(
     *,
     run_id: str,
     created_at: str,
+    task_id: str = _TASK_ID,
+    node_id: str = _BUILD_NODE_ID,
 ) -> list[str]:
     """Seed the ContextForge ledger with frozen SkillFoundry context items."""
 
@@ -322,6 +489,8 @@ def seed_goal_harness_context(
             context_type="skill_spec",
             prompt_category="project_fact",
             created_at=created_at,
+            task_id=task_id,
+            node_id=node_id,
         ),
         _context_item(
             workspace,
@@ -333,6 +502,8 @@ def seed_goal_harness_context(
             context_type="acceptance_criteria",
             prompt_category="acceptance_criterion",
             created_at=created_at,
+            task_id=task_id,
+            node_id=node_id,
         ),
         _context_item(
             workspace,
@@ -344,6 +515,8 @@ def seed_goal_harness_context(
             context_type="verification_gate",
             prompt_category="constraint",
             created_at=created_at,
+            task_id=task_id,
+            node_id=node_id,
         ),
         _context_item(
             workspace,
@@ -355,6 +528,8 @@ def seed_goal_harness_context(
             context_type="build_contract",
             prompt_category="constraint",
             created_at=created_at,
+            task_id=task_id,
+            node_id=node_id,
         ),
     ]
     raw_path = workspace.root / _RAW_CONVERSATION_REF
@@ -371,6 +546,8 @@ def seed_goal_harness_context(
                 context_type="raw_frontdesk_conversation",
                 prompt_category="recent_message",
                 created_at=created_at,
+                task_id=task_id,
+                node_id=node_id,
                 tags=["raw_frontdesk_conversation"],
                 prompt_include=True,
             )
@@ -379,6 +556,254 @@ def seed_goal_harness_context(
     for item in items:
         recorded.append(ledger.record_context_item(item))
     return recorded
+
+
+def build_repair_goal_harness_state(
+    workspace: JobWorkspace,
+    contracts: ContextForgeContractArtifacts,
+    harness_result: GoalHarnessRunResult,
+    repair_attempt: RepairAttempt,
+    *,
+    repair_attempt_ref: str,
+    runtime_result_ref: str,
+    graph_state_ref: str,
+) -> dict[str, JsonValue]:
+    """Return refs-only state for a repair worker boundary."""
+
+    goal_run = harness_result.goal_run
+    contextforge_state: dict[str, JsonValue] = {
+        "last_goal_run_id": goal_run.goal_run_id,
+        "last_worker_run_id": harness_result.worker_run.worker_run_id,
+        "last_context_view_id": harness_result.compiled_context.context_view.context_view_id,
+        "last_prompt_cache_plan_id": harness_result.compiled_context.cache_plan.cache_plan_id,
+        "last_goal_status": goal_run.status,
+        "last_goal_decision": goal_run.decision or "",
+        "last_repair_goal_run_id": goal_run.goal_run_id,
+        "last_repair_worker_run_id": harness_result.worker_run.worker_run_id,
+        "last_repair_context_view_id": harness_result.compiled_context.context_view.context_view_id,
+        "last_repair_prompt_cache_plan_id": harness_result.compiled_context.cache_plan.cache_plan_id,
+        "last_repair_attempt_id": repair_attempt.attempt_id,
+        "repair_status": repair_attempt.status,
+        "worker_self_report_is_not_acceptance": True,
+        "next_route": "verify",
+    }
+    if goal_run.checkpoint_ids:
+        contextforge_state["last_checkpoint_id"] = goal_run.checkpoint_ids[-1]
+        contextforge_state["last_repair_checkpoint_id"] = goal_run.checkpoint_ids[-1]
+        contextforge_state["checkpoint_ids"] = list(goal_run.checkpoint_ids)
+    return {
+        "schema_version": GOAL_RUNTIME_STATE_SCHEMA_VERSION,
+        "job_id": workspace.job_id,
+        "stage": "repair",
+        "status": repair_attempt.status,
+        "attempt_count": int(repair_attempt.attempt_id),
+        "refs": {
+            "goal_contract": GOAL_CONTRACT_REF,
+            "build_node_contract": BUILD_NODE_CONTRACT_REF,
+            "verification_gate": VERIFICATION_GATE_REF,
+            "contract_manifest": CONTRACT_MANIFEST_REF,
+            "ledger": GOAL_RUNTIME_LEDGER_REF,
+            "repair_attempt": repair_attempt_ref,
+            "repair_runtime_result": runtime_result_ref,
+            "repair_graph_state": graph_state_ref,
+        },
+        "hashes": {
+            "goal_contract": contracts.goal_contract.contract_hash,
+            "build_node_contract": contracts.build_node_contract.contract_hash,
+            "verification_gate": contracts.verification_gate.gate_hash,
+            "repair_attempt": sha256_file(workspace.resolve_path(repair_attempt_ref, must_exist=True)),
+        },
+        "contextforge": contextforge_state,
+        "human_review_required": False,
+        "next_route": "verify",
+    }
+
+
+def _repair_agent_node_contract(build_node_contract: AgentNodeContract) -> AgentNodeContract:
+    payload = build_node_contract.to_dict()
+    payload.update(
+        {
+            "node_id": _REPAIR_NODE_ID,
+            "role": "Skill repair worker",
+            "mission": (
+                "Repair the candidate Codex Skill package using frozen SkillFoundry inputs "
+                "and governed verifier-failure evidence only."
+            ),
+            "output_contract": (
+                "Write repaired candidate package artifacts under package/ and repair evidence under attempts/. "
+                "Return artifact refs, hashes, changed paths, and a concise repair summary only. "
+                "Do not claim verification, acceptance coverage, or registry approval."
+            ),
+            "handoff_policy": {
+                **dict(payload.get("handoff_policy") or {}),
+                "on_success": "route_to_verification",
+                "on_failure": "record_checkpoint_and_route_to_human_review",
+                "handoff_requires_checkpoint": True,
+            },
+            "contract_hash": "",
+            "metadata": {
+                **dict(payload.get("metadata") or {}),
+                "node_stage": "repair",
+                "repair_node": True,
+                "worker_self_report_is_not_acceptance": True,
+            },
+        }
+    )
+    return AgentNodeContract.from_dict(with_computed_hash(payload, "contract_hash"))
+
+
+def _record_repair_failure_context(
+    workspace: JobWorkspace,
+    ledger: ContextLedger,
+    *,
+    run_id: str,
+    repair_basis_ref: str,
+    attempt_id: str,
+    created_at: str,
+) -> str:
+    try:
+        basis_path = workspace.resolve_path(repair_basis_ref, must_exist=True)
+        content = basis_path.read_text(encoding="utf-8")
+        source_hash = "sha256:" + sha256_file(basis_path)
+    except Exception:
+        content = json.dumps(
+            {
+                "missing_repair_basis_ref": repair_basis_ref,
+                "message": "Repair basis artifact was not available; repair must preserve frozen inputs.",
+            },
+            sort_keys=True,
+        )
+        source_hash = None
+    item = ContextItem(
+        id=f"{workspace.job_id}:verifier_failure:{attempt_id}",
+        graph_id=_GRAPH_ID,
+        run_id=run_id,
+        task_id=_REPAIR_TASK_ID,
+        node_id=_REPAIR_NODE_ID,
+        type="test_result",
+        content=content,
+        source=ContextSource(
+            kind="validator",
+            ref=repair_basis_ref,
+            name="governed_verifier_failure",
+            sha256=source_hash,
+            metadata={"workspace_job_id": workspace.job_id, "attempt_id": attempt_id},
+        ),
+        importance=1.0,
+        token_estimate=estimate_tokens(content),
+        created_at=created_at,
+        artifact_ref=repair_basis_ref,
+        provenance={"job_id": workspace.job_id, "artifact_ref": repair_basis_ref},
+        metadata={
+            "skillfoundry_context_type": "verifier_failure",
+            "prompt_category": "recent_failure",
+            "prompt_include": True,
+            "tags": ["verifier_failure", "repair_context"],
+        },
+    )
+    return ledger.record_context_item(item)
+
+
+def _repair_instructions(
+    workspace: JobWorkspace,
+    *,
+    attempt_id: str,
+    repair_basis_ref: str,
+    based_on_result_id: str,
+) -> str:
+    return "\n".join(
+        [
+            f"# Repair Attempt {attempt_id}",
+            "",
+            f"Job: {workspace.job_id}",
+            f"Repair basis: {repair_basis_ref}",
+            f"Based on result: {based_on_result_id}",
+            "",
+            "Use only frozen SkillFoundry inputs, governed verifier-failure evidence, and allowed workspace tools.",
+            "Write repaired candidate artifacts under package/ and attempt evidence under attempts/.",
+            "Do not claim verifier, acceptance coverage, registry, or production approval.",
+            "",
+        ]
+    )
+
+
+def _repair_output_refs(harness_result: GoalHarnessRunResult, attempt_id: str) -> list[str]:
+    refs = [
+        ref
+        for ref in harness_result.worker_run.metadata.get("artifact_refs", [])
+        if isinstance(ref, str)
+    ]
+    refs.extend(
+        [
+            f"attempts/{attempt_id}/input_manifest.json",
+            f"attempts/{attempt_id}/execution_report.json",
+            f"attempts/{attempt_id}/worker_transcript.log",
+            f"attempts/{attempt_id}/output_diff.patch",
+            REPAIR_INSTRUCTIONS_REF_TEMPLATE.format(attempt_id=attempt_id),
+        ]
+    )
+    return _dedupe(refs)
+
+
+def _repair_runtime_result_payload(
+    workspace: JobWorkspace,
+    contracts: ContextForgeContractArtifacts,
+    harness_result: GoalHarnessRunResult,
+    repair_attempt: RepairAttempt,
+    *,
+    repair_attempt_ref: str,
+    runtime_result_ref: str,
+    graph_state: dict[str, JsonValue],
+    created_at: str,
+) -> dict[str, JsonValue]:
+    payload = {
+        "schema_version": REPAIR_GOAL_RUNTIME_RESULT_SCHEMA_VERSION,
+        "job_id": workspace.job_id,
+        "created_at": created_at,
+        "refs": {
+            "goal_contract": GOAL_CONTRACT_REF,
+            "build_node_contract": BUILD_NODE_CONTRACT_REF,
+            "verification_gate": VERIFICATION_GATE_REF,
+            "ledger": GOAL_RUNTIME_LEDGER_REF,
+            "repair_attempt": repair_attempt_ref,
+            "repair_runtime_result": runtime_result_ref,
+            "repair_instructions": repair_attempt.repair_instructions_ref,
+            "worker_input_manifest": f"attempts/{repair_attempt.attempt_id}/input_manifest.json",
+            "worker_execution_report": f"attempts/{repair_attempt.attempt_id}/execution_report.json",
+        },
+        "ids": {
+            "goal_id": contracts.goal_contract.goal_id,
+            "node_id": _REPAIR_NODE_ID,
+            "goal_run_id": harness_result.goal_run.goal_run_id,
+            "worker_run_id": harness_result.worker_run.worker_run_id,
+            "context_view_id": harness_result.compiled_context.context_view.context_view_id,
+            "prompt_view_id": harness_result.compiled_context.prompt_view.id,
+            "cache_plan_id": harness_result.compiled_context.cache_plan.cache_plan_id,
+            "checkpoint_ids": list(harness_result.goal_run.checkpoint_ids),
+        },
+        "status": {
+            "worker": harness_result.worker_run.status,
+            "goal_run": harness_result.goal_run.status,
+            "decision": harness_result.goal_run.decision,
+            "repair_attempt": repair_attempt.status,
+            "next_route": "verify",
+            "worker_self_report_is_not_acceptance": True,
+            "registry_approved": False,
+        },
+        "hashes": {
+            "goal_contract": contracts.goal_contract.contract_hash,
+            "build_node_contract": contracts.build_node_contract.contract_hash,
+            "verification_gate": contracts.verification_gate.gate_hash,
+            "repair_attempt": sha256_file(workspace.resolve_path(repair_attempt_ref, must_exist=True)),
+            "graph_state": sha256_json(graph_state),
+        },
+        "trust_boundaries": {
+            "worker_self_report_is_not_acceptance": True,
+            "repair_requires_followup_verification": True,
+            "registry_requires_contextforge_verification": True,
+        },
+    }
+    return ensure_json_compatible(payload)  # type: ignore[return-value]
 
 
 def build_goal_harness_state(
@@ -439,6 +864,8 @@ def _context_item(
     context_type: str,
     prompt_category: str,
     created_at: str,
+    task_id: str = _TASK_ID,
+    node_id: str = _BUILD_NODE_ID,
     tags: list[str] | None = None,
     prompt_include: bool = True,
 ) -> ContextItem:
@@ -452,8 +879,8 @@ def _context_item(
         id=item_id,
         graph_id=_GRAPH_ID,
         run_id=run_id,
-        task_id=_TASK_ID,
-        node_id=_BUILD_NODE_ID,
+        task_id=task_id,
+        node_id=node_id,
         type=item_type,  # type: ignore[arg-type]
         content=content,
         source=ContextSource(
@@ -881,6 +1308,20 @@ def _sha256_or_none(workspace: JobWorkspace, artifact_ref: str) -> str | None:
     if path.is_file():
         return "sha256:" + sha256_file(path)
     return None
+
+
+def _sha256_or_unknown(workspace: JobWorkspace, artifact_ref: str) -> str:
+    try:
+        path = workspace.resolve_path(artifact_ref, must_exist=True)
+    except Exception:
+        return _ZERO_HASH()
+    if path.is_file():
+        return sha256_file(path)
+    return _ZERO_HASH()
+
+
+def _ZERO_HASH() -> str:
+    return "0" * 64
 
 
 def _write_json(workspace: JobWorkspace, relative_path: str, payload: dict[str, JsonValue]) -> None:

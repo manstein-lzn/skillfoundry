@@ -206,9 +206,9 @@ third_party/contextforge = 2a0838bce6a7a2607b9ca1e095e044080fdc6759
 | --- | --- | --- | --- |
 | ContextForge submodule | implemented | Goal Harness 主线已接入，核心 schema/runtime 可导入。 | 不在 SkillFoundry 内重造 ContextForge。 |
 | `contracts.py` | implemented | Phase 1 contract bridge 已落地。 | 保持 raw context exclusion、hash、cache epoch 测试。 |
-| `goal_runtime.py` | implemented | 离线 verified Goal Harness runtime 已存在，并被 graph v2 API happy path 调用。 | 继续作为 graph v2 产品路径的 verified build node。 |
+| `goal_runtime.py` | implemented / partial | 离线 verified Goal Harness runtime 已存在，并被 graph v2 API happy path 调用；repair Goal Harness runtime 能记录 WorkerRun、ContextView、PromptCachePlan、checkpoint、repair instructions、repair runtime result 和 `RepairAttempt`。 | 补齐 repair 后的复验/注册闭环。 |
 | `workers_v2.py` | implemented / partial | Fake/owned LLM/Codex boundary/external worker taxonomy 已存在。 | live provider 和 real Codex 仍是 opt-in pilot。 |
-| `graph_v2.py` | implemented / partial | refs-only spine、verified build/registry nodes、API happy path runner 已存在。 | 继续收敛 repair Goal Harness node，并将旧 `graph.py` 退役或隔离为 compatibility wrapper。 |
+| `graph_v2.py` | implemented / partial | refs-only spine、verified build/registry nodes、API happy path runner 已存在；failed verification route 可以执行 Goal Harness-backed repair node 并保持 graph state refs-only。 | 补齐 repair -> verify -> registry loop，并将旧 `graph.py` 退役或隔离为 compatibility wrapper。 |
 | `frontdesk_v2.py` | implemented | Front Desk node contracts 已存在。 | 继续把 raw conversation 固定为 forbidden provenance。 |
 | `frontdesk_goal_runtime.py` | implemented | Core Need、Solution Planner、Spec Auditor Goal Harness slices 已存在；默认 no-key Front Desk 路径已接入；Front Desk criteria 已使用 deterministic verifier check IDs。 | 保持 approved-review/freeze gate 和 raw conversation exclusion。 |
 | `verification_bridge.py` | implemented | Verifier / acceptance coverage 到 ContextForge VerificationResult 的桥已存在，并能消费 Front Desk deterministic criteria。 | 加强语义验收和 evidence hash binding。 |
@@ -1078,7 +1078,7 @@ and full suite remains green.
 
 Canonical phase: Phase 4.
 
-Status: implemented / partial. `src/skillfoundry/graph_v2.py` exists and the Front Desk API happy path can now call graph v2 verified build / registry, but graph v2 is not yet the only product build/verify/repair/registry path.
+Status: implemented / partial. `src/skillfoundry/graph_v2.py` exists and the Front Desk API happy path can now call graph v2 verified build / registry. Failed verification can now route into a Goal Harness-backed repair node that records governed repair evidence, but graph v2 is not yet the only product build/verify/repair/registry path and repair does not yet loop back through verifier/registry.
 
 Goal:
 
@@ -1311,6 +1311,7 @@ Resolved gaps:
 - If a criterion asserts raw conversation exclusion, the verifier/bridge needs a deterministic check for that boundary or the criterion must reference an existing equivalent check.
 - The registry gate must pass only when verifier, acceptance coverage, and ContextForge verification evidence all match current artifacts.
 - `POST /frontdesk/jobs/{job_id}/build` must route approved/frozen Front Desk jobs through graph v2 and persist refs-only `contextforge/graph_v2_state.json`.
+- Failed graph v2 verification can execute a ContextForge Goal Harness-backed repair node and persist governed repair context, WorkerRun evidence, checkpoint IDs, repair instructions, repair runtime result, and `attempts/002/repair_attempt.json` without granting worker self-approval or registry approval.
 
 These slices did not introduce live provider calls or real Codex SDK execution.
 
@@ -1318,7 +1319,7 @@ Current next implementation direction:
 
 ```text
 Make graph_v2 the only product build/verify/repair/registry route,
-turn repair into a Goal Harness node,
+connect repair output back through verifier / acceptance coverage / registry,
 and isolate or retire legacy graph/context/worker paths.
 ```
 

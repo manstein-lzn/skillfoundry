@@ -16,12 +16,14 @@ from skillfoundry import (
     LocalSkillRegistry,
     OWNED_LLM_WORKER_OUTPUT_SCHEMA_VERSION,
     OwnedLLMSkillBuilderWorker,
+    RepairAttempt,
     VERIFIED_GOAL_RUNTIME_RESULT_REF,
     V2Route,
     V2Stage,
     V2StateValidationError,
     V2Status,
     build_offline_goal_harness_node,
+    build_repair_goal_harness_node,
     build_verified_goal_harness_node,
     build_verified_registry_gate_node,
     compile_skillfoundry_v2_graph,
@@ -347,6 +349,71 @@ def test_v2_graph_runs_offline_goal_harness_node_and_routes_failed_verification_
     assert result["contextforge"]["last_goal_decision"] == "repair"
     assert result["contextforge"]["next_route"] == V2Route.REPAIR_GOAL_NODE.value
     assert result["refs"]["repair_instructions"] == "attempts/002/repair_instructions.md"
+
+
+def test_v2_graph_runs_repair_goal_harness_node_after_failed_verification(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    workspace = initialize_job_workspace(runs_root, "graph-runtime-repair")
+    frontdesk_dir = workspace.root / "frontdesk"
+    frontdesk_dir.mkdir()
+    raw_marker = "RAW_REPAIR_CONVERSATION_SHOULD_NOT_APPEAR"
+    (frontdesk_dir / "conversation.jsonl").write_text(raw_marker, encoding="utf-8")
+    graph = compile_skillfoundry_v2_graph(
+        build_node_callable=build_offline_goal_harness_node(
+            runs_root,
+            verification_mode="fail_missing_coverage",
+            created_at=CREATED_AT,
+        ),
+        repair_node_callable=build_repair_goal_harness_node(
+            runs_root,
+            created_at=CREATED_AT,
+        ),
+    )
+
+    result = graph.invoke({"job_id": workspace.job_id, "attempt_limit": 2})
+
+    validate_v2_graph_state(result)
+    assert result["stage"] == V2Stage.REPAIR_GOAL_NODE.value
+    assert result["status"] == V2Status.REPAIR_RECORDED.value
+    assert result["attempt_count"] == 2
+    assert result["refs"]["repair_instructions"] == "attempts/002/repair_instructions.md"
+    assert result["refs"]["repair_attempt"] == "attempts/002/repair_attempt.json"
+    assert result["refs"]["repair_runtime_result"] == "contextforge/repair_goal_runtime_result_002.json"
+    assert result["contextforge"]["last_verification_status"] == "failed"
+    assert result["contextforge"]["last_repair_attempt_id"] == "002"
+    assert result["contextforge"]["repair_status"] == "completed"
+    assert result["contextforge"]["worker_self_report_is_not_acceptance"] is True
+    assert "registry_approved" not in result["contextforge"]
+
+    repair_attempt = RepairAttempt.read_json_file(
+        workspace.resolve_path("attempts/002/repair_attempt.json", must_exist=True)
+    )
+    assert repair_attempt.status == "completed"
+    assert repair_attempt.based_on_result_id == result["contextforge"]["last_verification_result_id"]
+    assert repair_attempt.repair_instructions_ref == "attempts/002/repair_instructions.md"
+    assert "package/SKILL.md" in repair_attempt.output_refs
+    assert workspace.resolve_path("attempts/002/execution_report.json", must_exist=True).is_file()
+    assert workspace.resolve_path("contextforge/repair_goal_runtime_result_002.json", must_exist=True).is_file()
+
+    state_text = json.dumps(result, sort_keys=True)
+    repair_runtime_result = json.loads(
+        workspace.resolve_path("contextforge/repair_goal_runtime_result_002.json", must_exist=True).read_text()
+    )
+    assert raw_marker not in state_text
+    assert raw_marker not in json.dumps(repair_runtime_result, sort_keys=True)
+    assert "prompt" not in result["contextforge"]
+    assert "worker_transcript" not in state_text
+    assert "Graph Runtime" not in state_text
+
+    ledger = ContextLedger.connect(workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF, must_exist=True))
+    try:
+        assert ledger.get_goal_run_record(result["contextforge"]["last_repair_goal_run_id"])
+        assert ledger.get_worker_run(result["contextforge"]["last_repair_worker_run_id"])
+        context_view = ledger.get_context_view(result["contextforge"]["last_repair_context_view_id"])
+    finally:
+        ledger.close()
+    assert f"{workspace.job_id}:verifier_failure:002" in context_view.included_item_ids
+    assert f"{workspace.job_id}:raw_frontdesk_conversation" not in context_view.included_item_ids
 
 
 def test_verification_status_overrides_conflicting_next_route() -> None:
