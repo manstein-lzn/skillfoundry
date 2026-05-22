@@ -1,9 +1,22 @@
-# WP9 Minimal API/UI
+# SkillFoundry API/UI Contract
 
-WP9 exposes the existing offline SkillFoundry factory through a small internal
-API and server-rendered HTML page. It is intentionally not a production
-platform: there is no queue, marketplace, multi-tenant permission model, full
-auth system, live Codex dependency, or frontend framework.
+This document tracks the current internal API and server-rendered HTML contract
+for the SkillFoundry v2 mixed-migration path. It is intentionally not a
+production platform: there is no queue, marketplace, multi-tenant permission
+model, full auth system, live Codex dependency, or frontend framework.
+
+The canonical product route is:
+
+```text
+Front Desk job
+  -> user plan review
+  -> deterministic freeze
+  -> /frontdesk/jobs/{job_id}/build
+  -> graph v2 / ContextForge Goal Harness / Verifier / Registry
+```
+
+Legacy offline `/jobs` creation is retained only as an explicit compatibility
+surface.
 
 ## Serve
 
@@ -58,11 +71,12 @@ skillfoundry serve --runs-root runs --allow-legacy-offline-jobs
 - `GET /jobs/<job_id>/package.zip`: download a zip archive containing only
   `package/` files.
 
-## Front Desk Trial Routes
+## Front Desk Routes
 
-WP13-WP17 also expose a thin trial API for the real Front Desk loop. This is
-not the old offline builder form: it runs `FrontDeskLoop` through
-`RequirementsElicitor`, `SpecAuditor`, and `FrontDeskFreezeGate`.
+The Front Desk API is the default product-discovery route. It is not the old
+offline builder form: it runs `FrontDeskLoop` through governed Core Need,
+Solution Planner, Spec Auditor, user plan review, and `FrontDeskFreezeGate`
+artifacts before an approved/frozen job can enter graph v2 build.
 
 The Front Desk is product-discovery first. Early rounds should clarify the
 user's pain, goal, workflow, audience, usage moment, desired outcome, success
@@ -74,7 +88,13 @@ describe their own idea. After the pain and workflow are clear, the Front Desk
 should synthesize candidate Skill solutions and let the user choose or adjust
 the direction before deterministic freeze.
 
-Live provider use is opt-in. Start the server with:
+Default Front Desk operation does not require `OPENAI_API_KEY`. When no live
+Front Desk client factory is configured, the API uses the deterministic offline
+Front Desk / Goal Harness path and remains suitable for local tests and no-key
+internal demos.
+
+Live provider use is opt-in. Configure it explicitly through the server/client
+integration layer and provider environment, for example:
 
 ```bash
 export OPENAI_API_KEY=...
@@ -103,9 +123,9 @@ curl -s -X POST http://127.0.0.1:8765/frontdesk/jobs \
   -d '{"job_id":"frontdesk-demo","message":"构建一个帮助分析 pytest 失败日志的 Codex Skill。"}'
 ```
 
-If `OPENAI_API_KEY` is not set, the Front Desk trial routes return `503` with
-`openai_api_key_missing`. Default automated tests inject scripted clients and
-do not call live providers.
+If no live provider is configured, these routes still run through the offline
+deterministic Front Desk path. Default automated tests do not call live
+providers.
 
 ## Safety Gates
 

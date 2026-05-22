@@ -2,9 +2,11 @@
 
 最后更新：2026-05-22
 
-状态：v2 canonical refactor baseline + implementation master document
+状态：reviewer-backed v2 canonical refactor document + implementation master plan
 
 目标读者：第一次接手 SkillFoundry 的工程师或 agent。读者不需要读完整历史对话，也不需要先理解 WP0-WP17 的旧执行过程。
+
+本文的完成层级是 **Documentation baseline approved**：它把目标架构、当前事实、迁移工作包、验收门和 claim discipline 固化成一个可执行文档。它不表示 SkillFoundry 代码已经完成全部 v2 重构，也不表示可以对外宣称 production-ready。
 
 ## 0. 人话结论
 
@@ -38,6 +40,39 @@ SkillFoundry = 第一座工厂和第一个产品化场景
 也不要把复杂任务完全交给黑盒 agent。
 用 ContextForge 给强 worker 戴上可控、可审计、可缓存、可验证的工作外骨骼。
 ```
+
+### 0.1 当前执行结论
+
+从当前代码状态看，下一步不是继续讨论“是否要重做 Codex”，也不是重开一套多 agent 框架，而是把现有混合迁移收敛成一个可用产品路径：
+
+```text
+Front Desk approved/frozen job
+  -> graph_v2 Goal Harness build/repair
+  -> verifier / acceptance coverage / ContextForge verification bridge
+  -> registry gate or human-review
+  -> refs-only API/UI evidence
+```
+
+当前优先级：
+
+1. WP2：补齐 API/UI evidence productization，让新用户能看懂 build、repair、human-review、registry 的证据摘要，且不泄漏 raw prompt / raw payload / transcript / package content。
+2. WP4：硬化 worker configuration 和边界，尤其是 owned LLM、Codex thread boundary、external worker 的 evidence refs、write scope 和 usage unavailable reason。
+3. WP5：把 PromptCachePlan telemetry 做成可观测成本控制器，能比较 stable prefix churn、cache epoch reason、expected cacheable tokens 和 provider telemetry。
+4. WP6：继续隔离或退役 legacy `graph.py`、`context.py`、`worker.py`、`llm_builder.py` 路径，避免新功能漂回 v0 骨架。
+5. WP7：在离线主路径、evidence UI、人审闭环更稳之后，再做真实 provider / Codex SDK thread opt-in pilot。
+
+### 0.2 最小首产品闭环
+
+SkillFoundry 的第一个产品不是“万能 agent 平台”，而是一个可审计的 Codex Skill 工厂。最小闭环必须同时满足：
+
+- 用户提交需求后，Front Desk 产出 governed core need、solution plan 和 acceptance criteria。
+- 用户批准过的 plan 才能进入 deterministic freeze。
+- build / repair 都必须运行在 ContextForge Goal Harness worker boundary 后面。
+- LangGraph state 只保存 refs、IDs、hashes 和 route status。
+- Worker 只产出 candidate artifacts 和 boundary evidence，不拥有通过权。
+- Verifier、acceptance coverage、ContextForge verification bridge 和 Registry gate 共同决定是否可注册。
+- API/UI 让用户看到证据摘要和下一步动作，但不暴露 raw prompt、raw conversation、raw transcript、raw provider payload 或 package content。
+- 默认测试全离线、确定性、无 provider key、无真实 Codex SDK。
 
 ## 1. 本文权威和阅读顺序
 
@@ -1438,14 +1473,14 @@ ContextForge 当前不能被 SkillFoundry 宣称已经具备的能力：
 | `frontdesk_goal_runtime.py` | Front Desk 三个 Goal Harness runtime slices 已存在。 | `tests/test_frontdesk_goal_runtime.py` |
 | `verification_bridge.py` | SkillFoundry verifier / acceptance coverage 能桥接为 ContextForge `VerificationResult`。 | `tests/test_verification_bridge.py` |
 | `registry.py` | Registry 会拒绝 missing/stale/fabricated/self-reported evidence，要求 verified evidence。 | `tests/test_registry.py` |
-| `api.py` | Front Desk job、plan review、approved/frozen build、ContextForge status 已有最小入口。 | `tests/test_api.py`, `tests/test_frontdesk_api.py` |
+| `api.py` | Front Desk job、plan review、approved/frozen build、ContextForge status、human-review request/decision 已有最小入口。 | `tests/test_api.py`, `tests/test_frontdesk_api.py` |
 
 当前仍不能宣称完成的产品事实：
 
 - `graph_v2.py` 还没有成为唯一产品 build / verify / repair / registry 路由。
 - 旧 `POST /jobs` 离线 builder 兼容路线仍存在；它已经默认 opt-in 隔离，并在 status 中标记为 `legacy_offline_compatibility`，避免新用户误用为产品主入口。
 - 旧 `graph.py`、`context.py`、`worker.py`、`llm_builder.py` 仍存在，需要隔离或退役。
-- API/UI 对 repair、human-review、registry evidence 的体验还不完整。
+- API/UI 对 repair、human-review、registry evidence 的体验还不完整；`GET /jobs/{job_id}/contextforge` 已有 refs-only 摘要，但面向用户的 job evidence HTML / operator workbench 仍需产品化。
 - human-review 已从纯 route/status 前进到 request / decision artifacts 和 API decision endpoint；它还不是完整运营工作台或自动重新调度系统。
 - live provider / real Codex SDK thread 仍是 opt-in future pilot。
 - 生产级 auth、tenant、queue、sandbox、secrets、monitoring、deployment 都没有完成。
@@ -1474,7 +1509,7 @@ legacy paths 已经全部退役。
 
 这里的 `worker 自己报告成功即可 registry approval` 禁令，不表示系统已经有一个能语义扫描所有 worker self-report 的万能判别器。真实防线是 frozen inputs、独立 verifier、acceptance coverage、ContextForge verification bridge 和 Registry 复验门共同成立。
 
-### 17.4 当前不匹配 ledger
+### 17.4 Current-vs-target gap ledger / 当前不匹配账本
 
 本节列出 reviewer 要求显式写入的 current-vs-target 差异。它们不是可以忽略的小瑕疵，而是后续实现切片必须逐项收敛或保留为明确 compatibility 的地方。
 
@@ -1734,6 +1769,18 @@ POST /jobs
 
 当前从文档进入代码实现时，推荐按以下工作包推进。每个工作包都应使用 MetaLoop，且非平凡 trust-boundary 变更需要独立 reviewer。
 
+当前工作包状态不要按编号机械顺序理解。WP1/WP3 已有重要实现更新，后续实现应按风险和产品闭环推进：
+
+| 优先级 | 工作包 | 当前判断 | 为什么排在这里 |
+| --- | --- | --- | --- |
+| P0 | WP2 API/UI evidence productization | next implementation slice | graph v2 / ContextForge / human-review evidence 已存在，但新用户还缺少一个安全、可读、refs-only 的产品证据面。 |
+| P1 | WP4 Worker configuration and boundary hardening | required before live pilot | 强 worker 接入前必须统一 worker factory、evidence refs、write scope、usage unavailable reason 和 boundary-only claim。 |
+| P1 | WP5 PromptCachePlan telemetry hardening | required for cost control | 当前已有 cache plan artifact，但还需要可比较的 prefix churn、cache epoch reason 和 provider telemetry 口径。 |
+| P1 | WP6 Legacy isolation and retirement | ongoing | legacy 默认入口已隔离，但旧模块仍在仓库中，必须继续防止新能力漂回 v0 路径。 |
+| P2 | WP7 Live provider / Codex SDK thread pilot | blocked on P0/P1 | 真实强 worker 应在 offline canonical route、evidence UI 和 trust-boundary gates 更稳之后 opt-in 试点。 |
+
+WP1 仍保留在本文中，因为它定义 canonicalization gate；但当前重点已经从“证明 graph v2 可行”转为“让 graph v2 成为新用户看得懂、改得动、不会绕路的产品主路径”。
+
 ### WP1: graph v2 canonicalization
 
 目标：
@@ -1906,8 +1953,8 @@ git diff --check
 验收：
 
 ```bash
-cd third_party/contextforge && .venv/bin/python -m pytest tests/test_prompt.py tests/test_goal_harness.py tests/test_telemetry.py -q
-cd ../.. && .venv/bin/python -m pytest tests/test_goal_harness_slice.py tests/test_api.py -q
+.venv/bin/python -m pytest third_party/contextforge/tests/test_prompt.py third_party/contextforge/tests/test_goal_harness.py third_party/contextforge/tests/test_telemetry.py -q
+.venv/bin/python -m pytest tests/test_goal_harness_slice.py tests/test_api.py -q
 git diff --check
 ```
 
@@ -2266,4 +2313,31 @@ verification:
   - exact focused human-review gates => 4 passed.
   - tests/test_graph_v2_runtime.py tests/test_api.py => 48 passed.
   - full suite: .venv/bin/python -m pytest -q => 421 passed.
+```
+
+本轮完整重构文档 reviewer 结果：
+
+```text
+reviewer: Kepler / independent gpt-5.5 xhigh reviewer
+model: gpt-5.5 xhigh
+initial_decision: changes_required_for_documentation_completeness
+initial_blockers:
+  - docs/API_UI.md still described stale key-required Front Desk trial behavior, while current code and canonical docs use no-key deterministic Front Desk / Goal Harness defaults.
+  - WP5 ContextForge focused gate used a submodule-local virtualenv path, but this checkout only guarantees the SkillFoundry root .venv, making the command non-reproducible for new contributors.
+fixes_applied:
+  - docs/API_UI.md now describes the canonical Front Desk -> plan review -> freeze -> graph v2 / ContextForge Goal Harness / Verifier / Registry route, no-key deterministic default, live provider as opt-in, and legacy /jobs as explicit compatibility surface.
+  - WP5 acceptance commands now run ContextForge focused tests from the SkillFoundry root with .venv/bin/python against third_party/contextforge/tests/..., which is executable in the current checkout.
+focused_verification:
+  - git diff --check => passed.
+  - stale API/UI key-required claim audit => no hits.
+  - tests/test_frontdesk_api.py::test_frontdesk_api_defaults_to_offline_goal_harness_without_live_key => 1 passed.
+  - third_party/contextforge/tests/test_prompt.py third_party/contextforge/tests/test_goal_harness.py third_party/contextforge/tests/test_telemetry.py => 15 passed.
+  - tests/test_goal_harness_slice.py tests/test_api.py => 37 passed.
+reviewer_confirmed:
+  - ContextForge should be used as SkillFoundry's agent exoskeleton, not as a Codex replacement or LangGraph replacement.
+  - LangGraph, ContextForge, Codex SDK thread / GPT-5.5 / external worker, Verifier, Ledger / Replay / Checkpoint, and PromptCachePlan boundaries are conceptually sound.
+  - The document must keep mixed migration, metric_gates, raw Front Desk provenance, worker self-report, human-review, ToolPermission / WriteScope, and production readiness risks explicit.
+final_reviewer_decision: approve
+remaining_blockers: none
+status: approved for documentation completeness; implementation followups remain WP2/WP4/WP5/WP6/WP7.
 ```
