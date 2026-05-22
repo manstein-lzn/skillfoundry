@@ -1,5 +1,12 @@
 # SkillFoundry 架构设计 v0.2
 
+> Historical note: this document describes the v0/WP0-WP12 architecture. It is
+> retained for product and security context, but it is not the v2 execution
+> authority. Current v2 architecture and migration decisions live in
+> `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`. In v2, ContextForge is the
+> Goal Harness / agent exoskeleton for strong agent nodes, not only a recorder
+> for SkillFoundry-owned LLM calls.
+
 ## 1. 架构定位
 
 SkillFoundry 的第一阶段是 **外部 worker 监督型 Codex Skill 工厂**。

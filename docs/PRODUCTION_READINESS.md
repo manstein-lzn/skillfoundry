@@ -1,5 +1,10 @@
 # SkillFoundry Production Readiness
 
+> Historical note: this document records the old WP12 small-scale internal beta
+> readiness boundary. It does not describe current v2 production readiness.
+> Current v2 readiness levels, blockers, and migration gates are defined in
+> `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`.
+
 WP12 reaches small-scale internal beta readiness. It does not make
 SkillFoundry a full production platform.
 

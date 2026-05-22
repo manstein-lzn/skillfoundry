@@ -1,5 +1,10 @@
 # SkillFoundry Security Checklist
 
+> Historical note: this checklist was written for the v0/WP12 internal beta
+> boundary. Its path, registry, and Codex boundary checks remain useful, but
+> current v2 trust-boundary policy is defined in
+> `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`.
+
 WP12 hardening is scoped to small-scale internal beta use. This checklist
 documents the current security posture and the items reviewers should verify
 before running internal trials.

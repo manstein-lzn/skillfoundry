@@ -22,6 +22,10 @@ internal network boundary or local tunnel controlled by the operator.
   offline job from JSON or form data. It is retained for v0 fixtures and
   internal smoke tests; the canonical product build path is the Front Desk
   approved/frozen graph v2 route below.
+  It should not be used as the default product entry for new integrations; the
+  v2 refactor plan calls for this route to become explicit opt-in
+  compatibility so new users do not bypass Front Desk, graph v2, and
+  ContextForge Goal Harness evidence.
   JSON fields are `requirement`, optional `job_id`, optional `worker_mode`, and
   optional `attempt_limit`.
 - `GET /jobs`: list known job workspaces below `runs_root`.

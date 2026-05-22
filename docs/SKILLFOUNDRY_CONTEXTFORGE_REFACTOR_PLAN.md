@@ -81,6 +81,33 @@ v2 技术实现以本文和当前 Goal Harness 方向为准。
 
 `docs/SKILLFOUNDRY_V2_BASELINE.md` 也不是当前 phase 和下一步执行源。它固定的是“保留产品思想、重建技术实现、不背 v0 兼容债”的前提；当前代码事实、phase 编号、工作包和已完成/未完成状态均以本文为准。
 
+### 1.1 文档权威矩阵
+
+新 contributor 不应该从旧 roadmap 或旧架构文档反推当前实现。当前文档权威如下：
+
+| 文档 | 当前地位 | 使用方式 |
+| --- | --- | --- |
+| `README.md` | 项目入口 | 只用于安装、定位和当前高层状态；细节以本文为准。 |
+| `HANDOFF.md` | 当前接手摘要 | 用于快速了解本地状态、最近完成内容和下一片工作。 |
+| `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md` | v2 canonical execution baseline | 当前 phase、工作包、边界、风险和验收门的权威来源。 |
+| `docs/CONTEXTFORGE_GOAL_HARNESS_REBUILD_PLAN.md` | historical execution plan + evidence | 保留原始设计、历史证据和字段级背景；不再决定当前 phase 编号。 |
+| `docs/SKILLFOUNDRY_V2_BASELINE.md` | v2 premise-only | 说明“不背 v0 兼容债”的前提；不用于判断当前下一步。 |
+| `docs/CONTEXTFORGE_AGENT_EXOSKELETON_PRODUCT_VISION.md` | long-term product vision | 固定长期愿景，不替代当前工作包。 |
+| `docs/API_UI.md` | current API/UI contract notes | 必须随 API/UI 行为同步，尤其是 canonical route 和 legacy `/jobs` policy。 |
+| `docs/ARCHITECTURE.md` | v0 historical architecture | 只用于理解旧 WP0-WP12 设计，不再作为 v2 架构权威。 |
+| `docs/PRODUCTION_READINESS.md` | v0 internal-beta readiness artifact | 只描述旧 WP12 小规模内部 beta 边界；不能被读成 v2 production readiness。 |
+| `docs/SECURITY_CHECKLIST.md` | v0 security checklist with reusable checks | 可复用 path/registry/Codex boundary 检查，但需按 v2 Goal Harness 重新解释。 |
+| `docs/DEVELOPMENT_ROADMAP.md`、`docs/ROADMAP.md`、`docs/ROADMAP_EXECUTION_PLAN.md` | v0/historical | 只作为产品经验和历史工作包记录。 |
+| `docs/FRONT_DESK_AGENT_ROADMAP.md`、`docs/FRONT_DESK_CORE_NEED_REFACTOR.md`、`docs/FRONT_DESK_ROADMAP_AUDIT.md` | Front Desk historical/current mix | 可用于理解 Front Desk 演进，但不能覆盖本文对 v2 builder/repair/context 边界的定义。 |
+| `docs/archive/agent-briefs/` | archived WP briefs | 不作为当前执行入口。 |
+
+旧文档如果仍出现 “ContextForge 主要管理 SkillFoundry-owned LLM calls”、“ready for controlled internal beta” 或旧 WorkerAdapter 口径，应按 historical/v0 解释。v2 当前语义是：
+
+```text
+ContextForge 管每个强 agent node 的工作外骨骼。
+SkillFoundry v2 仍处于 mixed migration，不是 production-ready。
+```
+
 不要读错：
 
 - 不要从 WP0-WP17 agent briefs 开始理解当前仓库。
@@ -88,7 +115,7 @@ v2 技术实现以本文和当前 Goal Harness 方向为准。
 - 当前 phase 编号以本文第 11 节为准。
 - 当前下一步不是重做 ContextForge 或重做 Codex，而是让 graph v2 成为唯一产品 build / verify / repair / registry 主路径，并补齐 human-review/API-UI evidence 体验与 legacy 隔离。
 
-### 1.1 已核对的 ContextForge 事实
+### 1.2 已核对的 ContextForge 事实
 
 本文对 ContextForge 的判断已按当前 submodule 核对：
 
@@ -214,6 +241,17 @@ verified offline build path 已经存在。
 - API/UI
   - 已有部分 ContextForge observability。
   - 还不是完整 v2 产品外壳。
+  - `POST /jobs` 旧离线 builder 兼容路线仍存在；它不能被当作 v2 产品入口。v2 canonical 入口必须是 Front Desk approved/frozen job 通过 `/frontdesk/jobs/{job_id}/build` 进入 graph v2。
+
+下一步代码收敛中，最容易误导新 contributor 的点是：
+
+```text
+有 final_report.json 或 registry entry，不等于走了 v2 Goal Harness 产品路径。
+只有有效 graph_v2_state.json + ContextForge refs + verifier/coverage/registry evidence
+共同成立，才是 canonical graph_v2_goal_harness build path。
+```
+
+因此 legacy `/jobs` 必须逐步变成显式 opt-in compatibility surface，而不是默认产品入口。
 
 ### 2.4 当前实现矩阵
 
@@ -228,7 +266,7 @@ verified offline build path 已经存在。
 | `src/skillfoundry/frontdesk_goal_runtime.py` | implemented | Core Need、Solution Planner、Spec Auditor Goal Harness slices 已存在，默认 no-key Front Desk 路径已接入；Front Desk-generated criteria 已映射到 deterministic verifier checks。 | 后续保持 raw conversation forbidden 和 approved-review/freeze gate。 |
 | `src/skillfoundry/verification_bridge.py` | implemented | SkillFoundry verifier / acceptance coverage 能桥接到 ContextForge VerificationResult，并消费 Front Desk deterministic verifier check IDs。 | 加强语义验收和 post-verifier evidence hash binding。 |
 | `src/skillfoundry/registry.py` | implemented / partial | Registry 已要求 verifier / coverage / ContextForge evidence，拒绝 self-report/stale/fabricated evidence；默认 Front Desk frozen job 可通过 graph v2 API happy path register。 | 继续覆盖 repair/human-review/manual acceptance 场景。 |
-| API/UI | implemented / partial | API 可以创建 Front Desk job、plan review，并通过 `/frontdesk/jobs/{job_id}/build` 运行 graph v2 verified build/registry happy path；ContextForge status 暴露 v2 refs/status 摘要。 | 继续完善 UI 的 registry outcome、repair/human-review route 和 evidence 摘要。 |
+| API/UI | implemented / partial | API 可以创建 Front Desk job、plan review，并通过 `/frontdesk/jobs/{job_id}/build` 运行 graph v2 verified build/registry happy path；ContextForge status 暴露 v2 refs/status 摘要；旧 `POST /jobs` 仍作为 legacy offline compatibility route 存在。 | 继续完善 UI 的 registry outcome、repair/human-review route 和 evidence 摘要，并把 legacy `/jobs` 默认隔离为显式 opt-in。 |
 | live provider / real Codex SDK thread | future opt-in | 当前不是默认路径，也不是生产承诺。 | 等离线 v2 主路径稳定后做内部 pilot，并记录 usage unavailable reason / telemetry。 |
 
 ## 3. ContextForge 当前能力边界
@@ -703,6 +741,30 @@ Dynamic suffix 应包含：
 - cache break reason。
 
 这使 PromptCachePlan 成为可测成本控制器，而不是口头上的“记忆系统”。
+
+### 7.5 Cache claim checklist
+
+任何文档、API response、report 或 pilot 记录只要谈 prompt cache，就必须满足以下纪律：
+
+- 可以报告 stable prefix hash。
+- 可以报告 dynamic suffix hash。
+- 可以报告 cache epoch id 和 cache break reason。
+- 可以报告 expected cacheable tokens。
+- 可以报告 prefix churn metric。
+- 可以报告 provider payload hash。
+- 只有 provider telemetry 明确返回时，才能报告 actual cached tokens。
+- provider 不返回 usage/cache telemetry 时，必须记录 `usage_unavailable_reason`。
+- timestamp、attempt id、retry count、unordered JSON、raw logs、raw conversation、verifier failure detail 不得进入 stable prefix。
+- 当前代码把 `worker_kind` / `worker_name` 纳入 cache epoch hash；本文暂定它们属于执行边界变化，允许触发 epoch 换代。若未来要跨 worker 复用 stable prefix，必须先修改 `_cache_epoch_id()` 并补回归测试。
+
+禁止声明：
+
+```text
+PromptCachePlan guarantees provider cache hit.
+PromptCachePlan proves provider cache hit.
+expected cacheable tokens == actual cached tokens.
+ContextForge can optimize Codex SDK thread internal cache chain.
+```
 
 ## 8. Agent Node 设计判断
 
@@ -1267,6 +1329,19 @@ SkillFoundry 达到内部产品可用，至少需要：
 
 在这些能力存在前，不要宣称 production-ready。
 
+### 15.1 Readiness 分层
+
+后续沟通必须把 readiness 分成四层，不能混用：
+
+| 层级 | 可以说什么 | 必须不能说什么 | 当前状态 |
+| --- | --- | --- | --- |
+| Documentation baseline approved | 架构方向、边界、工作包和验收门已经被文档化并经过独立 reviewer 审查。 | 不能说代码已全部完成。 | 本文目标层级；需 reviewer 无 blocker。 |
+| Offline deterministic v2 skeleton exists | contract bridge、offline Goal Harness、graph v2 happy/repair path、verifier/coverage/registry evidence 链条已有离线实现。 | 不能说产品主路径唯一、legacy 已退役或真实 provider 可用。 | 部分成立；仍在 mixed migration。 |
+| Internal pilot usable | 3-5 个内部真实任务跑完 canonical route，记录 cost/cache/failure/repair/human-review metrics。 | 不能说生产就绪、外部用户可用。 | future。 |
+| Production ready | auth、tenant isolation、queue、sandbox、secrets、audit、monitoring、deployment、incident response 和 human-review ops 完成。 | 不能用 WP12 internal beta 或离线测试替代生产承诺。 | not started。 |
+
+`docs/PRODUCTION_READINESS.md` 中的旧 internal beta readiness 只属于 v0/WP12 语境，不代表本文的 v2 production readiness。
+
 ## 16. Reviewer Packet
 
 独立 reviewer 需要检查：
@@ -1368,6 +1443,7 @@ ContextForge 当前不能被 SkillFoundry 宣称已经具备的能力：
 当前仍不能宣称完成的产品事实：
 
 - `graph_v2.py` 还没有成为唯一产品 build / verify / repair / registry 路由。
+- 旧 `POST /jobs` 离线 builder 兼容路线仍存在；它已经在 status 中标记为 `legacy_offline_compatibility`，但还需要默认 opt-in 隔离，避免新用户误用为产品主入口。
 - 旧 `graph.py`、`context.py`、`worker.py`、`llm_builder.py` 仍存在，需要隔离或退役。
 - API/UI 对 repair、human-review、registry evidence 的体验还不完整。
 - human-review 是路由和状态，不是完整运营工作台。
@@ -1397,6 +1473,23 @@ legacy paths 已经全部退役。
 ```
 
 这里的 `worker 自己报告成功即可 registry approval` 禁令，不表示系统已经有一个能语义扫描所有 worker self-report 的万能判别器。真实防线是 frozen inputs、独立 verifier、acceptance coverage、ContextForge verification bridge 和 Registry 复验门共同成立。
+
+### 17.4 当前不匹配 ledger
+
+本节列出 reviewer 要求显式写入的 current-vs-target 差异。它们不是可以忽略的小瑕疵，而是后续实现切片必须逐项收敛或保留为明确 compatibility 的地方。
+
+| 不匹配项 | 当前行为 | 目标行为 | owner / 验收 |
+| --- | --- | --- | --- |
+| ContextForge `metric_gates` | ContextForge schema 有 `metric_gates` 字段，但当前 core `VerificationRunner` 不执行 metric gates；SkillFoundry bridge 已通过 `contextforge_gate_metric_gates_supported` 对非空 metric gates fail closed。 | 不得声称 metric gates 已被 ContextForge core 执行。要么在 ContextForge upstream 实现 metric gate runner，要么继续在 SkillFoundry bridge 中 fail closed。 | `tests/test_verification_bridge.py::test_bridge_fails_closed_for_unsupported_metric_gates`；WP5/verification hardening。 |
+| `GoalHarness` 范围 | ContextForge `GoalHarness` 是单 agent node runtime，不做 scheduler、多 agent routing 或最终产品验收。 | SkillFoundry `graph_v2.py` 继续承担 refs-only orchestration、repair/human-review/registry route；不要把完整 workflow 平台责任下放给 ContextForge。 | `tests/test_graph_v2.py`, `tests/test_graph_v2_runtime.py`。 |
+| Registry 首次注册时序 | `run_verified_offline_goal_harness()` 当前会先调用 `LocalSkillRegistry.add_verified()`；`graph_v2` registry gate 随后复验并写 decision/snapshot。 | 目标产品路径应让 graph v2 registry gate 成为唯一产品批准点；verified runtime 可以保留 compatibility helper，但不应在 canonical route 中提前完成不可区分的首次注册。 | WP1/WP6；新增 registry timing test 后再改。 |
+| legacy `/jobs` | `POST /jobs` 仍能直接运行 `build_offline()` 并生成 `final_report.json`。 | 默认 API/UI 产品入口只走 Front Desk -> graph v2；legacy `/jobs` 变为显式 opt-in compatibility surface。 | `tests/test_api.py`, `tests/test_frontdesk_api.py`；WP1/WP6。 |
+| raw conversation ledger include | `seed_goal_harness_context()` 当前把 `frontdesk/conversation.jsonl` 作为 `raw_frontdesk_conversation` 写入 ledger，并依赖 forbidden selector 排除；部分 Front Desk v2 runtime 已把 conversation `prompt_include=False`。 | Raw provenance 默认不应可 prompt include；若短期保留当前记录方式，必须有 fail-closed negative tests 证明 builder/repair/API/status/graph state 不泄漏。 | `tests/test_goal_harness_slice.py`, `tests/test_frontdesk_goal_runtime.py`, `tests/test_graph_v2_runtime.py`。 |
+| legacy Front Desk prompt | 旧 RequirementsElicitor / SpecAuditor 可把 raw conversation 当作 `UNTRUSTED USER CONVERSATION CONTENT` 放入 Front Desk prompt。 | 只允许 Front Desk governed summarizer/auditor 看 raw conversation；builder、repair、registry 和 API status 永远不可见。 | Front Desk hardening tests；不要复制旧 prompt pattern 到 builder path。 |
+| worker self-report marker | `worker_self_report_not_acceptance` 当前是声明性 verifier marker，不是通用语义扫描器。 | 文档必须说清真实防线是 verifier freshness、coverage freshness、package hash、ContextForge result semantics 和 Registry 复验。 | `tests/test_registry.py`, `tests/test_verification_bridge.py`。 |
+| cache epoch worker identity | `cache_policy.metadata.epoch_inputs` 主要列 frozen/policy inputs；实际 `_cache_epoch_id()` 也包含 `worker_kind` 和 `worker_name`。 | 目标语义必须二选一：若 worker identity 改变会改变 prompt/runtime contract，则文档明确它应换 epoch；若希望跨 worker 复用稳定 prefix，则代码要从 epoch hash 中移出 worker identity。当前暂定：worker identity 属于执行边界，允许换 epoch。 | `tests/test_contracts.py`；WP5 cache hardening。 |
+| ToolPermission / WriteScope | 当前是可审计 worker-boundary constraint。 | 不得宣称它们是 OS sandbox、tenant isolation 或生产 secrets boundary。生产隔离另列为 future readiness gate。 | 文档 claim audit；未来 security hardening。 |
+| `/frontdesk/jobs/{job_id}/build` response | 当前返回 refs-only `graph_v2_state`，也返回 `final_report` 摘要对象。 | `graph_v2_state` 必须持续通过 refs-only validator；`final_report` 只能包含 governed report fields，不得内联 raw prompt、raw transcript、raw conversation、package content 或 full replay bundle。 | `tests/test_frontdesk_api.py`, `tests/test_api.py` leakage tests。 |
 
 ## 18. Canonical 路由和 artifact 合同
 
@@ -1435,6 +1528,56 @@ graph v2 registry gate 随后复验 registry evidence，并写 registry decision
 
 因此本轮迁移中 “Registry Gate” 的正确含义是产品主路径上的 registry evidence revalidation/snapshot gate，不要把它误读为当前唯一发生首次注册的位置。后续 graph v2 canonicalization 可以决定是否把首次批准时机进一步收敛到单一 gate。
 
+#### 18.1.1 Canonical 判定合同
+
+一个 job 只有同时满足以下条件，才能被 API/UI/operator 判定为 canonical v2 build：
+
+- `contextforge/graph_v2_state.json` 存在；
+- `graph_v2_state` 通过 `validate_v2_graph_state()`；
+- `build_path.mode == "graph_v2_goal_harness"`；
+- `build_path.canonical == true`；
+- state 中只包含 refs / IDs / hashes / status，不包含 raw payload；
+- 至少有当前有效的 ContextForge runtime refs；
+- verifier result 和 acceptance coverage result 与 frozen inputs/package hash 匹配；
+- registry decision 或 human-review route 与 latest verification status 一致；
+- repair attempt 若存在，必须有 repair `WorkerRun`、governed failure context、re-verification 和 route decision。
+
+以下情况都不是 canonical v2 build：
+
+- 只有 `final_report.json`；
+- 只有 registry entry；
+- 只有 old `graph.py` final report；
+- 只有 worker completed/self-report；
+- `graph_v2_state.json` 存在但 schema 无效；
+- `graph_v2_state.json` 有效，但 verification/coverage/registry evidence stale 或缺失。
+
+#### 18.1.2 Registry gate 目标形态
+
+当前实现处在迁移期：
+
+```text
+verified runtime
+  -> LocalSkillRegistry.add_verified()
+  -> graph_v2 registry gate revalidates and snapshots evidence
+```
+
+目标形态应收敛为：
+
+```text
+verified runtime
+  -> candidate package + verification/coverage/ContextForge evidence
+  -> graph_v2 registry gate
+  -> LocalSkillRegistry.add_verified()
+  -> registry decision / entry snapshot
+```
+
+这意味着：
+
+- `goal_runtime.py` 可以保留兼容辅助函数，但 canonical graph v2 route 不应把首次注册隐藏在 build runtime 内部。
+- graph v2 registry gate 应成为产品批准点，负责最终复验、写 decision、写 entry snapshot。
+- 迁移完成前，文档和 API 必须把当前时序标为 transitional revalidation/snapshot gate。
+- 改这部分时必须证明 failed verifier、failed coverage、stale evidence、fabricated evidence 和 worker self-report 都不能注册。
+
 ### 18.2 Builder-visible context
 
 Builder 和 repair worker 允许看到：
@@ -1461,7 +1604,29 @@ Builder 和 repair worker 禁止看到：
 
 Raw Front Desk conversation 可以作为 provenance 被记录到 workspace 或 ledger 中，以便审计和证明它被排除；这不等于它可被 selector 纳入 builder-visible `ContextView`。改 selector、prompt assembler、API status 或 repair context 时必须保留 leakage regression tests。
 
-### 18.3 Graph state shape
+### 18.3 Raw-context policy 表
+
+| Artifact / context | 允许 producer | 允许 consumer | 禁止 consumer | Prompt policy | Graph/API policy |
+| --- | --- | --- | --- | --- | --- |
+| `frontdesk/conversation.jsonl` | API/UI Front Desk | Front Desk governed summarizer、Spec Auditor 的 Front Desk-only 审计路径 | builder、repair、registry、graph state、API status body | 不得进入 builder/repair prompt；作为 raw provenance 时应默认 `prompt_include=False`，若短期代码仍写 `prompt_include=True`，必须由 forbidden selector 和 leakage tests 双重兜底 | graph state/API status 只可暴露 ref/hash/existence，不可内联内容 |
+| `raw_frontdesk_conversation` tag/context item | Front Desk / Goal Harness seeding | only as forbidden provenance evidence | builder/repair visible selectors、PromptView included blocks、Registry decision | 必须出现在 forbidden context 或 omission evidence 中，不得出现在 included context | tests 必须证明 included_item_ids 不含该 item |
+| `frontdesk/core_need_brief.json` | Core Need node | Solution Planner、Spec Auditor、FreezeGate、builder summary | unrelated jobs、unfrozen rejected plan paths | governed summary 可进入 stable prefix，前提是被 current freeze 引用 | API 可展示 governed摘要/ref |
+| `frontdesk/solution_plan.json` | Solution Planner | user review、Spec Auditor、FreezeGate | builder 在 freeze 前不可见；旧 rejected plan 不可见 | approved/frozen 后才可进入 builder-visible context | API 可展示当前 approved plan |
+| `frontdesk/plan_review_*.json` | user / API | Spec Auditor、FreezeGate、graph route | worker 自行伪造或替代 | 只能以 approved/current review ref 进入 context | API 可展示 decision/ref/hash |
+| `skill_spec.yaml` / `acceptance_criteria.yaml` / `verification_spec.yaml` | FreezeGate | builder、repair、verifier、registry | pre-freeze builder | frozen input summary 可进入 stable prefix | API 可暴露 ref/hash 和 governed fields |
+| prior worker transcript | worker boundary | reviewer/debug tooling after explicit request | default builder/repair prompt、API status body、graph state | 默认不可作为 raw transcript 进入 prompt；需先治理成 failure summary | API/status 只暴露 transcript ref/hash/size |
+| verifier failure summary | verifier / bridge | repair node、human review request | unrelated future goals without selection | governed summary 属于 dynamic suffix | graph state 可保存 status/ref，不保存 raw logs |
+| package content | worker/build runtime | verifier、registry packaging、download endpoint if approved | graph state、ContextForge status body、default UI evidence summary | 不进入 prompt，除非 future repair explicitly selects small governed snippets | API/status 只暴露 package ref/hash/download eligibility |
+| provider payload / raw prompt | ContextForge owned LLM boundary | replay/debug only under explicit local review | API status、registry、graph state、builder downstream context | 不作为 downstream prompt content | `raw_prompt_included` / `raw_payload_included` 必须为 false |
+
+这张表的执行规则：
+
+- raw conversation 能被 Front Desk 用来生成 governed artifacts，但不能成为 builder/repair 的信息源。
+- provenance 可以保存，visibility 不能放宽。
+- API/UI 为用户提供 evidence summary，不提供 raw evidence dump。
+- 任何新增 selector、status field、debug endpoint 或 repair context，都必须先判断它落在本表哪一行。
+
+### 18.4 Graph state shape
 
 `graph_v2.py` state 只能保存以下类别：
 
@@ -1486,7 +1651,7 @@ Raw Front Desk conversation 可以作为 provenance 被记录到 workspace 或 l
 - replay bundle content；
 - 大段自然语言总结。
 
-### 18.4 API status contract
+### 18.5 API status contract
 
 `GET /jobs/{job_id}/contextforge` 应该成为用户和 operator 理解 v2 evidence 的主入口。它应该暴露：
 
@@ -1510,6 +1675,57 @@ Raw Front Desk conversation 可以作为 provenance 被记录到 workspace 或 l
 - worker transcript 内容；
 - package 文件内容；
 - full replay bundle。
+
+### 18.6 Legacy compatibility route policy
+
+SkillFoundry 仍保留一些 v0 兼容入口和测试 fixture，其中最重要的是 `POST /jobs` 旧离线 builder 路线。
+
+这条路线的正确定位是：
+
+```text
+legacy_offline_compatibility
+```
+
+它允许：
+
+- 保留 v0 deterministic fixture；
+- 做内部 smoke test；
+- 对比旧 `final_report.json` 和新 graph v2 evidence；
+- 帮助迁移历史 workspace。
+
+它不允许：
+
+- 被 README / UI 当作新用户默认入口；
+- 被新产品代码当作 build / verify / registry 主路径；
+- 绕过 Front Desk approved plan review；
+- 绕过 graph v2 refs-only state；
+- 绕过 ContextForge Goal Harness evidence；
+- 只因为存在 `final_report.json` 就被标记为 canonical。
+
+目标状态：
+
+```text
+POST /frontdesk/jobs
+  -> POST /frontdesk/jobs/{job_id}/plan-review
+  -> POST /frontdesk/jobs/{job_id}/build
+  = canonical product route
+
+POST /jobs
+  = opt-in compatibility route only
+```
+
+推荐代码收敛方式：
+
+- `SkillFoundryAPI` 默认不允许 `POST /jobs` 创建 legacy offline build。
+- 测试或迁移工具需要旧路线时，通过显式 constructor flag、环境变量或专用 compatibility entry 开启。
+- server-rendered UI 默认不展示旧 `/jobs` debug form。
+- `GET /jobs` 可以继续列出现有 workspace，但必须通过 `build_path` 明确标记：
+  - `graph_v2_goal_harness` / `canonical: true`
+  - `legacy_offline_compatibility` / `canonical: false`
+  - `workspace_only` / `canonical: false`
+- `GET /jobs/{job_id}/contextforge` 不能仅凭 `final_report.json` 推断 canonical；必须验证 `contextforge/graph_v2_state.json`。
+
+这项收敛属于 WP1/WP6 的交界：它不是删除历史能力，而是让默认 API/UI 产品面不再误导新人继续沿旧骨架开发。
 
 ## 19. 后续实施工作包
 
@@ -1535,6 +1751,8 @@ graph_v2.py 成为唯一产品 build / verify / repair / registry 主骨架。
 - 所有 Front Desk frozen build 默认进入 `run_verified_skillfoundry_v2_graph`。
 - legacy `graph.py` 不再作为新产品路径。
 - 旧 graph 若保留，只能作为 compatibility wrapper 或 historical fixture。
+- `POST /jobs` 旧 offline build route 默认关闭或从产品 UI 隐藏，只能通过显式 compatibility opt-in 使用。
+- job list/status 必须继续用 `build_path` 区分 `graph_v2_goal_harness`、`legacy_offline_compatibility` 和 `workspace_only`。
 - repair 后必须重新经过 verifier、acceptance coverage、ContextForge bridge 和 registry gate。
 - failed repair verification 必须进入 human review，不能注册。
 
@@ -1550,6 +1768,7 @@ git diff --check
 独立 reviewer 重点：
 
 - 是否仍存在可以绕过 graph v2 的产品 build path；
+- legacy `/jobs` 是否仍被默认 API/UI 鼓励使用；
 - graph state 是否仍 refs-only；
 - repair worker self-report 是否没有变成 acceptance。
 
@@ -1709,6 +1928,8 @@ PromptCachePlan proves provider cache hit.
 - `src/skillfoundry/context.py`
 - `src/skillfoundry/worker.py`
 - `src/skillfoundry/llm_builder.py`
+- `src/skillfoundry/offline.py`
+- legacy `POST /jobs` compatibility entry
 - docs references
 - compatibility tests
 
@@ -1716,6 +1937,7 @@ PromptCachePlan proves provider cache hit.
 
 - legacy modules 标注 historical / compatibility；
 - 新 API path 不再调用 legacy graph；
+- legacy offline job creation 默认不出现在产品 API/UI happy path；
 - 旧 prompt assembly 不再承载新功能；
 - docs 不再把旧 roadmap 当执行源；
 - tests 明确 v2 是 canonical。
@@ -1833,6 +2055,22 @@ rg -n "production-ready|cache hit guaranteed|controls Codex SDK thread internals
 
 The `rg` command above is not a pass/fail by itself; it is a claim-audit prompt. Any hit must be manually interpreted.
 
+### 21.1 Trust-boundary negative tests
+
+涉及 trust boundary 的代码切片，不能只跑 happy path。至少应按改动面选择以下负向验证：
+
+| 风险 | 必须证明 | 现有或目标测试 |
+| --- | --- | --- |
+| raw conversation 进入 builder/repair prompt | `raw_frontdesk_conversation` 只在 forbidden/omitted evidence 中出现，不在 included context / PromptView blocks 中出现。 | `tests/test_goal_harness_slice.py`, `tests/test_goal_harness_verified_runtime.py`, `tests/test_graph_v2_runtime.py`, `tests/test_frontdesk_goal_runtime.py` |
+| graph state 膨胀或泄漏 | state validator 拒绝 raw prompt、raw conversation、raw transcript、raw logs、package content、replay content。 | `tests/test_graph_v2.py`, `tests/test_graph_v2_runtime.py` |
+| API status 泄漏 raw payload | `GET /jobs/{id}/contextforge` 只返回 refs/status/hash/size，不 inline prompt、payload、conversation、transcript、package content。 | `tests/test_api.py`, `tests/test_frontdesk_api.py` |
+| `/frontdesk/jobs/{id}/build` response 泄漏 | `graph_v2_state` 保持 refs-only，`final_report` 只包含 governed report fields。 | `tests/test_frontdesk_api.py` target hardening |
+| metric gates 被误认为已执行 | 非空 ContextForge metric gates 必须 fail closed，直到 core runner 支持。 | `tests/test_verification_bridge.py::test_bridge_fails_closed_for_unsupported_metric_gates` |
+| worker self-report 伪造 acceptance | 只有 worker completed 或 self-report 时不能 registry approve；必须有 verifier、coverage、ContextForge verification 和 hash freshness。 | `tests/test_registry.py`, `tests/test_verification_bridge.py` |
+| legacy route 被当作 canonical | legacy `POST /jobs` 默认 UI/API 不应鼓励使用；status 必须标 `legacy_offline_compatibility` / `canonical: false`。 | `tests/test_api.py` target hardening |
+| provider cache 过度声明 | 没有 provider telemetry 时只能记录 expected cacheable tokens 和 usage unavailable reason。 | WP5 tests in ContextForge/SkillFoundry |
+| Codex boundary 被过度声明 | Codex worker metadata 必须是 boundary-only，记录 transcript/diff/artifact refs 和 usage unavailable reason，不声称 replay internals。 | `tests/test_workers_v2.py`, future Codex pilot tests |
+
 ## 22. Decision rules for future agents
 
 When a future agent is unsure, use these rules:
@@ -1893,4 +2131,29 @@ residual_risks:
   - Worker self-report is blocked by verifier / acceptance coverage / ContextForge bridge / Registry gates, not by a universal semantic self-report scanner.
   - Current graph v2 registry gate revalidates and snapshots registry evidence after verified runtime registration; future canonicalization may further consolidate first approval timing.
 status: approved for use as canonical v2 refactor execution entry
+```
+
+本轮 reviewer 复审结果：
+
+```text
+reviewer: Feynman / independent gpt-5.5 xhigh reviewer
+model: gpt-5.5 xhigh
+initial_decision: approved_with_required_doc_changes
+final_decision: approved_with_residual_risks
+blocking_findings: none
+required_doc_changes_verified:
+  - 文档权威矩阵已补齐，并将 ARCHITECTURE / PRODUCTION_READINESS / SECURITY_CHECKLIST 标注为 v0 historical context。
+  - 当前不匹配 ledger 已补齐，覆盖 metric_gates、GoalHarness 单节点、registry 时序、legacy /jobs、raw conversation prompt_include 风险、worker self-report marker、cache epoch worker identity 和 ToolPermission/WriteScope 边界。
+  - raw-context policy 表已补齐，明确 frontdesk/conversation.jsonl 与 raw_frontdesk_conversation 不得进入 builder/repair/registry/API status。
+  - canonical route contract 已补齐，明确 graph_v2_goal_harness 判定条件和 legacy /jobs opt-in compatibility 目标。
+  - registry gate current transitional behavior 与 target behavior 已区分。
+  - cache claim checklist 已补齐，禁止把 PromptCachePlan 写成 provider cache hit 证明。
+  - trust-boundary negative tests 清单已补齐。
+  - readiness 分层已补齐，区分 documentation baseline、offline v2 skeleton、internal pilot 和 production ready。
+residual_risks:
+  - SkillFoundry 仍处于 mixed migration；graph_v2 还不是唯一产品 build / verify / repair / registry 路由。
+  - Legacy /jobs 默认隔离仍是后续代码收敛事项。
+  - Raw conversation 的短期 ledger/selector 风险仍需实现和负向测试持续守住。
+  - Registry 首次批准时序仍处于 transitional state，但文档已区分 current 和 target。
+status: approved for this documentation slice; remaining risks are implementation followups, not document blockers
 ```

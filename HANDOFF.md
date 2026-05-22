@@ -188,6 +188,7 @@ uv run --extra test pytest -q
 3. 后续继续 Phase 4/5/7：
 
 - 让 `graph_v2.py` 成为唯一产品 build / verify / repair / registry 主骨架，旧 `graph.py` 退役或隔离为 compatibility wrapper。
+- 当前最具体的下一片是把旧 `POST /jobs` 离线 builder 改成显式 opt-in compatibility route，并从默认 UI 产品入口隐藏；canonical build route 应保持为 `/frontdesk/jobs/{job_id}/build`。
 - 继续完善 API/UI 的 registry outcome、repair/human-review route 和 evidence 摘要。
 - 隔离或退役 legacy prompt/context/worker 路径，把 v2 contract/graph/runtime 设为默认贡献入口。
 - 真实 provider / Codex SDK thread 只做 opt-in pilot，不进入默认测试。
