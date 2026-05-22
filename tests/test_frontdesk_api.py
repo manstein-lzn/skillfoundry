@@ -3,7 +3,11 @@ import json
 from contextforge.schema import ModelResponse
 
 from skillfoundry.api import SkillFoundryAPI
-from skillfoundry.frontdesk_goal_runtime import FRONTDESK_SPEC_AUDIT_RUNTIME_RESULT_REF
+from skillfoundry.frontdesk_goal_runtime import (
+    FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF,
+    FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF,
+    FRONTDESK_SPEC_AUDIT_RUNTIME_RESULT_REF,
+)
 from skillfoundry.frontdesk_schema import FrontDeskConfig
 
 
@@ -261,18 +265,47 @@ def test_frontdesk_plan_revision_limit_persists_human_review_state(tmp_path):
     assert fetched["state"]["plan_revision_count"] == 2
 
 
-def test_frontdesk_api_requires_live_key_without_injected_client(tmp_path, monkeypatch):
+def test_frontdesk_api_defaults_to_offline_goal_harness_without_live_key(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     api = SkillFoundryAPI(tmp_path / "runs")
+    marker = "RAW_API_FRONTDESK_MARKER_SHOULD_NOT_LEAK"
 
-    result = api.handle(
+    created_response = api.handle(
         "POST",
         "/frontdesk/jobs",
-        body={"job_id": "frontdesk-no-key", "message": "Build a skill."},
+        body={"job_id": "frontdesk-no-key", "message": f"Build a governed skill. {marker}"},
     )
 
-    assert result.status == 503
-    assert result.json()["error"]["code"] == "openai_api_key_missing"
+    assert created_response.status == 201
+    created = created_response.json()
+    assert created["status"] == "await_user_plan_review"
+    assert created["phase"] == "user_review"
+    assert created["state"]["readiness"] == "awaiting_plan_review"
+    assert created["state"]["latest_elicitation_report_ref"] == "frontdesk/elicitation_report_001.json"
+    assert created["state"]["solution_plan_ref"] == "frontdesk/solution_plan.json"
+    assert marker not in created_response.body.decode("utf-8")
+
+    run_root = tmp_path / "runs" / "frontdesk-no-key"
+    core_runtime = json.loads((run_root / FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF).read_text(encoding="utf-8"))
+    plan_runtime = json.loads((run_root / FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF).read_text(encoding="utf-8"))
+    assert core_runtime["trust_boundaries"]["raw_conversation_included"] is False
+    assert plan_runtime["trust_boundaries"]["raw_conversation_included"] is False
+    assert marker not in json.dumps(core_runtime, sort_keys=True)
+    assert marker not in json.dumps(plan_runtime, sort_keys=True)
+
+    approved = api.handle(
+        "POST",
+        "/frontdesk/jobs/frontdesk-no-key/plan-review",
+        body={"decision": "approve", "reason": "Offline Goal Harness plan is acceptable."},
+    ).json()
+    assert approved["status"] == "route_to_build"
+    assert approved["state"]["readiness"] == "frozen"
+    assert approved["state"]["latest_plan_review_ref"] == "frontdesk/plan_review_001.json"
+    assert approved["state"]["latest_audit_report_ref"] == "frontdesk/spec_audit_report_001.json"
+    audit_runtime = json.loads((run_root / FRONTDESK_SPEC_AUDIT_RUNTIME_RESULT_REF).read_text(encoding="utf-8"))
+    assert audit_runtime["refs"]["plan_review"] == "frontdesk/plan_review_001.json"
+    assert audit_runtime["refs"]["spec_audit_report"] == "frontdesk/spec_audit_report_001.json"
+    assert audit_runtime["trust_boundaries"]["raw_conversation_included"] is False
 
 
 def test_frontdesk_retry_upgrades_legacy_low_model_call_budget(tmp_path):

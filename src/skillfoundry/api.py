@@ -35,7 +35,7 @@ from .frontdesk_workspace import (
     write_frontdesk_artifact,
 )
 from .goal_runtime import GOAL_RUNTIME_LEDGER_REF, GOAL_RUNTIME_RESULT_REF, GOAL_RUNTIME_STATE_REF
-from .live_llm import DEFAULT_FRONTDESK_MODEL, OpenAIChatCompletionsClient
+from .live_llm import DEFAULT_FRONTDESK_MODEL
 from .offline import OfflineWorkerMode, build_offline, read_final_report
 from .registry import APPROVAL_APPROVED, LocalSkillRegistry, QUARANTINE_NONE
 from .schema import JsonValue, RegistryEntry, ensure_json_compatible, sha256_file
@@ -182,9 +182,6 @@ class SkillFoundryAPI:
         job_root = self._job_root(safe_job_id)
         if job_root.exists() and any(job_root.iterdir()):
             raise APIError(409, "job_exists", f"frontdesk job already exists: {safe_job_id}")
-        if self.frontdesk_client_factory is None and not os.environ.get("OPENAI_API_KEY"):
-            raise APIError(503, "openai_api_key_missing", "OPENAI_API_KEY is required for live Front Desk trial")
-
         workspace = initialize_job_workspace(self._runs_root_resolved, safe_job_id)
         frontdesk = initialize_frontdesk_workspace(workspace)
         append_conversation_turn(
@@ -208,9 +205,6 @@ class SkillFoundryAPI:
         message = payload.get("message", payload.get("answer"))
         if not isinstance(message, str) or not message.strip():
             raise APIError(400, "invalid_message", "message must be a non-empty string")
-        if self.frontdesk_client_factory is None and not os.environ.get("OPENAI_API_KEY"):
-            raise APIError(503, "openai_api_key_missing", "OPENAI_API_KEY is required for live Front Desk trial")
-
         job_root = self._require_job_root(safe_job_id)
         workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
         frontdesk = FrontDeskWorkspace(workspace)
@@ -360,9 +354,6 @@ class SkillFoundryAPI:
         """Retry the current Front Desk model round without appending a user turn."""
 
         safe_job_id = self._validate_job_id(job_id)
-        if self.frontdesk_client_factory is None and not os.environ.get("OPENAI_API_KEY"):
-            raise APIError(503, "openai_api_key_missing", "OPENAI_API_KEY is required for live Front Desk trial")
-
         job_root = self._require_job_root(safe_job_id)
         workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
         frontdesk = FrontDeskWorkspace(workspace)
@@ -1025,8 +1016,12 @@ class SkillFoundryAPI:
             auditor_client = None
         else:
             round_index = (state.clarification_round if state is not None else 0) + 1
-            elicitor_client = self._frontdesk_client("requirements_elicitor", frontdesk.job_id, round_index)
-            auditor_client = self._frontdesk_client("spec_auditor", frontdesk.job_id, round_index)
+            if self.frontdesk_client_factory is None:
+                elicitor_client = None
+                auditor_client = None
+            else:
+                elicitor_client = self._frontdesk_client("requirements_elicitor", frontdesk.job_id, round_index)
+                auditor_client = self._frontdesk_client("spec_auditor", frontdesk.job_id, round_index)
         result = run_frontdesk_round(
             frontdesk,
             state=state,
@@ -1034,8 +1029,8 @@ class SkillFoundryAPI:
             auditor_client=auditor_client,
             elicitor_model_params=self._frontdesk_model_params(),
             auditor_model_params=self._frontdesk_model_params(),
-            elicitor_provider="openai" if self.frontdesk_client_factory is None else "fake",
-            auditor_provider="openai" if self.frontdesk_client_factory is None else "fake",
+            elicitor_provider="fake",
+            auditor_provider="fake",
             elicitor_model=self.frontdesk_model,
             auditor_model=self.frontdesk_model,
         )
@@ -1043,12 +1038,9 @@ class SkillFoundryAPI:
         return result
 
     def _frontdesk_client(self, role: str, job_id: str, round_index: int) -> Any:
-        if self.frontdesk_client_factory is not None:
-            return self.frontdesk_client_factory(role, job_id, round_index)
-        try:
-            return OpenAIChatCompletionsClient.from_env()
-        except Exception as exc:
-            raise APIError(503, "frontdesk_provider_unavailable", str(exc)) from exc
+        if self.frontdesk_client_factory is None:
+            raise RuntimeError("Front Desk live clients must be configured explicitly.")
+        return self.frontdesk_client_factory(role, job_id, round_index)
 
     def _frontdesk_model_params(self) -> dict[str, JsonValue]:
         params: dict[str, JsonValue] = {
