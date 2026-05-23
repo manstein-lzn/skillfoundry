@@ -211,6 +211,17 @@ Only after that does the independent SkillFoundry verifier write
 `verifier/verification_result.json`, and only a passing verifier result can enter
 the registry gate.
 
+For a manual real Codex exec probe, see:
+
+```text
+docs/FORGEUNIT_REAL_CODEX_EXEC_PILOT.md
+scripts/forgeunit_codex_exec_worker.py
+scripts/run_forgeunit_real_codex_exec_pilot.py
+```
+
+That pilot wraps a real `codex exec` or explicit fake command, but it is not part
+of default pytest and does not change the offline deterministic test policy.
+
 ## Non-Goals
 
 This slice does not add:
