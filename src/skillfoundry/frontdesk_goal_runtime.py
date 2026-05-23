@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any
 
 from contextforge import (
@@ -140,18 +141,7 @@ class FrontDeskCoreNeedFakeWorker:
                 metadata={"policy_error": str(exc)},
             )
 
-        brief = CoreNeedBrief(
-            problem_statement="The user needs a governed Codex Skill requirement before build execution.",
-            target_user="SkillFoundry requester",
-            usage_moment="Before routing a clarified requirement into the build pipeline.",
-            desired_outcome="A concise core-need brief that downstream planning can consume by ref.",
-            success_signal="Front Desk core need is marked ready without exposing raw conversation.",
-            current_workaround="Manual interpretation of conversation history.",
-            assumptions=["Derived from governed Front Desk summary artifacts, not raw conversation."],
-            risk_flags=[],
-            confidence_score=0.75,
-            source_turn_ids=[],
-        )
+        brief = _core_need_brief_from_clarification_summary(self.frontdesk)
         report = CoreNeedDiscoveryReport(
             readiness="core_need_ready",
             current_understanding=brief.problem_statement,
@@ -1067,21 +1057,155 @@ def _plan_review_failure(
     return None
 
 
+def _core_need_brief_from_clarification_summary(frontdesk: FrontDeskWorkspace) -> CoreNeedBrief:
+    summary = _read_optional_text(frontdesk, FRONTDESK_CLARIFICATION_SUMMARY_REF)
+    request = _current_request_from_summary(summary)
+    objective = _objective_from_request(request)
+    if not objective:
+        objective = "preparing a governed Codex Skill requirement before build execution"
+    problem = f"The user needs a Codex Skill for {objective}."
+    outcome = f"A governed Codex Skill that supports {objective}."
+    return CoreNeedBrief(
+        problem_statement=problem,
+        target_user="SkillFoundry requester",
+        usage_moment=f"When the requester needs help with {objective}.",
+        desired_outcome=outcome,
+        success_signal=f"The generated Skill explicitly supports {objective} without exposing raw conversation.",
+        current_workaround="Manual interpretation of request details and handoff notes.",
+        non_goals=["Do not read raw Front Desk conversation during build."],
+        assumptions=["Derived from governed Front Desk clarification summary artifacts, not raw conversation."],
+        risk_flags=[],
+        confidence_score=0.78,
+        source_turn_ids=[],
+    )
+
+
+def _read_optional_text(frontdesk: FrontDeskWorkspace, ref: str) -> str:
+    try:
+        return frontdesk.workspace.resolve_path(ref, must_exist=True).read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+def _current_request_from_summary(summary: str) -> str:
+    if not summary.strip():
+        return ""
+    lines = summary.splitlines()
+    current: list[str] = []
+    in_current = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if in_current:
+                break
+            in_current = stripped.lower() == "## current user request"
+            continue
+        if in_current and stripped:
+            current.append(stripped.removeprefix("-").strip())
+    if current:
+        return " ".join(current)
+    for line in lines:
+        stripped = line.strip().removeprefix("-").strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped
+    return ""
+
+
+def _objective_from_request(request: str) -> str:
+    text = re.sub(r"\s+", " ", request).strip(" .")
+    if not text:
+        return ""
+    patterns = [
+        r"^(?:please\s+)?build\s+(?:me\s+)?(?:a\s+)?(?:governed\s+)?(?:codex\s+)?skill\s+(?:for|to)\s+",
+        r"^(?:please\s+)?create\s+(?:a\s+)?(?:governed\s+)?(?:codex\s+)?skill\s+(?:for|to)\s+",
+        r"^(?:please\s+)?write\s+(?:a\s+)?(?:governed\s+)?(?:codex\s+)?skill\s+(?:for|to)\s+",
+    ]
+    objective = text
+    for pattern in patterns:
+        objective = re.sub(pattern, "", objective, flags=re.IGNORECASE)
+    objective = objective.strip(" .")
+    if not objective:
+        objective = text
+    first = objective[:1].lower()
+    return first + objective[1:]
+
+
+def _skill_identity_from_core_need(brief: CoreNeedBrief) -> tuple[str, str]:
+    source = f"{brief.desired_outcome} {brief.problem_statement}"
+    words = _semantic_words(source)
+    if not words:
+        return "frontdesk-governed-skill", "Governed Requirement Skill"
+    selected = words[:5]
+    skill_id = "-".join(selected)
+    if not skill_id.endswith("skill"):
+        skill_id = f"{skill_id}-skill"
+    title_words = [word.capitalize() for word in selected[:4]]
+    title = " ".join(title_words)
+    if "Skill" not in title_words:
+        title = f"{title} Skill"
+    return skill_id[:80], title
+
+
+_SEMANTIC_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "before",
+    "build",
+    "can",
+    "codex",
+    "for",
+    "from",
+    "governed",
+    "help",
+    "need",
+    "needs",
+    "requester",
+    "skill",
+    "skills",
+    "supports",
+    "that",
+    "the",
+    "to",
+    "user",
+    "with",
+}
+
+
+def _semantic_words(text: str) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in re.findall(r"[A-Za-z0-9]+", text.lower()):
+        if len(raw) < 3 or raw in _SEMANTIC_STOPWORDS or raw in seen:
+            continue
+        seen.add(raw)
+        result.append(raw)
+    return result
+
+
 def _draft_skill_spec_from_core_need(brief: CoreNeedBrief) -> SkillSpec:
+    skill_id, title = _skill_identity_from_core_need(brief)
     return SkillSpec(
-        skill_id="frontdesk-governed-skill",
-        title="Governed Requirement Skill",
+        skill_id=skill_id,
+        title=title,
         description=brief.problem_statement,
         trigger_scenarios=[brief.usage_moment],
         non_trigger_scenarios=list(brief.non_goals)
         or ["Do not run before the solution plan and acceptance criteria are approved."],
-        required_inputs=["Approved solution plan", "Frozen acceptance criteria"],
+        required_inputs=[
+            "Approved solution plan",
+            "Frozen acceptance criteria",
+            "User-provided content matching the governed request.",
+        ],
         expected_outputs=[brief.desired_outcome],
         constraints=[
             "Use only frozen Front Desk artifacts as builder inputs.",
             "Do not read raw Front Desk conversation during build.",
         ],
-        acceptance_criteria=[brief.success_signal],
+        acceptance_criteria=[
+            brief.success_signal,
+            "The package identity and workflow reflect the governed request semantics.",
+        ],
         reference_materials=[FRONTDESK_CORE_NEED_BRIEF_REF, FRONTDESK_SOLUTION_PLAN_REF],
         security_notes=["Raw conversation is forbidden provenance only."],
     )
@@ -1092,7 +1216,7 @@ def _acceptance_criteria_from_core_need(frontdesk: FrontDeskWorkspace, brief: Co
         criteria=[
             AcceptanceCriterion(
                 id="AC-001",
-                description="The generated package includes a readable Skill package for the approved governed requirement.",
+                description=f"The generated package includes a readable Skill package for: {brief.desired_outcome}",
                 source_requirement=brief.problem_statement,
                 requirement_id="REQ-001",
                 test_method="static",

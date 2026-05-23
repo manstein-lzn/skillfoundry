@@ -201,7 +201,8 @@ def test_frontdesk_solution_planner_runs_after_core_need_without_raw_conversatio
 
     state_text = json.dumps(result.runtime_state, sort_keys=True)
     result_text = json.dumps(result.runtime_result, sort_keys=True)
-    assert "governed Codex Skill requirement" in rendered_prompt
+    core_need_text = workspace.resolve_path(FRONTDESK_CORE_NEED_BRIEF_REF, must_exist=True).read_text(encoding="utf-8")
+    assert "governed skill requirement" in core_need_text
     assert marker not in rendered_prompt
     assert marker not in state_text
     assert marker not in result_text
@@ -298,7 +299,10 @@ def test_frontdesk_spec_auditor_runs_after_approved_plan_without_raw_conversatio
 
     state_text = json.dumps(result.runtime_state, sort_keys=True)
     result_text = json.dumps(result.runtime_result, sort_keys=True)
-    assert "Governed Requirement Skill" in rendered_prompt
+    draft_spec_text = workspace.resolve_path(FRONTDESK_DRAFT_SKILL_SPEC_REF, must_exist=True).read_text(
+        encoding="utf-8"
+    )
+    assert "requirement-skill" in draft_spec_text
     assert marker not in rendered_prompt
     assert marker not in state_text
     assert marker not in result_text

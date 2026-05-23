@@ -29,6 +29,7 @@ from .frontdesk_v2 import (
 )
 from .frontdesk_workspace import (
     FRONTDESK_BUDGET_REF,
+    FRONTDESK_CLARIFICATION_SUMMARY_REF,
     FRONTDESK_CONVERSATION_REF,
     FrontDeskWorkspace,
     append_conversation_turn,
@@ -242,6 +243,7 @@ class SkillFoundryAPI:
                 metadata={"source": "api"},
             ),
         )
+        _refresh_frontdesk_clarification_summary(frontdesk)
         result = self._run_frontdesk_round(frontdesk)
         return self._frontdesk_payload(safe_job_id, result=result)
 
@@ -267,6 +269,7 @@ class SkillFoundryAPI:
                 metadata={"source": "api"},
             ),
         )
+        _refresh_frontdesk_clarification_summary(frontdesk)
         state = self._read_frontdesk_state(frontdesk)
         result = self._run_frontdesk_round(frontdesk, state=state)
         return self._frontdesk_payload(safe_job_id, result=result)
@@ -384,6 +387,7 @@ class SkillFoundryAPI:
                     },
                 ),
             )
+            _refresh_frontdesk_clarification_summary(frontdesk)
             review_state = _copy_frontdesk_state(
                 state,
                 stage="revise_plan",
@@ -3349,6 +3353,51 @@ def _plan_revision_message(*, reason: str, requested_changes: list[str]) -> str:
         lines.append("Requested changes:")
         lines.extend(f"- {item}" for item in requested_changes)
     return "\n".join(lines)
+
+
+def _refresh_frontdesk_clarification_summary(frontdesk: FrontDeskWorkspace) -> None:
+    turns = read_conversation_turns(frontdesk)
+    user_requests = [
+        _sanitized_frontdesk_request(turn.content)
+        for turn in turns
+        if turn.role == "user" and _sanitized_frontdesk_request(turn.content)
+    ]
+    if not user_requests:
+        return
+    latest_request = user_requests[-1]
+    lines = [
+        "# Clarification Summary",
+        "",
+        "This governed summary preserves the user's task semantics for Front Desk planning.",
+        "It is derived at the API boundary and is not the raw conversation transcript.",
+        "",
+        "## Current User Request",
+        latest_request,
+        "",
+        "## User Request History",
+    ]
+    for index, request in enumerate(user_requests, start=1):
+        lines.append(f"- Request {index}: {request}")
+    lines.extend(
+        [
+            "",
+            "## Privacy Boundary",
+            "- Raw conversation turns remain in frontdesk/conversation.jsonl as provenance only.",
+            "- Goal Harness nodes consume this governed summary and refs, not the raw transcript.",
+        ]
+    )
+    write_frontdesk_artifact(frontdesk, FRONTDESK_CLARIFICATION_SUMMARY_REF, "\n".join(lines).rstrip() + "\n")
+
+
+_FRONTDESK_SECRETISH_TOKEN_RE = re.compile(r"\b[A-Z0-9_]{12,}\b")
+
+
+def _sanitized_frontdesk_request(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if not normalized:
+        return ""
+    normalized = _FRONTDESK_SECRETISH_TOKEN_RE.sub("[redacted-token]", normalized)
+    return normalized[:1000].rstrip()
 
 
 def _frontdesk_review_actions(state: FrontDeskState | None) -> list[dict[str, JsonValue]]:

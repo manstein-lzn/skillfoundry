@@ -62,6 +62,10 @@ def test_frontdesk_live_codex_eval_fake_mode_runs_scenarios_refs_only(tmp_path: 
     assert payload["totals"]["registered"] == 2
     assert payload["totals"]["failed"] == 0
     assert payload["totals"]["redaction_failures"] == 0
+    assert payload["totals"]["semantic_fidelity_configured"] == 2
+    assert payload["totals"]["semantic_fidelity_passed"] == 2
+    assert payload["totals"]["semantic_fidelity_failed"] == 0
+    assert payload["totals"]["unique_registry_skill_ids"] == 2
     assert payload["failure_taxonomy"] == []
     assert payload["redaction_findings"] == []
     assert payload["trust_boundaries"]["command_string_included"] is False
@@ -80,6 +84,16 @@ def test_frontdesk_live_codex_eval_fake_mode_runs_scenarios_refs_only(tmp_path: 
         assert item["forgeunit_skillfoundry"]["raw_prompt_included"] is False
         assert item["forgeunit_skillfoundry"]["raw_transcript_included"] is False
         assert item["forgeunit_skillfoundry"]["raw_worker_input_included"] is False
+        assert item["semantic_fidelity"]["configured"] is True
+        assert item["semantic_fidelity"]["passed"] is True
+        assert item["semantic_fidelity"]["source_passed"] is True
+        assert item["semantic_fidelity"]["package_checked"] is False
+        assert item["semantic_fidelity"]["package_passed"] is True
+        assert item["semantic_fidelity"]["required_marker_count"] >= 2
+        assert item["semantic_fidelity"]["source_matched_marker_count"] == (
+            item["semantic_fidelity"]["required_marker_count"]
+        )
+        assert item["semantic_fidelity"]["package_matched_marker_count"] is None
         assert item["package_downloadable"] is True
         assert item["refs"]["forgeunit_skillfoundry_summary"] == "contextforge/forgeunit_skillfoundry_summary.json"
         assert item["refs"]["registry_decision"] == "registry/decision.json"
@@ -95,6 +109,8 @@ def test_frontdesk_live_codex_eval_fake_mode_runs_scenarios_refs_only(tmp_path: 
     assert "frontdesk_eval_fake_codex_exec.py" not in serialized
     assert "deterministic forgeunit skillfoundry transcript pointer" not in serialized
     assert "ForgeUnit SkillFoundry Composition Skill" not in serialized
+    assert "pytest-failure" in serialized
+    assert "Build a pytest failure analyzer skill" not in serialized
     assert "package_content" not in serialized
     assert "raw prompt body" not in serialized
     assert "raw transcript body" not in serialized

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -37,6 +38,7 @@ class Scenario:
     scenario_id: str
     message: str
     version: str | None = None
+    semantic_markers: tuple[str, ...] = ()
 
 
 DEFAULT_SCENARIOS: tuple[Scenario, ...] = (
@@ -44,26 +46,31 @@ DEFAULT_SCENARIOS: tuple[Scenario, ...] = (
         "pytest-failure-analyzer",
         "Build a governed Codex skill for analyzing pasted pytest failures and returning root cause, "
         "minimal fix, and verification steps.",
+        semantic_markers=("pytest", "failure"),
     ),
     Scenario(
         "repository-handoff",
         "Build a governed Codex skill for creating concise repository onboarding and handoff briefs "
         "from checked-in project artifacts.",
+        semantic_markers=("repository", "handoff"),
     ),
     Scenario(
         "api-docs-summarizer",
         "Build a governed Codex skill for summarizing API documentation into usage constraints, "
         "common workflows, and integration caveats.",
+        semantic_markers=("api", "docs"),
     ),
     Scenario(
         "incident-triage",
         "Build a governed Codex skill for triaging incident notes into impact, timeline, likely cause, "
         "next actions, and verification evidence.",
+        semantic_markers=("incident", "triage"),
     ),
     Scenario(
         "code-review-checklist",
         "Build a governed Codex skill for reviewing code changes with emphasis on regressions, "
         "security risks, missing tests, and operational follow-up.",
+        semantic_markers=("code", "review"),
     ),
 )
 
@@ -84,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
     totals = _mapping(summary.get("totals"))
     if totals.get("redaction_failures") != 0:
         return 3
+    if totals.get("semantic_fidelity_failed") not in (None, 0):
+        return 1
     return 0 if totals.get("registered") == totals.get("total") else 1
 
 
@@ -113,10 +122,12 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
         scenario_summaries.append(
             _run_scenario(
                 api=api,
+                eval_root=eval_root,
                 eval_id=eval_id,
                 scenario=scenario,
                 version_prefix=args.version_prefix,
                 created_at=created_at,
+                assess_package=bool(args.command),
             )
         )
     duration_seconds = round(time.monotonic() - started, 3)
@@ -211,22 +222,25 @@ def _parse_scenario(item: Any, *, index: int) -> Scenario:
     scenario_id = _optional_non_empty(item.get("id") or item.get("scenario_id"))
     message = _optional_non_empty(item.get("message"))
     version = _optional_non_empty(item.get("version"))
+    markers = _semantic_markers_from_payload(item.get("semantic_markers"), scenario_id or "")
     if scenario_id is None:
         raise EvalError(f"scenario #{index} is missing id")
     if not SCENARIO_ID_RE.fullmatch(scenario_id):
         raise EvalError(f"scenario id must be lowercase kebab-case: {scenario_id}")
     if message is None:
         raise EvalError(f"scenario {scenario_id} is missing message")
-    return Scenario(scenario_id=scenario_id, message=message, version=version)
+    return Scenario(scenario_id=scenario_id, message=message, version=version, semantic_markers=markers)
 
 
 def _run_scenario(
     *,
     api: SkillFoundryAPI,
+    eval_root: Path,
     eval_id: str,
     scenario: Scenario,
     version_prefix: str,
     created_at: str | None,
+    assess_package: bool,
 ) -> dict[str, Any]:
     job_id = f"{eval_id}-{scenario.scenario_id}"
     version = scenario.version or f"{version_prefix}-{scenario.scenario_id}"
@@ -265,6 +279,11 @@ def _run_scenario(
             build=build,
             contextforge=contextforge,
             job=job,
+        )
+        payload["semantic_fidelity"] = _semantic_fidelity_summary(
+            eval_root / job_id,
+            scenario,
+            assess_package=assess_package,
         )
     except EvalError as exc:
         payload = {
@@ -374,8 +393,22 @@ def _totals(scenarios: list[dict[str, Any]], *, duration_seconds: float) -> dict
     verification_failed = 0
     registry_rejected = 0
     api_failed = 0
+    semantic_configured = 0
+    semantic_passed = 0
+    semantic_failed = 0
+    registry_skill_ids: set[str] = set()
     for item in scenarios:
         forgeunit = _mapping(item.get("forgeunit_skillfoundry"))
+        skill_id = forgeunit.get("registry_skill_id")
+        if isinstance(skill_id, str) and skill_id:
+            registry_skill_ids.add(skill_id)
+        semantic = _mapping(item.get("semantic_fidelity"))
+        if semantic.get("configured") is True:
+            semantic_configured += 1
+            if semantic.get("passed") is True:
+                semantic_passed += 1
+            else:
+                semantic_failed += 1
         if item.get("status") == "failed":
             api_failed += 1
         elif forgeunit.get("verification_passed") is False:
@@ -389,6 +422,10 @@ def _totals(scenarios: list[dict[str, Any]], *, duration_seconds: float) -> dict
         "verification_failed": verification_failed,
         "registry_rejected": registry_rejected,
         "api_failed": api_failed,
+        "semantic_fidelity_configured": semantic_configured,
+        "semantic_fidelity_passed": semantic_passed,
+        "semantic_fidelity_failed": semantic_failed,
+        "unique_registry_skill_ids": len(registry_skill_ids),
         "redaction_failures": 0,
         "duration_seconds": duration_seconds,
         "average_duration_seconds": round(
@@ -416,6 +453,9 @@ def _failure_taxonomy(scenarios: list[dict[str, Any]]) -> list[dict[str, Any]]:
         elif forgeunit.get("registry_approved") is False:
             stage = "registry"
             reason = "registry_rejected"
+        elif _mapping(item.get("semantic_fidelity")).get("passed") is False:
+            stage = "semantic_fidelity"
+            reason = "semantic_fidelity_failed"
         else:
             stage = "unknown"
             reason = "scenario_not_registered"
@@ -428,6 +468,70 @@ def _failure_taxonomy(scenarios: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return failures
+
+
+def _semantic_markers_from_payload(value: Any, scenario_id: str) -> tuple[str, ...]:
+    if isinstance(value, list):
+        markers = tuple(_normalize_marker(item) for item in value if _normalize_marker(item))
+    else:
+        markers = tuple(part for part in scenario_id.split("-") if len(part) >= 3)
+    return markers[:8]
+
+
+def _normalize_marker(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _semantic_fidelity_summary(workspace: Path, scenario: Scenario, *, assess_package: bool) -> dict[str, Any]:
+    markers = scenario.semantic_markers or _semantic_markers_from_payload(None, scenario.scenario_id)
+    source_text = _read_refs_text(
+        workspace,
+        (
+            "frontdesk/core_need_brief.json",
+            "frontdesk/draft_skill_spec.yaml",
+            "frontdesk/solution_plan.json",
+            "skill_spec.yaml",
+            "worker_input.md",
+        ),
+    )
+    source_matches = _matched_marker_count(source_text, markers)
+    package_matches = 0
+    package_hash = None
+    if assess_package:
+        package_path = workspace / "package" / "SKILL.md"
+        if package_path.is_file():
+            package_text = package_path.read_text(encoding="utf-8")
+            package_hash = hashlib.sha256(package_text.encode("utf-8")).hexdigest()
+            package_matches = _matched_marker_count(package_text, markers)
+    source_passed = bool(markers) and source_matches == len(markers)
+    package_passed = not assess_package or (bool(markers) and package_matches == len(markers))
+    return {
+        "configured": bool(markers),
+        "passed": source_passed and package_passed,
+        "source_passed": source_passed,
+        "package_checked": assess_package,
+        "package_passed": package_passed,
+        "required_marker_count": len(markers),
+        "source_matched_marker_count": source_matches,
+        "package_matched_marker_count": package_matches if assess_package else None,
+        "package_sha256": package_hash,
+    }
+
+
+def _read_refs_text(workspace: Path, refs: tuple[str, ...]) -> str:
+    chunks: list[str] = []
+    for ref in refs:
+        path = workspace / ref
+        if path.is_file():
+            chunks.append(path.read_text(encoding="utf-8"))
+    return "\n".join(chunks)
+
+
+def _matched_marker_count(text: str, markers: tuple[str, ...]) -> int:
+    normalized = re.sub(r"[^a-z0-9]+", " ", text.lower())
+    return sum(1 for marker in markers if marker and marker in normalized)
 
 
 def _redaction_findings(

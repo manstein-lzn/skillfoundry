@@ -420,6 +420,49 @@ def test_frontdesk_api_defaults_to_offline_goal_harness_without_live_key(tmp_pat
     assert audit_runtime["trust_boundaries"]["raw_conversation_included"] is False
 
 
+def test_frontdesk_api_offline_goal_harness_preserves_request_semantics_in_frozen_inputs(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    api = SkillFoundryAPI(tmp_path / "runs")
+
+    created = api.handle(
+        "POST",
+        "/frontdesk/jobs",
+        body={
+            "job_id": "frontdesk-semantic-request",
+            "message": (
+                "Build a governed Codex skill for analyzing pasted pytest failures and returning "
+                "root cause, minimal fix, and verification steps."
+            ),
+        },
+    ).json()
+
+    assert created["status"] == "await_user_plan_review"
+    run_root = tmp_path / "runs" / "frontdesk-semantic-request"
+    brief = json.loads((run_root / "frontdesk" / "core_need_brief.json").read_text(encoding="utf-8"))
+    draft_spec_text = (run_root / "frontdesk" / "draft_skill_spec.yaml").read_text(encoding="utf-8")
+    solution_plan = json.loads((run_root / "frontdesk" / "solution_plan.json").read_text(encoding="utf-8"))
+
+    for term in ("pytest", "failures", "root cause", "verification steps"):
+        assert term in brief["problem_statement"]
+        assert term in draft_spec_text
+    assert "pytest" in solution_plan["proposed_skill_name"].lower()
+    assert solution_plan["proposed_skill_name"] != "Governed Requirement Skill"
+
+    approved = api.handle(
+        "POST",
+        "/frontdesk/jobs/frontdesk-semantic-request/plan-review",
+        body={"decision": "approve", "reason": "The semantic plan matches the requested pytest workflow."},
+    ).json()
+
+    assert approved["status"] == "route_to_build"
+    skill_spec_text = (run_root / "skill_spec.yaml").read_text(encoding="utf-8")
+    worker_input = (run_root / "worker_input.md").read_text(encoding="utf-8")
+    assert "pytest" in skill_spec_text
+    assert "failures" in skill_spec_text
+    assert "pytest" in worker_input
+    assert "frontdesk-governed-skill" not in skill_spec_text
+
+
 def test_frontdesk_api_rejects_build_before_freeze(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     api = SkillFoundryAPI(tmp_path / "runs")
