@@ -196,6 +196,47 @@ Dependency fix:
 - Public-package checks assert that the legacy internals no longer leak through
   `skillfoundry.__all__` or top-level attributes.
 
+## Phase 13G
+
+Status: implemented in this cleanup slice.
+
+Narrowed:
+
+- Top-level `skillfoundry` no longer exports legacy `context.py` adapter
+  internals:
+  `SkillFoundryContextAdapter`, `CONTEXT_ADAPTER_VERSION`,
+  `OwnedLLMCallResult`, `ContextAuditReport`, `SkillFoundryContextMetrics`,
+  `ReplayCoverageReport`, `VerifierPromptEvidence`,
+  `WorkerBoundaryEvidence`, and `audit_report_to_json`.
+
+Kept:
+
+- `skillfoundry.context.*` module-level compatibility for legacy FrontDesk
+  owned-call/context adapter fixtures.
+- Current ContextForge contract helpers remain top-level:
+  `build_goal_contract`, `build_agent_node_contract`, and related contract
+  bridge helpers.
+- Current FrontDesk conversation helpers remain top-level:
+  `ConversationTurn`, `append_conversation_turn`, and
+  `read_conversation_turns`.
+- `seed_goal_harness_context` remains top-level because it belongs to the
+  current Goal Runtime / refs-only ContextForge evidence path.
+
+Rationale:
+
+- `frontdesk.py` still imports `SkillFoundryContextAdapter` internally for
+  deterministic owned-call fixtures, so deleting `context.py` would be
+  premature.
+- The package root should not suggest that the old Context Adapter is the
+  current context-management abstraction.
+
+Dependency fix:
+
+- Legacy context and FrontDesk owned-call tests import the old adapter directly
+  from `skillfoundry.context`.
+- Public-package checks assert that legacy context adapter internals no longer
+  leak through `skillfoundry.__all__` or top-level attributes.
+
 ## Current Keep List
 
 Keep as current mainline or current dependency:
@@ -241,12 +282,15 @@ These modules need a separate audit before deletion or shrinking:
 - `src/skillfoundry/context.py`
   - Old owned-call/context adapter.
   - Still referenced by FrontDesk and older LLM builder paths.
+  - No longer exported from the top-level package; import explicitly from
+    `skillfoundry.context` when maintaining legacy owned-call fixtures.
 - `src/skillfoundry/feedback.py`, `src/skillfoundry/ops.py`, `src/skillfoundry/qa.py`
   - Product support surfaces from v0/WP phases.
   - Need per-module dependency checks.
 - `src/skillfoundry/__init__.py`
-  - Public export surface is still broad, but legacy worker internals and
-    offline helper internals have been removed from the package root.
+  - Public export surface is still broad, but legacy worker internals, offline
+    helper internals, and legacy context adapter internals have been removed
+    from the package root.
   - Continue shrinking after each legacy module is retired.
 
 ## Test Ownership

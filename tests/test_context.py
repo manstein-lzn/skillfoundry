@@ -2,11 +2,11 @@ import json
 
 import skillfoundry
 from skillfoundry import (
-    SkillFoundryContextAdapter,
     Verifier,
-    audit_report_to_json,
     initialize_job_workspace,
 )
+import skillfoundry.context as context_module
+from skillfoundry.context import SkillFoundryContextAdapter, audit_report_to_json
 from skillfoundry.worker import WorkerAdapter, WorkerExecutionOutcome
 
 
@@ -83,9 +83,12 @@ def make_verified_workspace(tmp_path):
     return workspace, worker_result, verification_result
 
 
-def test_context_api_is_exported():
-    assert skillfoundry.SkillFoundryContextAdapter is SkillFoundryContextAdapter
-    assert skillfoundry.CONTEXT_ADAPTER_VERSION == "skillfoundry.context.wp5.v1"
+def test_legacy_context_api_is_module_scoped():
+    assert context_module.SkillFoundryContextAdapter is SkillFoundryContextAdapter
+    assert context_module.CONTEXT_ADAPTER_VERSION == "skillfoundry.context.wp5.v1"
+    assert not hasattr(skillfoundry, "SkillFoundryContextAdapter")
+    assert not hasattr(skillfoundry, "CONTEXT_ADAPTER_VERSION")
+    assert not hasattr(skillfoundry, "audit_report_to_json")
 
 
 def test_owned_llm_call_goes_through_contextforge_and_replay_is_locatable(tmp_path):

@@ -18,7 +18,6 @@ from skillfoundry import (
     FrontDeskFreezeGate,
     LockedInputTamperError,
     PlanReviewRecord,
-    SkillFoundryContextAdapter,
     SolutionPlan,
     SpecAuditReport,
     VERIFICATION_GATE_REF,
@@ -32,6 +31,7 @@ from skillfoundry import (
     write_frontdesk_artifact,
     write_spec_audit_report,
 )
+from skillfoundry.context import SkillFoundryContextAdapter
 from skillfoundry.schema import BuildContract, SkillSpec, VerificationSpec
 
 

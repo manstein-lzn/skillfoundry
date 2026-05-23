@@ -11,7 +11,6 @@ from skillfoundry import (
     FeasibilityReport,
     SPEC_AUDIT_STATUS_FAIL_CLOSED,
     SPEC_AUDIT_STATUS_SUCCEEDED,
-    SkillFoundryContextAdapter,
     SpecAuditor,
     SpecAuditReport,
     append_conversation_turn,
@@ -21,6 +20,7 @@ from skillfoundry import (
     write_elicitation_report,
     write_frontdesk_artifact,
 )
+from skillfoundry.context import SkillFoundryContextAdapter
 
 
 class ScriptedModelClient:

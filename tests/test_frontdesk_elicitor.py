@@ -9,11 +9,11 @@ from skillfoundry import (
     ELICITATION_STATUS_SUCCEEDED,
     FrontDeskConfig,
     RequirementsElicitor,
-    SkillFoundryContextAdapter,
     append_conversation_turn,
     initialize_frontdesk_workspace,
     initialize_job_workspace,
 )
+from skillfoundry.context import SkillFoundryContextAdapter
 
 
 class ScriptedModelClient:
