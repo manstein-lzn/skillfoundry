@@ -225,6 +225,13 @@ live Codex 只作为手动 smoke，公开 summary/product read model 只保留 r
 不输出 command string、raw prompt、raw transcript、raw worker input、stdout/stderr
 或 package body。操作记录和命令形态见
 [docs/FRONTDESK_FORGEUNIT_COMMAND_PILOT_RUNBOOK.md](docs/FRONTDESK_FORGEUNIT_COMMAND_PILOT_RUNBOOK.md)。
+Phase 9 新增 `scripts/run_frontdesk_live_codex_eval.py`：它把多个 FrontDesk
+scenario 逐个跑过同一条 vNext command boundary，并输出
+`skillfoundry.frontdesk_live_codex_eval.v1` refs-only 聚合报告。脚本不会默认调用
+live Codex；必须显式传 `--command`，或传 `--fake-mode happy` 做离线 smoke。
+报告只包含 scenario/job/status、Verifier/Registry 结果、失败分类、耗时和 artifact
+refs，不包含 command string、raw FrontDesk message、raw worker input、raw transcript、
+stdout/stderr 或 package body。
 
 ## 设计原则
 

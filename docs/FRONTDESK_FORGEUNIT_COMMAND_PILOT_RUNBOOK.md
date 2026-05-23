@@ -258,6 +258,66 @@ wrapper script name/path, live command flags, ForgeUnit worker env names, and
 the raw FrontDesk message; none were present. Lower-level diagnostics and raw
 worker artifacts remain local files only and are not API/status output.
 
+## Scenario Eval Harness
+
+After the one-off live pilot succeeds, use the scenario eval harness to measure
+repeatability across multiple FrontDesk tasks. This is still manual/operator
+tooling and is not wired into pytest or default CI.
+
+Offline smoke:
+
+```bash
+.venv/bin/python scripts/run_frontdesk_live_codex_eval.py \
+  --runs-root .local/frontdesk_live_codex_eval_runs \
+  --eval-id frontdesk-live-codex-eval-smoke \
+  --registry-path .local_registry/frontdesk_live_codex_eval_registry.json \
+  --fake-mode happy \
+  --limit 2 \
+  --overwrite
+```
+
+Manual live run:
+
+```bash
+REPO_ROOT="$(pwd)"
+PYTHON="$REPO_ROOT/.venv/bin/python"
+WRAPPER="$REPO_ROOT/scripts/forgeunit_codex_exec_worker.py"
+
+"$PYTHON" scripts/run_frontdesk_live_codex_eval.py \
+  --runs-root .local/frontdesk_live_codex_eval_runs \
+  --eval-id frontdesk-live-codex-eval-001 \
+  --registry-path .local_registry/frontdesk_live_codex_eval_registry.json \
+  --command "$PYTHON $WRAPPER --timeout 1800 --codex-command 'codex exec --sandbox workspace-write --skip-git-repo-check -'" \
+  --overwrite
+```
+
+The harness has built-in scenarios for pytest failure analysis, repository
+handoff, API docs summarization, incident triage, and code review checklists.
+Operators can replace them with a JSON scenario file:
+
+```json
+{
+  "scenarios": [
+    {
+      "id": "pytest-failure",
+      "message": "Build a governed Codex skill for analyzing pasted pytest failures."
+    }
+  ]
+}
+```
+
+The output is written to:
+
+```text
+.local/frontdesk_live_codex_eval_runs/<eval-id>/eval_summary.json
+```
+
+The eval summary includes scenario ids, job ids, status, verification/registry
+outcomes, duration, failure taxonomy, artifact refs, and redaction findings. It
+does not include command strings, raw prompts, raw FrontDesk conversation, raw
+worker input, raw transcripts, stdout/stderr, package bodies, or worker script
+paths.
+
 ## Manual FrontDesk API Flow
 
 Start the server with `SKILLFOUNDRY_FORGEUNIT_COMMAND` configured, then create a
