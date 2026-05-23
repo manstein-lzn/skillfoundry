@@ -74,6 +74,8 @@ docs/FORGEUNIT_PRODUCT_ADAPTER_SLICE.md # SkillFoundry 接入 ForgeUnit v1.2 的
 docs/FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md # 新版 SkillFoundry-on-ForgeUnit clean composition layer
 docs/FORGEUNIT_REAL_CODEX_EXEC_PILOT.md # ForgeUnit 真实 Codex exec 手动 pilot，不进默认 CI
 docs/FRONTDESK_FORGEUNIT_COMMAND_PILOT_RUNBOOK.md # FrontDesk API 真实 command boundary 手动试运行协议
+docs/FRONTDESK_LIVE_SEMANTIC_EVAL.md # FrontDesk live Codex semantic eval 手动门槛
+docs/FRESH_CLONE_GATE.md # 新用户 fresh clone 离线可复现门槛
 docs/SKILLFOUNDRY_V2_BASELINE.md # v2 重建基线：保留思想，重建实现
 docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md # v2 当前集成蓝图和迁移总图
 docs/CONTEXTFORGE_GOAL_HARNESS_REBUILD_PLAN.md # v2 阶段实现计划和历史执行证据
@@ -96,13 +98,13 @@ docs/PRODUCTION_READINESS.md # WP12 生产就绪边界和迁移评估
 git clone --recurse-submodules <skillfoundry-repo>
 cd skillfoundry
 git submodule update --init --recursive
-uv run --extra test pytest -q
+uv run --extra test --extra forgeunit pytest -q
 ```
 
-`pyproject.toml` 中通过 `tool.uv.sources` 将 `contextforge==0.1.0` 解析到本地 submodule，并把 `uv` 默认包源设为清华 PyPI 镜像。若需要临时换源，可用：
+`pyproject.toml` 中通过 `tool.uv.sources` 将 `contextforge==0.1.0` 解析到本地 submodule，并把 `uv` 默认包源设为清华 PyPI 镜像。ForgeUnit 不再从本机 sibling 目录 `../ForgeUnit` 解析；`forgeunit` extra 固定到已推送的 Git tag `v1.2.1`。若需要临时换源，可用：
 
 ```bash
-uv run --default-index https://mirrors.aliyun.com/pypi/simple/ --extra test pytest -q
+uv run --default-index https://mirrors.aliyun.com/pypi/simple/ --extra test --extra forgeunit pytest -q
 ```
 
 如果当前机器还没有安装 `uv`，但 checkout 已经包含可用 `.venv`，可以先用现有虚拟环境验证：
@@ -115,9 +117,20 @@ uv run --default-index https://mirrors.aliyun.com/pypi/simple/ --extra test pyte
 
 ```bash
 python -m pip install -e third_party/contextforge
-python -m pip install -e ".[test]"
+python -m pip install -e ".[test,forgeunit]"
 python -m pytest -q
 ```
+
+新用户可复现门槛见 [docs/FRESH_CLONE_GATE.md](docs/FRESH_CLONE_GATE.md)。本地可以用脚本在临时目录执行同等检查：
+
+```bash
+.venv/bin/python scripts/check_fresh_clone_readiness.py \
+  --repo-url git@github.com:manstein-lzn/skillfoundry.git \
+  --branch main \
+  --summary-out .metaloop/phase10_fresh_clone_smoke_summary.json
+```
+
+真实 Codex semantic eval 是显式手动门槛，不进入默认测试；操作协议见 [docs/FRONTDESK_LIVE_SEMANTIC_EVAL.md](docs/FRONTDESK_LIVE_SEMANTIC_EVAL.md)。
 
 ## 白皮书
 
@@ -155,7 +168,7 @@ LangGraph 编排
 当前已经开始落地 ForgeUnit 产品适配层，入口见
 [docs/FORGEUNIT_PRODUCT_ADAPTER_SLICE.md](docs/FORGEUNIT_PRODUCT_ADAPTER_SLICE.md)。
 第一层代码位于 `src/skillfoundry/forgeunit_adapter.py`，可以把现有
-`JobWorkspace` 物化为 ForgeUnit task pack，并通过 ForgeUnit v1.2 的
+`JobWorkspace` 物化为 ForgeUnit task pack，并通过 ForgeUnit v1.2.1 的
 `ForgeUnitNode("codex_exec")` 返回 refs-only v2 graph state。当前有两条
 pilot 路径：
 

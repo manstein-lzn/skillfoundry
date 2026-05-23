@@ -22,7 +22,7 @@ test = [
   "pytest>=7.0",
 ]
 forgeunit = [
-  "forgeunit==1.2.0",
+  "forgeunit @ git+ssh://git@github.com/manstein-lzn/forgeunit.git@v1.2.1",
 ]
 
 [tool.setuptools.packages.find]
@@ -30,7 +30,6 @@ where = ["src"]
 
 [tool.uv.sources]
 contextforge = { path = "third_party/contextforge", editable = true }
-forgeunit = { path = "../ForgeUnit", editable = true }
 
 [[tool.uv.index]]
 name = "tuna"

@@ -7,7 +7,7 @@ Status: first code integration slice plus offline command-bridge, repair, and ac
 ## Goal
 
 This slice adds the first concrete bridge from SkillFoundry product semantics to
-ForgeUnit v1.2:
+ForgeUnit v1.2.1:
 
 ```text
 SkillFoundry JobWorkspace
@@ -44,18 +44,23 @@ It provides:
 - `write_forgeunit_repair_packet(workspace, state, verification_result, ...)`
 - `run_forgeunit_repair_pilot_graph(runs_root, job_id, registry_path=..., build_command=..., repair_command=...)`
 
-The adapter depends on ForgeUnit v1.2. For local development with the sibling
-checkout:
+The adapter depends on ForgeUnit v1.2.1. Fresh clone installs use the
+`forgeunit` extra, which is pinned to the pushed Git tag `v1.2.1`:
 
 ```bash
-.venv/bin/python -m pip install -e ../ForgeUnit
+.venv/bin/python -m pip install -e ".[test,forgeunit]"
 ```
 
-With `uv`, the optional extra is declared as:
+With `uv`:
 
 ```bash
 uv run --extra forgeunit --extra test pytest tests/test_forgeunit_adapter.py -q
 ```
+
+If you intentionally want to test against a local ForgeUnit checkout, install
+that checkout into the active virtualenv explicitly before running the adapter
+tests. The repository no longer resolves ForgeUnit from a sibling path by
+default.
 
 ## Task Pack Shape
 
