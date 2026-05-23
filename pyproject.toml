@@ -21,12 +21,16 @@ skillfoundry = "skillfoundry.cli:main"
 test = [
   "pytest>=7.0",
 ]
+forgeunit = [
+  "forgeunit==1.2.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.uv.sources]
 contextforge = { path = "third_party/contextforge", editable = true }
+forgeunit = { path = "../ForgeUnit", editable = true }
 
 [[tool.uv.index]]
 name = "tuna"

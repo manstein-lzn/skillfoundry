@@ -9,6 +9,7 @@ __pycache__/
 .env.*
 !.env.example
 .metaloop/
+.forgeunit/
 dist/
 build/
 *.egg-info/
@@ -18,4 +19,3 @@ runs/
 *.sqlite
 *.sqlite3
 *.db
-
