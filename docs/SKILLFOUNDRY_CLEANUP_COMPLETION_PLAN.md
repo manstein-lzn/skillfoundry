@@ -148,6 +148,8 @@ make test
 
 ### Phase 13I: Support Surface Audit (`feedback.py`, `qa.py`, `ops.py`)
 
+Status: implemented.
+
 Goal:
 
 Decide whether support modules are current product surfaces, compatibility
@@ -170,6 +172,18 @@ Acceptance:
 - Package-root exports are consistent with that status.
 - Tests import support internals from modules when they are not current
   package-root API.
+
+Implemented result:
+
+- `feedback.py` remains a module-scoped WP11 feedback/versioning support
+  surface.
+- `qa.py` remains a module-scoped WP10 deterministic QA support surface.
+- `ops.py` remains a module-scoped WP12 local health, observability, and
+  cleanup support surface.
+- Support-only feedback, QA, and ops names were removed from package-root
+  `skillfoundry` exports.
+- Focused tests now import support internals from `skillfoundry.feedback`,
+  `skillfoundry.qa`, or `skillfoundry.ops`.
 
 Suggested focused tests:
 

@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 
-import skillfoundry
 from skillfoundry import (
-    QA_REPORT_VERSION,
-    QALab,
     SkillSpec,
     Verifier,
     initialize_job_workspace,
 )
+import skillfoundry.qa as qa_module
+from skillfoundry.qa import HARD_CHECK_NAMES, QA_REPORT_VERSION, QALab
 from skillfoundry.worker import WorkerAdapter, WorkerExecutionOutcome
 
 
@@ -193,9 +192,9 @@ def failed_check_names(report) -> set[str]:
     return {check["name"] for check in report["checks"] if check["passed"] is False}
 
 
-def test_qa_lab_api_is_exported():
-    assert skillfoundry.QALab is QALab
-    assert skillfoundry.QA_REPORT_VERSION == QA_REPORT_VERSION
+def test_qa_lab_api_is_module_scoped():
+    assert qa_module.QALab is QALab
+    assert qa_module.QA_REPORT_VERSION == QA_REPORT_VERSION
 
 
 def test_good_verifier_passed_package_passes_qa_lab_and_writes_report(tmp_path):
@@ -216,7 +215,7 @@ def test_good_verifier_passed_package_passes_qa_lab_and_writes_report(tmp_path):
     assert report["verifier_result_hash"]
     assert report["verifier_result"]["passed"] is True
     assert result.report_path == workspace.resolve_path("qa/quality_report.json", must_exist=True)
-    assert {check["name"] for check in report["checks"]} == set(skillfoundry.HARD_CHECK_NAMES)
+    assert {check["name"] for check in report["checks"]} == set(HARD_CHECK_NAMES)
     assert all(check["passed"] is True for check in report["checks"])
 
 

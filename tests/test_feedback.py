@@ -4,19 +4,21 @@ import json
 
 import pytest
 
-import skillfoundry
 from skillfoundry import (
-    FeedbackRecord,
-    FeedbackRepairPlan,
-    FeedbackVersionGateError,
     LocalSkillRegistry,
-    QALab,
     SkillSpec,
-    SkillVersionManager,
     Verifier,
     initialize_job_workspace,
     sha256_file,
 )
+import skillfoundry.feedback as feedback_module
+from skillfoundry.feedback import (
+    FeedbackRecord,
+    FeedbackRepairPlan,
+    FeedbackVersionGateError,
+    SkillVersionManager,
+)
+from skillfoundry.qa import QALab
 from skillfoundry.worker import WorkerAdapter, WorkerExecutionOutcome
 
 
@@ -228,10 +230,10 @@ def make_repaired_workspace(
     return workspace, verification, qa_result
 
 
-def test_feedback_api_is_exported():
-    assert skillfoundry.FeedbackRecord is FeedbackRecord
-    assert skillfoundry.FeedbackRepairPlan is FeedbackRepairPlan
-    assert skillfoundry.SkillVersionManager is SkillVersionManager
+def test_feedback_api_is_module_scoped():
+    assert feedback_module.FeedbackRecord is FeedbackRecord
+    assert feedback_module.FeedbackRepairPlan is FeedbackRepairPlan
+    assert feedback_module.SkillVersionManager is SkillVersionManager
 
 
 def test_feedback_record_json_round_trip(tmp_path):

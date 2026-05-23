@@ -489,11 +489,16 @@ class SkillFoundryOps:
 
     def _import_check(self) -> dict[str, JsonValue]:
         try:
-            package = importlib.import_module("skillfoundry")
-            exported = getattr(package, "SkillFoundryOps", None)
+            importlib.import_module("skillfoundry")
+            module = importlib.import_module("skillfoundry.ops")
+            exported = getattr(module, "SkillFoundryOps", None)
         except Exception as exc:
             return _check("import_readiness", False, f"skillfoundry import failed: {type(exc).__name__}: {exc}")
-        return _check("import_readiness", exported is SkillFoundryOps, "skillfoundry imports and exports SkillFoundryOps")
+        return _check(
+            "import_readiness",
+            exported is SkillFoundryOps,
+            "skillfoundry package and skillfoundry.ops support module are importable",
+        )
 
     def _cli_check(self) -> dict[str, JsonValue]:
         try:

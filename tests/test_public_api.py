@@ -1,6 +1,9 @@
 import skillfoundry
+import skillfoundry.feedback as feedback
 import skillfoundry.frontdesk_goal_runtime as frontdesk_goal_runtime
 import skillfoundry.goal_runtime as goal_runtime
+import skillfoundry.ops as ops
+import skillfoundry.qa as qa
 
 
 PACKAGE_ROOT_INTERNAL_DENYLIST = {
@@ -15,6 +18,29 @@ PACKAGE_ROOT_INTERNAL_DENYLIST = {
     "VerifiedSkillFoundryGoalHarnessResult",
     "RepairSkillFoundryGoalHarnessResult",
     "VerifiedRepairSkillFoundryGoalHarnessResult",
+    "DEFAULT_REQUIRED_VERSION_GATES",
+    "FEEDBACK_RECORD_VERSION",
+    "FEEDBACK_REPAIR_PLAN_VERSION",
+    "FEEDBACK_VERSIONING_PROVENANCE_VERSION",
+    "ROLLBACK_EVENT_VERSION",
+    "VERSION_CHANGE_REPORT_VERSION",
+    "FeedbackRecord",
+    "FeedbackRepairPlan",
+    "FeedbackVersionGateError",
+    "FeedbackVersioningError",
+    "RepairRegistrationResult",
+    "SkillVersionManager",
+    "HARD_CHECK_NAMES",
+    "QA_LAB_VERSION",
+    "QA_REPORT_VERSION",
+    "QACheck",
+    "QALab",
+    "QAResult",
+    "OPS_CLEANUP_REPORT_VERSION",
+    "OPS_HEALTH_REPORT_VERSION",
+    "OPS_OBSERVABILITY_REPORT_VERSION",
+    "OPS_VERSION",
+    "SkillFoundryOps",
 }
 
 
@@ -73,3 +99,40 @@ def test_internal_goal_runtime_types_remain_module_scoped_for_maintenance():
         "VerifiedRepairSkillFoundryGoalHarnessResult",
     ]:
         assert hasattr(goal_runtime, name), name
+
+
+def test_support_surfaces_remain_module_scoped_for_maintenance():
+    for name in [
+        "DEFAULT_REQUIRED_VERSION_GATES",
+        "FEEDBACK_RECORD_VERSION",
+        "FEEDBACK_REPAIR_PLAN_VERSION",
+        "FEEDBACK_VERSIONING_PROVENANCE_VERSION",
+        "ROLLBACK_EVENT_VERSION",
+        "VERSION_CHANGE_REPORT_VERSION",
+        "FeedbackRecord",
+        "FeedbackRepairPlan",
+        "FeedbackVersionGateError",
+        "FeedbackVersioningError",
+        "RepairRegistrationResult",
+        "SkillVersionManager",
+    ]:
+        assert hasattr(feedback, name), name
+
+    for name in [
+        "HARD_CHECK_NAMES",
+        "QA_LAB_VERSION",
+        "QA_REPORT_VERSION",
+        "QACheck",
+        "QALab",
+        "QAResult",
+    ]:
+        assert hasattr(qa, name), name
+
+    for name in [
+        "OPS_CLEANUP_REPORT_VERSION",
+        "OPS_HEALTH_REPORT_VERSION",
+        "OPS_OBSERVABILITY_REPORT_VERSION",
+        "OPS_VERSION",
+        "SkillFoundryOps",
+    ]:
+        assert hasattr(ops, name), name

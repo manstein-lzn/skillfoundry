@@ -3,15 +3,15 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import json
 
-import skillfoundry
 from skillfoundry import (
     LocalSkillRegistry,
     OfflineWorkerMode,
-    QALab,
-    SkillFoundryOps,
     build_offline,
     sha256_file,
 )
+import skillfoundry.ops as ops_module
+from skillfoundry.ops import SkillFoundryOps
+from skillfoundry.qa import QALab
 
 
 REQ_TEXT = """# WP12 ops fixture
@@ -30,8 +30,8 @@ def read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_ops_api_is_exported():
-    assert skillfoundry.SkillFoundryOps is SkillFoundryOps
+def test_ops_api_is_module_scoped():
+    assert ops_module.SkillFoundryOps is SkillFoundryOps
 
 
 def test_concurrent_registry_additions_do_not_corrupt_json(tmp_path):

@@ -317,14 +317,51 @@ These modules need a separate audit before deletion or shrinking:
     `skillfoundry.context` when maintaining legacy owned-call fixtures.
 - `src/skillfoundry/feedback.py`, `src/skillfoundry/ops.py`, `src/skillfoundry/qa.py`
   - Product support surfaces from v0/WP phases.
-  - Need per-module dependency checks.
+  - Audited in Phase 13I and kept as module-scoped support surfaces.
+  - Do not promote their support-only APIs back to the package root without
+    updating `docs/PUBLIC_API.md`.
 - `src/skillfoundry/__init__.py`
   - Public export surface is still broad, but legacy worker internals, offline
     helper internals, and legacy context adapter internals have been removed
     from the package root.
   - Phase 13H added a public API contract and removed obvious internal
     fake-worker/result/factory exports.
+  - Phase 13I removed feedback/QA/ops support-only exports from the package
+    root.
   - Continue shrinking after each legacy module is retired.
+
+## Phase 13I
+
+Status: implemented in this cleanup slice.
+
+Classified:
+
+- `src/skillfoundry/feedback.py` is a module-scoped WP11
+  feedback/versioning support surface.
+- `src/skillfoundry/qa.py` is a module-scoped WP10 deterministic QA support
+  surface.
+- `src/skillfoundry/ops.py` is a module-scoped WP12 local operations support
+  surface for health, observability, and cleanup.
+
+Narrowed:
+
+- Top-level `skillfoundry` no longer exports feedback/versioning support names.
+- Top-level `skillfoundry` no longer exports deterministic QA support names.
+- Top-level `skillfoundry` no longer exports local ops support names.
+
+Kept:
+
+- Module-level imports from `skillfoundry.feedback`, `skillfoundry.qa`, and
+  `skillfoundry.ops` remain available for focused tests, compatibility
+  fixtures, and maintainers.
+- Default deterministic validation remains unchanged.
+
+Rationale:
+
+- Feedback, QA, and local ops are useful support modules, but they are not the
+  current package-root product construction path.
+- Keeping them module-scoped reduces new-user confusion while preserving all
+  tested behavior.
 
 ## Test Ownership
 

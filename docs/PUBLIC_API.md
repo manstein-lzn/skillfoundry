@@ -72,6 +72,17 @@ Tests may import from these modules when they are testing internals. New
 product code should not promote module internals back to package root without
 updating this contract.
 
+Support modules:
+
+- `skillfoundry.feedback` is a feedback/versioning support surface from the
+  WP11 line. Keep it available by explicit module import.
+- `skillfoundry.qa` is deterministic QA support from the WP10 line. It may be
+  useful for local acceptance hardening, but it is not part of the package-root
+  product path.
+- `skillfoundry.ops` is local health, observability, and cleanup support from
+  the WP12 line. It remains module-scoped because it is operational support,
+  not a product construction entrypoint.
+
 ## Cleanup Rule
 
 When an export is needed only by tests, deterministic fixtures, historical
@@ -104,3 +115,35 @@ The following implementation-internal types must not leak through
 
 They remain available from their implementation modules when a test or maintainer
 needs them.
+
+## Current Phase 13I Removal Set
+
+The following support-surface names must not leak through `skillfoundry` or
+`skillfoundry.__all__`:
+
+- `DEFAULT_REQUIRED_VERSION_GATES`
+- `FEEDBACK_RECORD_VERSION`
+- `FEEDBACK_REPAIR_PLAN_VERSION`
+- `FEEDBACK_VERSIONING_PROVENANCE_VERSION`
+- `ROLLBACK_EVENT_VERSION`
+- `VERSION_CHANGE_REPORT_VERSION`
+- `FeedbackRecord`
+- `FeedbackRepairPlan`
+- `FeedbackVersionGateError`
+- `FeedbackVersioningError`
+- `RepairRegistrationResult`
+- `SkillVersionManager`
+- `HARD_CHECK_NAMES`
+- `QA_LAB_VERSION`
+- `QA_REPORT_VERSION`
+- `QACheck`
+- `QALab`
+- `QAResult`
+- `OPS_CLEANUP_REPORT_VERSION`
+- `OPS_HEALTH_REPORT_VERSION`
+- `OPS_OBSERVABILITY_REPORT_VERSION`
+- `OPS_VERSION`
+- `SkillFoundryOps`
+
+They remain available from `skillfoundry.feedback`, `skillfoundry.qa`, or
+`skillfoundry.ops` when compatibility fixtures or maintainers need them.

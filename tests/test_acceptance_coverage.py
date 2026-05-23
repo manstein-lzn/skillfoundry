@@ -13,13 +13,13 @@ from skillfoundry import (
     AcceptanceCriteriaSet,
     AcceptanceCriterion,
     LocalSkillRegistry,
-    QALab,
     RegistryGateError,
     SkillSpec,
     Verifier,
     initialize_job_workspace,
     sha256_file,
 )
+from skillfoundry.qa import QALab
 from skillfoundry.worker import WorkerAdapter, WorkerExecutionOutcome
 
 
