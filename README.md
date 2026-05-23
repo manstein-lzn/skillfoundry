@@ -96,10 +96,12 @@ Then follow [docs/FRONTDESK_LIVE_SEMANTIC_EVAL.md](docs/FRONTDESK_LIVE_SEMANTIC_
 
 ## Important Docs
 
-Start from [docs/README.md](docs/README.md).
+Start from [docs/README.md](docs/README.md) and
+[docs/SYSTEM_MAP.md](docs/SYSTEM_MAP.md).
 
 Current mainline docs:
 
+- [System Map](docs/SYSTEM_MAP.md)
 - [Development Workflow](docs/DEVELOPMENT_WORKFLOW.md)
 - [Fresh Clone Gate](docs/FRESH_CLONE_GATE.md)
 - [Legacy Compatibility](docs/LEGACY_COMPATIBILITY.md)

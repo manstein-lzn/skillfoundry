@@ -463,6 +463,30 @@ Rationale:
 - `make test` remains the full deterministic/offline gate and does not call live
   Codex.
 
+## Phase 13M
+
+Status: implemented in this cleanup slice.
+
+Added:
+
+- `docs/SYSTEM_MAP.md`, a compact system map for current architecture, package
+  boundaries, runtime boundary, validation gates, and compatibility
+  boundaries.
+
+Consolidated:
+
+- `docs/README.md` now exposes a 10-minute current reading path before vision
+  documents, manual runbooks, and archive links.
+- `README.md` and `HANDOFF.md` link the system map and use the same current
+  mainline description.
+
+Rationale:
+
+- A new contributor should reach current source boundaries and deterministic
+  gates without first interpreting historical WP roadmaps or long design
+  narratives.
+- Real product validation remains a later phase after cleanup closeout.
+
 ## Test Ownership
 
 Current mainline tests:

@@ -25,6 +25,7 @@ FrontDesk
 
 - `README.md`：项目定位、安装方式、默认验证命令。
 - `docs/README.md`：当前文档导航和历史归档入口。
+- `docs/SYSTEM_MAP.md`：当前系统结构和 10-minute reading path。
 - `docs/SKILLFOUNDRY_V2_BASELINE.md`：为什么不背 v0 兼容债。
 - `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`：当前架构蓝图。
 - `docs/FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md`：当前 clean composition layer。
@@ -87,6 +88,9 @@ FrontDesk
 - `docs/LEGACY_COMPATIBILITY.md`
   - 剩余 compatibility islands 的统一索引。
   - 新用户先看这里判断哪些旧模块只能用于 fixture、maintenance 或 history。
+- `docs/SYSTEM_MAP.md`
+  - 当前 mainline、package boundaries、runtime boundary 和 validation gates 的紧凑地图。
+  - 新用户应在进入历史 WP/archive 材料前先读。
 - `tests/README.md`
   - 当前测试套件 ownership map。
   - 说明 `make test` 是 deterministic/offline 全量 gate，不等同于 live Codex 产品验证。
@@ -159,7 +163,8 @@ Codex，不应依赖本机 sibling `../ForgeUnit`。
    Phase 13J 已把 direct Goal Runtime 和 graph v2 compatibility helpers 收口为
    module-scoped，
    Phase 13K 已新增 legacy compatibility index，
-   Phase 13L 已新增 tests ownership map。
+   Phase 13L 已新增 tests ownership map，
+   Phase 13M 已新增 system map 并收敛 docs entry path。
 3. 完善 API/UI 对 registry outcome、repair decision、human review 和 refs-only
    evidence 的展示。
 4. 用 3-5 个真实 Skill 需求做 opt-in live Codex semantic eval，记录失败分类和修复策略。

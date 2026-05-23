@@ -1,32 +1,68 @@
 # SkillFoundry Docs
 
-This directory separates the current mainline from historical design assets.
+This directory separates the current implementation contract from historical
+design assets.
 
 ## Start Here
 
-Read these first:
+Read these first, in order:
 
-- [Development Workflow](DEVELOPMENT_WORKFLOW.md): local commands and validation gates.
-- [Fresh Clone Gate](FRESH_CLONE_GATE.md): new-user reproducibility check.
+- [System Map](SYSTEM_MAP.md): current architecture and 10-minute reading path.
+- [ForgeUnit SkillFoundry Composition](FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md): current product composition layer.
 - [SkillFoundry Public API](PUBLIC_API.md): package-root API contract during cleanup.
 - [Legacy Compatibility](LEGACY_COMPATIBILITY.md): compatibility islands that remain for fixtures, maintenance, or history.
 - [Test Ownership](../tests/README.md): which tests protect current mainline, compatibility, legacy fixtures, scripts, and live opt-in support.
-- [SkillFoundry Cleanup Completion Plan](SKILLFOUNDRY_CLEANUP_COMPLETION_PLAN.md): remaining short-term cleanup route before product validation.
-- [SkillFoundry v2 Baseline](SKILLFOUNDRY_V2_BASELINE.md): current rebuild premise.
-- [SkillFoundry ContextForge Refactor Plan](SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md): current architecture map.
-- [ForgeUnit SkillFoundry Composition](FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md): current product composition layer.
-- [FrontDesk Live Semantic Eval](FRONTDESK_LIVE_SEMANTIC_EVAL.md): manual live Codex semantic gate.
+- [Development Workflow](DEVELOPMENT_WORKFLOW.md): local commands and validation gates.
+- [Fresh Clone Gate](FRESH_CLONE_GATE.md): new-user reproducibility check.
 
 ## Current Mainline
 
+The current mainline is:
+
+```text
+FrontDesk
+  -> ContextForge Goal Runtime
+  -> ForgeUnit SkillFoundry vNext
+  -> Codex exec / deterministic fake command boundary
+  -> SkillFoundry Verifier
+  -> Registry
+```
+
+Implementation docs:
+
+- [System Map](SYSTEM_MAP.md)
+- [ForgeUnit SkillFoundry Composition](FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md)
+- [ForgeUnit Product Adapter Slice](FORGEUNIT_PRODUCT_ADAPTER_SLICE.md)
+- [Development Workflow](DEVELOPMENT_WORKFLOW.md)
+- [Fresh Clone Gate](FRESH_CLONE_GATE.md)
+- [SkillFoundry Cleanup Completion Plan](SKILLFOUNDRY_CLEANUP_COMPLETION_PLAN.md)
+- [Source/Test Cleanup Plan](SOURCE_TEST_CLEANUP_PLAN.md)
+
+Architecture and product direction:
+
+- [SkillFoundry v2 Baseline](SKILLFOUNDRY_V2_BASELINE.md)
+- [SkillFoundry ContextForge Refactor Plan](SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md)
+- [SkillFoundry on ForgeUnit Product Direction](SKILLFOUNDRY_ON_FORGEUNIT_PRODUCT_DIRECTION.md)
 - [ContextForge Agent Exoskeleton Product Vision](CONTEXTFORGE_AGENT_EXOSKELETON_PRODUCT_VISION.md)
 - [ContextForge Goal Harness Rebuild Plan](CONTEXTFORGE_GOAL_HARNESS_REBUILD_PLAN.md)
-- [ForgeUnit Product Adapter Slice](FORGEUNIT_PRODUCT_ADAPTER_SLICE.md)
-- [ForgeUnit SkillFoundry Composition](FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md)
+
+Manual runbooks:
+
 - [FrontDesk ForgeUnit Command Pilot Runbook](FRONTDESK_FORGEUNIT_COMMAND_PILOT_RUNBOOK.md)
 - [FrontDesk Live Semantic Eval](FRONTDESK_LIVE_SEMANTIC_EVAL.md)
-- [SkillFoundry on ForgeUnit Product Direction](SKILLFOUNDRY_ON_FORGEUNIT_PRODUCT_DIRECTION.md)
-- [SkillFoundry v2 Baseline](SKILLFOUNDRY_V2_BASELINE.md)
+
+Live Codex evaluation is manual and opt-in. It is not part of default cleanup
+validation.
+
+## Compatibility Boundaries
+
+- [SkillFoundry Public API](PUBLIC_API.md)
+- [Legacy Compatibility](LEGACY_COMPATIBILITY.md)
+- [Test Ownership](../tests/README.md)
+
+Read these before promoting a module-scoped compatibility helper back to
+package root, deleting a legacy module, or using archived WP material as
+implementation guidance.
 
 ## Archive
 

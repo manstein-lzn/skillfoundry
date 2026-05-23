@@ -330,6 +330,8 @@ make test
 
 ### Phase 13M: Current Docs Entry Consolidation
 
+Status: implemented.
+
 Goal:
 
 Reduce doc-entry confusion before real product validation begins.
@@ -351,6 +353,16 @@ Acceptance:
 - Current docs do not send users into old WP roadmaps as implementation
   contracts.
 - README, docs README, and HANDOFF agree on the current mainline.
+
+Implemented result:
+
+- `docs/SYSTEM_MAP.md` provides a compact current architecture map, 10-minute
+  reading path, package boundaries, runtime boundary, validation gates, and
+  compatibility boundaries.
+- `docs/README.md` now starts with the current implementation reading path
+  before architecture vision docs, manual runbooks, or archive links.
+- `README.md` and `HANDOFF.md` link the system map and agree on the current
+  mainline.
 
 Suggested validators:
 
