@@ -147,17 +147,22 @@ LangGraph 编排
 + Registry approved asset store
 ```
 
-这意味着 SkillFoundry 不自建完整 ActionRuntime，也不把 Codex exec / Codex SDK thread 当成最终事实源。真实 Codex Worker 集成必须等待 ForgeUnit repair loop、LangGraph adapter、ContextPacket、Verifier bridge 和 Registry promotion record 存在后再试点。
+这意味着 SkillFoundry 不自建完整 ActionRuntime，也不把 Codex exec / Codex SDK thread 当成最终事实源。真实 Codex Worker 集成必须等待 ForgeUnit repair loop、ContextPacket、PromptCachePlan 和更完整的运行诊断存在后再试点。
 
 当前已经开始落地 ForgeUnit 产品适配层，入口见
 [docs/FORGEUNIT_PRODUCT_ADAPTER_SLICE.md](docs/FORGEUNIT_PRODUCT_ADAPTER_SLICE.md)。
 第一层代码位于 `src/skillfoundry/forgeunit_adapter.py`，可以把现有
 `JobWorkspace` 物化为 ForgeUnit task pack，并通过 ForgeUnit v1.2 的
-`ForgeUnitNode("codex_exec", dry_run=True)` 返回 refs-only v2 graph state。
-该切片默认不调用 live Codex。当前也提供 dedicated pilot graph：
-`run_forgeunit_pilot_graph(...)` 会在 dry-run 后生成
-`forgeunit_boundary_verification.json` 和 `human_review/request.json`，并明确
-停在 human review，不会把 dry-run 当成 verifier 通过或 registry approval。
+`ForgeUnitNode("codex_exec")` 返回 refs-only v2 graph state。当前有两条
+pilot 路径：
+
+- `run_forgeunit_pilot_graph(...)`：dry-run 后生成
+  `forgeunit_boundary_verification.json` 和 `human_review/request.json`，明确
+  停在 human review，不会把 dry-run 当成 verifier 通过或 registry approval。
+- `run_forgeunit_command_bridge_pilot_graph(...)`：使用显式本地 command
+  bridge 模拟 Codex exec，产出 `package/SKILL.md`、ForgeUnit evidence 和
+  `attempts/001` SkillFoundry evidence，然后进入 `Verifier` 与
+  `LocalSkillRegistry`。测试仍然完全离线，不调用 live Codex。
 
 ## 设计原则
 

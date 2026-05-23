@@ -2,7 +2,7 @@
 
 Last updated: 2026-05-23
 
-Status: first code integration slice
+Status: first code integration slice plus offline command-bridge pilot
 
 ## Goal
 
@@ -34,8 +34,13 @@ It provides:
 - `run_forgeunit_codex_exec_node(workspace, dry_run=True, command=None)`
 - `build_forgeunit_codex_exec_node(runs_root, dry_run=True, command=None)`
 - `build_forgeunit_boundary_verification_node(runs_root)`
+- `bridge_forgeunit_success_to_skillfoundry_attempt(workspace, state)`
+- `build_forgeunit_skillfoundry_verification_node(runs_root)`
+- `build_forgeunit_registry_gate_node(runs_root, registry_path=...)`
 - `compile_forgeunit_pilot_graph(runs_root, dry_run=True, command=None)`
 - `run_forgeunit_pilot_graph(runs_root, job_id, dry_run=True, command=None)`
+- `compile_forgeunit_command_bridge_pilot_graph(runs_root, registry_path=..., command=...)`
+- `run_forgeunit_command_bridge_pilot_graph(runs_root, job_id, registry_path=..., command=...)`
 
 The adapter depends on ForgeUnit v1.2. For local development with the sibling
 checkout:
@@ -85,7 +90,8 @@ The `execute` unit requires:
 - `evidence/manifest.json`
 - a ForgeUnit `worker_result.json` written by the external worker
 
-Default tests use `dry_run=True`, so no live Codex process is invoked.
+Default tests use either `dry_run=True` or an explicit local fake command, so no
+live Codex process is invoked.
 
 ## SkillFoundry v2 State
 
@@ -105,8 +111,21 @@ contextforge.forgeunit_route
 contextforge.forgeunit_current_node
 ```
 
-It does not place raw prompts, raw transcripts, package bodies, or raw user
-requirements into graph state.
+The command-bridge path also adds only refs:
+
+```text
+refs.forgeunit_attempt_input_manifest
+refs.forgeunit_attempt_execution_report
+refs.forgeunit_attempt_transcript
+refs.forgeunit_attempt_diff
+refs.skillfoundry_verification_result
+refs.registry_decision
+refs.registry_entry
+refs.final_report
+```
+
+It does not place raw prompts, raw transcripts, package bodies, raw worker
+input, or raw user requirements into graph state.
 
 ## What This Enables
 
@@ -155,6 +174,43 @@ from skillfoundry import run_forgeunit_pilot_graph
 state = run_forgeunit_pilot_graph("runs", "demo-job", dry_run=True)
 ```
 
+The adapter also includes an offline command-bridge success path:
+
+```text
+Initialized SkillFoundry JobWorkspace
+  -> ForgeUnit task.yaml
+  -> ForgeUnit codex_exec adapter with explicit local command
+  -> package/SKILL.md + evidence/manifest.json + evidence/transcript.md
+  -> attempts/001 SkillFoundry evidence bridge
+  -> Verifier().verify(...)
+  -> LocalSkillRegistry.add_verified(...)
+  -> final_report.json
+```
+
+This path is intentionally deterministic in tests. The command is a local fake
+script that behaves like a Codex exec boundary worker by writing:
+
+```text
+package/SKILL.md
+evidence/manifest.json
+evidence/transcript.md
+.forgeunit/runs/<run_id>/workers/execute_codex_exec_worker_result.json
+```
+
+The worker result is still not acceptance. It is only converted into
+SkillFoundry-compatible evidence:
+
+```text
+attempts/001/input_manifest.json
+attempts/001/execution_report.json
+attempts/001/worker_transcript.log
+attempts/001/output_diff.patch
+```
+
+Only after that does the independent SkillFoundry verifier write
+`verifier/verification_result.json`, and only a passing verifier result can enter
+the registry gate.
+
 ## Non-Goals
 
 This slice does not add:
@@ -162,7 +218,7 @@ This slice does not add:
 - live Codex execution in tests;
 - Codex SDK thread lifecycle;
 - owned LLM worker execution;
-- registry promotion through ForgeUnit;
+- live registry promotion based solely on ForgeUnit worker self-report;
 - full replacement of `graph_v2.py`;
 - long-term memory;
 - a scheduler, queue, daemon, or worker pool.
@@ -182,5 +238,9 @@ The tests prove:
   surface;
 - the dedicated pilot graph routes ForgeUnit dry-run to human review instead of
   registry promotion;
+- the offline command-bridge pilot can run a local fake Codex command through
+  ForgeUnit, bridge the result into SkillFoundry verifier evidence, and register
+  only after `Verifier` passes;
 - SkillFoundry graph state remains refs-only;
-- raw requirement bodies are not inlined into state or summaries.
+- raw requirement bodies, raw prompts, raw transcripts, and package bodies are
+  not inlined into state or summaries.

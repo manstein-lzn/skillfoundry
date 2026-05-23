@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 
 import yaml
 
@@ -9,16 +10,111 @@ from forgeunit import validate_task_pack_or_raise
 from skillfoundry.forgeunit_adapter import (
     FORGEUNIT_ADAPTER_VERSION,
     FORGEUNIT_BOUNDARY_VERIFICATION_REF,
+    FORGEUNIT_FINAL_REPORT_REF,
     FORGEUNIT_PILOT_GRAPH_STATE_REF,
+    FORGEUNIT_REGISTRY_DECISION_REF,
+    FORGEUNIT_REGISTRY_ENTRY_REF,
     FORGEUNIT_SUMMARY_REF,
     FORGEUNIT_TASK_YAML_REF,
+    FORGEUNIT_VERIFICATION_RESULT_REF,
     build_forgeunit_codex_exec_node,
     materialize_forgeunit_task_pack,
     run_forgeunit_codex_exec_node,
+    run_forgeunit_command_bridge_pilot_graph,
     run_forgeunit_pilot_graph,
 )
 from skillfoundry.graph_v2 import V2Stage, V2Status, validate_v2_graph_state
+from skillfoundry.registry import LocalSkillRegistry
 from skillfoundry.workspace import initialize_job_workspace
+
+
+VALID_FORGEUNIT_SKILL = """---
+name: forgeunit-command-bridge-skill
+description: Deterministic ForgeUnit command bridge fixture.
+---
+
+# ForgeUnit Command Bridge Skill
+
+## Overview
+This skill is a deterministic fixture package produced by the ForgeUnit command bridge pilot.
+
+## When To Use
+Use this fixture when testing the ForgeUnit command bridge path into SkillFoundry verifier and registry gates.
+
+## When Not To Use
+Do not use this fixture for live Codex calls, production skill authoring, or user-facing package generation.
+
+## Inputs
+Provide the frozen SkillFoundry skill spec, verification spec, build contract, and worker input refs.
+
+## Outputs
+Return a package/SKILL.md file plus boundary evidence refs for deterministic verifier registration.
+
+## Workflow
+1. Read the frozen refs.
+2. Write the skill package.
+3. Write boundary evidence.
+4. Let SkillFoundry verifier and registry decide acceptance.
+
+## Safety
+Keep raw prompts, raw transcripts, and package bodies out of LangGraph state.
+"""
+
+
+def _write_fake_codex_exec_command(workspace_root: Path) -> Path:
+    script = workspace_root / "fake_codex_exec.py"
+    script.write_text(
+        f"""
+from pathlib import Path
+import json
+import os
+import sys
+
+_ = sys.stdin.read()
+task_dir = Path(os.environ["FORGEUNIT_TASK_DIR"])
+worker_result = Path(os.environ["FORGEUNIT_WORKER_RESULT"])
+unit_id = os.environ["FORGEUNIT_UNIT"]
+
+(task_dir / "package").mkdir(exist_ok=True)
+(task_dir / "evidence").mkdir(exist_ok=True)
+(task_dir / "package" / "SKILL.md").write_text({VALID_FORGEUNIT_SKILL!r}, encoding="utf-8")
+(task_dir / "evidence" / "transcript.md").write_text(
+    "deterministic command bridge transcript pointer\\n",
+    encoding="utf-8",
+)
+(task_dir / "evidence" / "manifest.json").write_text(json.dumps({{
+    "schema": "forgeunit.worker_evidence_manifest",
+    "version": "0.6",
+    "unit_id": unit_id,
+    "status": "completed",
+    "output_artifacts": [
+        {{"path": "package/SKILL.md", "kind": "codex_skill", "summary": "fixture skill package"}}
+    ],
+    "evidence_artifacts": [
+        {{"path": "evidence/transcript.md", "kind": "transcript", "summary": "fixture transcript"}}
+    ],
+    "changed_files": ["package/SKILL.md", "evidence/transcript.md", "evidence/manifest.json"],
+    "commands": [{{"command": "fake codex exec", "exit_code": 0, "summary": "fixture command passed"}}],
+    "usage": None,
+    "usage_unavailable_reason": "external_worker_no_provider_telemetry"
+}}, indent=2), encoding="utf-8")
+worker_result.write_text(json.dumps({{
+    "status": "completed",
+    "output_artifacts": [
+        {{"path": "package/SKILL.md", "kind": "codex_skill", "summary": "fixture skill package"}}
+    ],
+    "boundary_evidence": [
+        {{"path": "evidence/transcript.md", "kind": "transcript", "summary": "fixture transcript"}},
+        {{"path": "evidence/manifest.json", "kind": "worker_evidence_manifest", "summary": "manifest"}}
+    ],
+    "changed_files": ["package/SKILL.md", "evidence/transcript.md", "evidence/manifest.json"],
+    "usage": None,
+    "usage_unavailable_reason": "external_worker_no_provider_telemetry"
+}}, indent=2), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+    return script
 
 
 def test_materialize_forgeunit_task_pack_from_job_workspace(tmp_path: Path) -> None:
@@ -136,3 +232,62 @@ def test_forgeunit_pilot_graph_routes_dry_run_to_human_review(tmp_path: Path) ->
     assert "raw_prompt" not in serialized_state
     assert review_request["trust_boundaries"]["raw_transcript_included"] is False
     assert review_request["trust_boundaries"]["raw_prompt_included"] is False
+
+
+def test_forgeunit_command_bridge_pilot_verifies_and_registers_offline_package(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    registry_path = tmp_path / "registry.json"
+    workspace = initialize_job_workspace(
+        runs_root,
+        "forgeunit-command-001",
+        worker_input="private command bridge request body must remain in file refs only",
+    )
+    script = _write_fake_codex_exec_command(workspace.root)
+
+    result = run_forgeunit_command_bridge_pilot_graph(
+        runs_root,
+        workspace.job_id,
+        registry_path=registry_path,
+        command=f"{sys.executable} {script.name}",
+        version="forgeunit-command-bridge-pilot",
+        created_at="2026-05-23T00:00:00Z",
+    )
+    serialized_state = json.dumps(result)
+    verification = json.loads(workspace.resolve_path(FORGEUNIT_VERIFICATION_RESULT_REF, must_exist=True).read_text())
+    registry_entry_snapshot = json.loads(
+        workspace.resolve_path(FORGEUNIT_REGISTRY_ENTRY_REF, must_exist=True).read_text()
+    )
+    registry_decision = json.loads(workspace.resolve_path(FORGEUNIT_REGISTRY_DECISION_REF, must_exist=True).read_text())
+    entry = LocalSkillRegistry(registry_path).get("forgeunit-command-001-skill", "forgeunit-command-bridge-pilot")
+    registry_report = LocalSkillRegistry(registry_path).verify_entry(entry)
+
+    validate_v2_graph_state(result)
+    assert result["stage"] == V2Stage.EMIT_REPORT.value
+    assert result["status"] == V2Status.REPORT_EMITTED.value
+    assert result["human_review_required"] is False
+    assert result["refs"]["skillfoundry_verification_result"] == FORGEUNIT_VERIFICATION_RESULT_REF
+    assert result["refs"]["registry_entry"] == FORGEUNIT_REGISTRY_ENTRY_REF
+    assert result["refs"]["registry_decision"] == FORGEUNIT_REGISTRY_DECISION_REF
+    assert result["refs"]["final_report"] == FORGEUNIT_FINAL_REPORT_REF
+    assert result["contextforge"]["last_verification_status"] == "passed"
+    assert result["contextforge"]["registry_approved"] is True
+    assert verification["passed"] is True
+    assert registry_decision["decision"] == "registered"
+    assert registry_entry_snapshot["verification_report"]["valid"] is True
+    assert registry_report.valid is True
+    assert (
+        workspace.resolve_path("package/SKILL.md", must_exist=True).read_text(encoding="utf-8")
+        == VALID_FORGEUNIT_SKILL
+    )
+    assert workspace.resolve_path("attempts/001/input_manifest.json", must_exist=True).is_file()
+    assert workspace.resolve_path("attempts/001/execution_report.json", must_exist=True).is_file()
+    assert workspace.resolve_path("attempts/001/worker_transcript.log", must_exist=True).is_file()
+    assert workspace.resolve_path("attempts/001/output_diff.patch", must_exist=True).is_file()
+    assert workspace.resolve_path(FORGEUNIT_PILOT_GRAPH_STATE_REF, must_exist=True).is_file()
+    assert "human_review_request" not in result["refs"]
+    assert "private command bridge request body" not in serialized_state
+    assert "ForgeUnit Command Bridge Skill" not in serialized_state
+    assert "deterministic command bridge transcript" not in serialized_state
+    assert "raw_prompt" not in serialized_state
+    assert "raw_transcript" not in serialized_state
+    assert "package_content" not in serialized_state
