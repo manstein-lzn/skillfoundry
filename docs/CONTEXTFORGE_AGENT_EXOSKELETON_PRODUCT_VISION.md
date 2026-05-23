@@ -993,11 +993,12 @@ SkillFoundry 在此阶段只做跟踪，不强行迁移。
 
 ## 与当前 Roadmap 的关系
 
-当前权威短期开发路线仍是：
+当前权威短期开发路线是：
 
-- `docs/DEVELOPMENT_ROADMAP.md`
+- `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`
 - `HANDOFF.md`
 
+`docs/archive/roadmaps/DEVELOPMENT_ROADMAP.md` 只保留为 v0/WP0-WP17 历史能力基线。
 本文不是替代当前路线图，而是下一代架构愿景。
 
 关系如下：

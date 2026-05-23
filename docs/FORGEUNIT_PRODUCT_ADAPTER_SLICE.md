@@ -259,7 +259,7 @@ transcript, raw worker input, or package body.
 For a manual real Codex exec probe, see:
 
 ```text
-docs/FORGEUNIT_REAL_CODEX_EXEC_PILOT.md
+docs/archive/pilots/FORGEUNIT_REAL_CODEX_EXEC_PILOT.md
 scripts/forgeunit_codex_exec_worker.py
 scripts/run_forgeunit_real_codex_exec_pilot.py
 ```

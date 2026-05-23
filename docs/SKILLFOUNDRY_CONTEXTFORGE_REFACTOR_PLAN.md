@@ -112,7 +112,7 @@ v2 技术实现以本文和当前 Goal Harness 方向为准。
 8. `third_party/contextforge/docs/architecture.md`
 9. `third_party/contextforge/docs/goal-harness-quickstart.md`
 
-`docs/DEVELOPMENT_ROADMAP.md`、`docs/ROADMAP.md`、`docs/ROADMAP_EXECUTION_PLAN.md`、`docs/FRONT_DESK_AGENT_ROADMAP.md` 和 `docs/archive/agent-briefs/` 是历史材料，不再约束 v2 模块边界。
+`docs/archive/roadmaps/DEVELOPMENT_ROADMAP.md`、`docs/archive/roadmaps/ROADMAP.md`、`docs/archive/roadmaps/ROADMAP_EXECUTION_PLAN.md`、`docs/archive/roadmaps/FRONT_DESK_AGENT_ROADMAP.md` 和 `docs/archive/agent-briefs/` 是历史材料，不再约束 v2 模块边界。
 
 `docs/SKILLFOUNDRY_V2_BASELINE.md` 也不是当前 phase 和下一步执行源。它固定的是“保留产品思想、重建技术实现、不背 v0 兼容债”的前提；当前代码事实、phase 编号、工作包和已完成/未完成状态均以本文为准。
 
@@ -128,12 +128,13 @@ v2 技术实现以本文和当前 Goal Harness 方向为准。
 | `docs/CONTEXTFORGE_GOAL_HARNESS_REBUILD_PLAN.md` | historical execution plan + evidence | 保留原始设计、历史证据和字段级背景；不再决定当前 phase 编号。 |
 | `docs/SKILLFOUNDRY_V2_BASELINE.md` | v2 premise-only | 说明“不背 v0 兼容债”的前提；不用于判断当前下一步。 |
 | `docs/CONTEXTFORGE_AGENT_EXOSKELETON_PRODUCT_VISION.md` | long-term product vision | 固定长期愿景，不替代当前工作包。 |
-| `docs/API_UI.md` | current API/UI contract notes | 必须随 API/UI 行为同步，尤其是 canonical route 和 legacy `/jobs` policy。 |
-| `docs/ARCHITECTURE.md` | v0 historical architecture | 只用于理解旧 WP0-WP12 设计，不再作为 v2 架构权威。 |
-| `docs/PRODUCTION_READINESS.md` | v0 internal-beta readiness artifact | 只描述旧 WP12 小规模内部 beta 边界；不能被读成 v2 production readiness。 |
-| `docs/SECURITY_CHECKLIST.md` | v0 security checklist with reusable checks | 可复用 path/registry/Codex boundary 检查，但需按 v2 Goal Harness 重新解释。 |
-| `docs/DEVELOPMENT_ROADMAP.md`、`docs/ROADMAP.md`、`docs/ROADMAP_EXECUTION_PLAN.md` | v0/historical | 只作为产品经验和历史工作包记录。 |
-| `docs/FRONT_DESK_AGENT_ROADMAP.md`、`docs/FRONT_DESK_CORE_NEED_REFACTOR.md`、`docs/FRONT_DESK_ROADMAP_AUDIT.md` | Front Desk historical/current mix | 可用于理解 Front Desk 演进，但不能覆盖本文对 v2 builder/repair/context 边界的定义。 |
+| `docs/FRONTDESK_FORGEUNIT_COMMAND_PILOT_RUNBOOK.md`、`docs/FRONTDESK_LIVE_SEMANTIC_EVAL.md` | current manual API/worker gates | 真实 command boundary 和 live Codex eval 的当前操作入口。 |
+| `docs/archive/v0/API_UI.md` | v0/historical API/UI notes | 只作为旧 API/UI 语境参考；当前接口事实以代码、测试和 current runbook 为准。 |
+| `docs/archive/v0/ARCHITECTURE.md` | v0 historical architecture | 只用于理解旧 WP0-WP12 设计，不再作为 v2 架构权威。 |
+| `docs/archive/operations/PRODUCTION_READINESS.md` | v0 internal-beta readiness artifact | 只描述旧 WP12 小规模内部 beta 边界；不能被读成 v2 production readiness。 |
+| `docs/archive/operations/SECURITY_CHECKLIST.md` | v0 security checklist with reusable checks | 可复用 path/registry/Codex boundary 检查，但需按 v2 Goal Harness 重新解释。 |
+| `docs/archive/roadmaps/DEVELOPMENT_ROADMAP.md`、`docs/archive/roadmaps/ROADMAP.md`、`docs/archive/roadmaps/ROADMAP_EXECUTION_PLAN.md` | v0/historical | 只作为产品经验和历史工作包记录。 |
+| `docs/archive/roadmaps/FRONT_DESK_AGENT_ROADMAP.md`、`docs/archive/roadmaps/FRONT_DESK_CORE_NEED_REFACTOR.md`、`docs/archive/roadmaps/FRONT_DESK_ROADMAP_AUDIT.md` | Front Desk historical/current mix | 可用于理解 Front Desk 演进，但不能覆盖本文对 v2 builder/repair/context 边界的定义。 |
 | `docs/archive/agent-briefs/` | archived WP briefs | 不作为当前执行入口。 |
 
 旧文档如果仍出现 “ContextForge 主要管理 SkillFoundry-owned LLM calls”、“ready for controlled internal beta” 或旧 WorkerAdapter 口径，应按 historical/v0 解释。v2 当前语义是：
@@ -1375,7 +1376,7 @@ SkillFoundry 达到内部产品可用，至少需要：
 | Internal pilot usable | 3-5 个内部真实任务跑完 canonical route，记录 cost/cache/failure/repair/human-review metrics。 | 不能说生产就绪、外部用户可用。 | future。 |
 | Production ready | auth、tenant isolation、queue、sandbox、secrets、audit、monitoring、deployment、incident response 和 human-review ops 完成。 | 不能用 WP12 internal beta 或离线测试替代生产承诺。 | not started。 |
 
-`docs/PRODUCTION_READINESS.md` 中的旧 internal beta readiness 只属于 v0/WP12 语境，不代表本文的 v2 production readiness。
+`docs/archive/operations/PRODUCTION_READINESS.md` 中的旧 internal beta readiness 只属于 v0/WP12 语境，不代表本文的 v2 production readiness。
 
 ## 16. Reviewer Packet
 
@@ -2221,11 +2222,11 @@ initial_decision: conditionally_approved
 final_decision: approved_with_residual_risks
 blocking_findings: none
 required_changes_applied_in_this_revision:
-  - 旧 `docs/ROADMAP.md` 顶部状态说明已改为指向本文作为当前 v2 技术执行源，`docs/DEVELOPMENT_ROADMAP.md` 只保留为 v0/WP0-WP17 历史能力基线。
-  - 旧 `docs/ROADMAP_EXECUTION_PLAN.md` 顶部状态说明和 WP13 后续路线说明已改为指向本文作为当前 v2 执行路线。
-  - 旧 `docs/FRONT_DESK_AGENT_ROADMAP.md` 顶部状态说明和历史基线说明已改为指向本文作为当前 v2 重构蓝图。
-  - 旧 `docs/FRONT_DESK_ROADMAP_AUDIT.md` 顶部状态说明和历史 P0 状态引用已改为指向本文作为当前 v2 状态来源。
-  - 旧 `docs/DEVELOPMENT_ROADMAP_AUDIT.md` 已标注为 v0/WP0-WP17 historical audit，并移除 `DEVELOPMENT_ROADMAP.md` 仍是主执行入口的旧口径。
+  - 旧 `docs/archive/roadmaps/ROADMAP.md` 顶部状态说明已改为指向本文作为当前 v2 技术执行源，`docs/archive/roadmaps/DEVELOPMENT_ROADMAP.md` 只保留为 v0/WP0-WP17 历史能力基线。
+  - 旧 `docs/archive/roadmaps/ROADMAP_EXECUTION_PLAN.md` 顶部状态说明和 WP13 后续路线说明已改为指向本文作为当前 v2 执行路线。
+  - 旧 `docs/archive/roadmaps/FRONT_DESK_AGENT_ROADMAP.md` 顶部状态说明和历史基线说明已改为指向本文作为当前 v2 重构蓝图。
+  - 旧 `docs/archive/roadmaps/FRONT_DESK_ROADMAP_AUDIT.md` 顶部状态说明和历史 P0 状态引用已改为指向本文作为当前 v2 状态来源。
+  - 旧 `docs/archive/roadmaps/DEVELOPMENT_ROADMAP_AUDIT.md` 已标注为 v0/WP0-WP17 historical audit，并移除 `DEVELOPMENT_ROADMAP.md` 仍是主执行入口的旧口径。
   - WP1 / WP6 已明确作为同一个 canonicalization gate：新 build / verify / repair / registry 功能默认进入 v2 modules，legacy modules 只能 compatibility / migration / retirement。
 reviewer_confirmed:
   - 本文正确区分 ContextForge、LangGraph、Codex SDK thread / GPT-5.5 worker、Verifier 和 Registry 的职责。
@@ -2344,10 +2345,10 @@ reviewer: Kepler / independent gpt-5.5 xhigh reviewer
 model: gpt-5.5 xhigh
 initial_decision: changes_required_for_documentation_completeness
 initial_blockers:
-  - docs/API_UI.md still described stale key-required Front Desk trial behavior, while current code and canonical docs use no-key deterministic Front Desk / Goal Harness defaults.
+  - docs/archive/v0/API_UI.md still described stale key-required Front Desk trial behavior, while current code and canonical docs use no-key deterministic Front Desk / Goal Harness defaults.
   - WP5 ContextForge focused gate used a submodule-local virtualenv path, but this checkout only guarantees the SkillFoundry root .venv, making the command non-reproducible for new contributors.
 fixes_applied:
-  - docs/API_UI.md now describes the canonical Front Desk -> plan review -> freeze -> graph v2 / ContextForge Goal Harness / Verifier / Registry route, no-key deterministic default, live provider as opt-in, and legacy /jobs as explicit compatibility surface.
+  - docs/archive/v0/API_UI.md now describes the canonical Front Desk -> plan review -> freeze -> graph v2 / ContextForge Goal Harness / Verifier / Registry route, no-key deterministic default, live provider as opt-in, and legacy /jobs as explicit compatibility surface.
   - WP5 acceptance commands now run ContextForge focused tests from the SkillFoundry root with .venv/bin/python against third_party/contextforge/tests/..., which is executable in the current checkout.
 focused_verification:
   - git diff --check => passed.

@@ -56,7 +56,7 @@ Registry 只批准 verified asset。
 | `docs/CONTEXTFORGE_GOAL_HARNESS_REBUILD_PLAN.md` | 原始重构执行计划、字段级设计和历史执行证据。 |
 | `docs/SKILLFOUNDRY_V2_BASELINE.md` | v2 前提和边界声明。 |
 | `docs/CONTEXTFORGE_AGENT_EXOSKELETON_PRODUCT_VISION.md` | 长期产品愿景和架构隐喻。 |
-| `docs/DEVELOPMENT_ROADMAP.md` | v0/WP0-WP17 历史能力基线和产品经验输入，不再约束 v2 模块边界。 |
+| `docs/archive/roadmaps/DEVELOPMENT_ROADMAP.md` | v0/WP0-WP17 历史能力基线和产品经验输入，不再约束 v2 模块边界。 |
 | `HANDOFF.md` | 当前仓库状态和接手提醒；应引用 `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md` 作为 v2 执行源，并把本文作为历史计划和证据。 |
 | `docs/archive/agent-briefs/` | 历史 agent brief 归档，只用于追溯旧实现。 |
 
@@ -518,7 +518,7 @@ tests/
 | `src/skillfoundry/graph.py` | rewrite | 旧 WP2 graph 是 skeleton；v2 graph 应以 Goal Harness node 为中心。 |
 | `src/skillfoundry/frontdesk_loop.py` | rewrite orchestration | 思想保留，状态和 ContextForge 集成重建。 |
 | `src/skillfoundry/api.py` | defer / rewrite after slice | API/UI 不应先驱动核心重构。 |
-| `docs/DEVELOPMENT_ROADMAP.md` | historical / partial input | 记录 v0 路线，但不再约束 v2 技术实现。 |
+| `docs/archive/roadmaps/DEVELOPMENT_ROADMAP.md` | historical / partial input | 记录 v0 路线，但不再约束 v2 技术实现。 |
 | `docs/archive/agent-briefs/` | archive | 只用于追溯旧 WP0-WP17。 |
 
 ## 8. Contract Bridge 设计
