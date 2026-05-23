@@ -76,6 +76,7 @@ docs/FORGEUNIT_REAL_CODEX_EXEC_PILOT.md # ForgeUnit 真实 Codex exec 手动 pil
 docs/FRONTDESK_FORGEUNIT_COMMAND_PILOT_RUNBOOK.md # FrontDesk API 真实 command boundary 手动试运行协议
 docs/FRONTDESK_LIVE_SEMANTIC_EVAL.md # FrontDesk live Codex semantic eval 手动门槛
 docs/FRESH_CLONE_GATE.md # 新用户 fresh clone 离线可复现门槛
+docs/DEVELOPMENT_WORKFLOW.md # 默认本地开发和验证命令
 docs/SKILLFOUNDRY_V2_BASELINE.md # v2 重建基线：保留思想，重建实现
 docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md # v2 当前集成蓝图和迁移总图
 docs/CONTEXTFORGE_GOAL_HARNESS_REBUILD_PLAN.md # v2 阶段实现计划和历史执行证据
@@ -131,6 +132,20 @@ python -m pytest -q
 ```
 
 真实 Codex semantic eval 是显式手动门槛，不进入默认测试；操作协议见 [docs/FRONTDESK_LIVE_SEMANTIC_EVAL.md](docs/FRONTDESK_LIVE_SEMANTIC_EVAL.md)。
+
+## 常用开发命令
+
+默认开发入口见 [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md)：
+
+```bash
+make focused
+make test
+make fresh-clone-smoke
+make live-semantic-eval-help
+```
+
+这些命令不会默认调用 live Codex。`make fresh-clone-smoke` 会使用 Git/network
+创建临时 clone 并跑离线 smoke；live Codex semantic eval 必须按 runbook 手动执行。
 
 ## 白皮书
 
