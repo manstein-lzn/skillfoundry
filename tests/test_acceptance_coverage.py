@@ -17,11 +17,10 @@ from skillfoundry import (
     RegistryGateError,
     SkillSpec,
     Verifier,
-    WorkerAdapter,
-    WorkerExecutionOutcome,
     initialize_job_workspace,
     sha256_file,
 )
+from skillfoundry.worker import WorkerAdapter, WorkerExecutionOutcome
 
 
 GOOD_SKILL_MD = """---

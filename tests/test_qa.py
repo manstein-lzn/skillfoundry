@@ -8,10 +8,9 @@ from skillfoundry import (
     QALab,
     SkillSpec,
     Verifier,
-    WorkerAdapter,
-    WorkerExecutionOutcome,
     initialize_job_workspace,
 )
+from skillfoundry.worker import WorkerAdapter, WorkerExecutionOutcome
 
 
 GOOD_SKILL_MD = """---

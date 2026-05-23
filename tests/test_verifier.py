@@ -6,10 +6,9 @@ import skillfoundry
 from skillfoundry import (
     VerificationResult,
     Verifier,
-    WorkerAdapter,
-    WorkerExecutionOutcome,
     initialize_job_workspace,
 )
+from skillfoundry.worker import WorkerAdapter, WorkerExecutionOutcome
 
 
 VALID_SKILL_MD = """---

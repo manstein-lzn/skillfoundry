@@ -52,13 +52,12 @@ from pathlib import Path
 
 from skillfoundry import (
     APPROVAL_APPROVED,
-    CodexWorker,
     DEFAULT_REGISTRY_VERSION,
     LocalSkillRegistry,
     Verifier,
-    WorkerAdapter,
-    prepare_offline_workspace,
 )
+from skillfoundry.offline import prepare_offline_workspace
+from skillfoundry.worker import CodexWorker, WorkerAdapter
 
 root = Path("runs/codex-pilot")
 workspace = prepare_offline_workspace(

@@ -1,6 +1,6 @@
 # SkillFoundry Handoff
 
-更新日期：2026-05-23
+更新日期：2026-05-24
 
 ## Current mainline / 当前主线
 
@@ -50,6 +50,11 @@ FrontDesk
 - `src/skillfoundry/ops.py`
   - 仅保留 local health、observability、cleanup helper。
   - 旧 `build_jobs_concurrently()` offline 创建 helper 已退役。
+- `src/skillfoundry/offline.py` / `src/skillfoundry/worker.py`
+  - 仍保留为显式 CLI/dev fixture compatibility island。
+  - 顶层 `skillfoundry` 只保留 `build_offline` / `OfflineWorkerMode` 兼容入口；
+    legacy worker/offline internals 必须从 `skillfoundry.worker` 或
+    `skillfoundry.offline` 直接导入。
 - `src/skillfoundry/forgeunit_adapter.py`
   - `JobWorkspace -> ForgeUnit task pack -> command boundary -> SkillFoundry evidence`
     的适配层。
@@ -119,7 +124,8 @@ Codex，不应依赖本机 sibling `../ForgeUnit`。
    `src/skillfoundry/llm_builder.py` 已在 Phase 13B 删除，
    `final_report.py` 已在 Phase 13C 从 `offline.py` 解耦，
    legacy API `POST /jobs` offline 创建入口已在 Phase 13D 退役，
-   ops offline concurrent build helper 已在 Phase 13E 退役。
+   ops offline concurrent build helper 已在 Phase 13E 退役，
+   legacy worker/offline internals 已在 Phase 13F 从顶层 public API 移除。
 3. 完善 API/UI 对 registry outcome、repair decision、human review 和 refs-only
    evidence 的展示。
 4. 用 3-5 个真实 Skill 需求做 opt-in live Codex semantic eval，记录失败分类和修复策略。

@@ -160,6 +160,42 @@ Dependency fix:
 - Ops tests now keep the registry concurrency check without relying on an ops
   offline build method.
 
+## Phase 13F
+
+Status: implemented in this cleanup slice.
+
+Narrowed:
+
+- Top-level `skillfoundry` no longer exports legacy `worker.py` internals:
+  `WorkerAdapter`, `FakeWorker`, `FakeWorkerMode`, `CodexWorker`, command-runner
+  helpers, and worker boundary result types.
+- Top-level `skillfoundry` no longer exports legacy offline helper internals:
+  `prepare_offline_workspace`, `run_offline_attempt`, `verify_offline`,
+  `register_offline`, `Route`, `WorkflowStatus`, and offline fixture classes.
+
+Kept:
+
+- `skillfoundry.build_offline`
+- `skillfoundry.OfflineWorkerMode`
+- `skillfoundry.offline.*` module-level compatibility for explicit tests and
+  CLI/dev fixtures.
+- `skillfoundry.worker.*` module-level compatibility for legacy fixture tests
+  and the archived CodexWorker pilot.
+
+Rationale:
+
+- `offline.py` and `worker.py` still have useful deterministic fixture coverage
+  and CLI compatibility, so deleting them would be premature.
+- Keeping their internals off the package root reduces new-user API noise and
+  makes the current product surface easier to scan.
+
+Dependency fix:
+
+- Legacy worker/offline tests import old internals from `skillfoundry.worker`
+  and `skillfoundry.offline` directly.
+- Public-package checks assert that the legacy internals no longer leak through
+  `skillfoundry.__all__` or top-level attributes.
+
 ## Current Keep List
 
 Keep as current mainline or current dependency:
@@ -200,6 +236,8 @@ These modules need a separate audit before deletion or shrinking:
   - Old WorkerAdapter/CodexWorker/FakeWorker path.
   - Still used by legacy tests, offline compatibility, verifier fixtures, and
     some current bridge tests.
+  - No longer exported from the top-level package; import explicitly from
+    `skillfoundry.worker` when maintaining legacy fixtures.
 - `src/skillfoundry/context.py`
   - Old owned-call/context adapter.
   - Still referenced by FrontDesk and older LLM builder paths.
@@ -207,8 +245,9 @@ These modules need a separate audit before deletion or shrinking:
   - Product support surfaces from v0/WP phases.
   - Need per-module dependency checks.
 - `src/skillfoundry/__init__.py`
-  - Public export surface is still too broad.
-  - Shrink after each legacy module is retired.
+  - Public export surface is still broad, but legacy worker internals and
+    offline helper internals have been removed from the package root.
+  - Continue shrinking after each legacy module is retired.
 
 ## Test Ownership
 

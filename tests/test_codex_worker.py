@@ -7,16 +7,14 @@ from typing import Callable
 import skillfoundry
 from skillfoundry import (
     APPROVAL_APPROVED,
-    CODEX_PILOT_ENV_VAR,
     LOCKED_INPUT_PATHS,
     BuildContract,
-    CodexCommandResult,
-    CodexWorker,
     LocalSkillRegistry,
     Verifier,
-    WorkerAdapter,
     initialize_job_workspace,
 )
+import skillfoundry.worker as worker_module
+from skillfoundry.worker import CODEX_PILOT_ENV_VAR, CodexCommandResult, CodexWorker, WorkerAdapter
 
 
 HASH = "c" * 64
@@ -139,10 +137,13 @@ def valid_skill_markdown(name: str) -> str:
     )
 
 
-def test_codex_worker_api_is_exported():
-    assert skillfoundry.CodexWorker is CodexWorker
-    assert skillfoundry.CodexCommandResult is CodexCommandResult
-    assert skillfoundry.CODEX_PILOT_ENV_VAR == "SKILLFOUNDRY_RUN_CODEX_PILOT"
+def test_legacy_codex_worker_api_is_module_scoped():
+    assert worker_module.CodexWorker is CodexWorker
+    assert worker_module.CodexCommandResult is CodexCommandResult
+    assert worker_module.CODEX_PILOT_ENV_VAR == "SKILLFOUNDRY_RUN_CODEX_PILOT"
+    assert not hasattr(skillfoundry, "CodexWorker")
+    assert not hasattr(skillfoundry, "CodexCommandResult")
+    assert not hasattr(skillfoundry, "CODEX_PILOT_ENV_VAR")
 
 
 def test_codex_command_assembly_uses_exec_and_workspace_root(tmp_path):

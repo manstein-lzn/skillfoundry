@@ -17,8 +17,6 @@ from skillfoundry import (
     RegistryGateError,
     VerificationResult,
     Verifier,
-    WorkerAdapter,
-    WorkerExecutionOutcome,
     bridge_skillfoundry_verification_result,
     build_goal_contract,
     build_verification_gate,
@@ -27,6 +25,7 @@ from skillfoundry import (
 from skillfoundry.frontdesk_schema import AcceptanceCriteriaSet, AcceptanceCriterion
 from skillfoundry.schema import sha256_file
 from skillfoundry.verification_bridge import CONTEXTFORGE_VERIFICATION_RESULT_REF
+from skillfoundry.worker import WorkerAdapter, WorkerExecutionOutcome
 
 
 VALID_REGISTRY_SKILL_MD = """---

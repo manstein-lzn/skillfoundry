@@ -6,14 +6,12 @@ import skillfoundry
 from skillfoundry import (
     LOCKED_INPUT_PATHS,
     BuildContract,
-    FakeWorker,
-    FakeWorkerMode,
-    WorkerAdapter,
-    WorkerAttemptLimitError,
     WorkerInvocation,
     initialize_job_workspace,
     sha256_file,
 )
+import skillfoundry.worker as worker_module
+from skillfoundry.worker import FakeWorker, FakeWorkerMode, WorkerAdapter, WorkerAttemptLimitError
 
 
 HASH = "a" * 64
@@ -56,10 +54,13 @@ def assert_attempt_artifacts(workspace, attempt_id):
     return paths
 
 
-def test_worker_api_is_exported():
-    assert skillfoundry.WorkerAdapter is WorkerAdapter
-    assert skillfoundry.FakeWorker is FakeWorker
-    assert skillfoundry.FakeWorkerMode is FakeWorkerMode
+def test_legacy_worker_api_is_module_scoped():
+    assert worker_module.WorkerAdapter is WorkerAdapter
+    assert worker_module.FakeWorker is FakeWorker
+    assert worker_module.FakeWorkerMode is FakeWorkerMode
+    assert not hasattr(skillfoundry, "WorkerAdapter")
+    assert not hasattr(skillfoundry, "FakeWorker")
+    assert not hasattr(skillfoundry, "FakeWorkerMode")
 
 
 def test_fake_worker_minimal_success_creates_package_and_attempt_artifacts(tmp_path):

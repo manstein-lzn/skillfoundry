@@ -10,12 +10,11 @@ from skillfoundry import (
     LocalSkillRegistry,
     OfflineWorkerMode,
     RegistryGateError,
-    Route,
     VerificationResult,
     build_offline,
-    prepare_offline_workspace,
-    run_offline_attempt,
 )
+import skillfoundry.offline as offline_module
+from skillfoundry.offline import prepare_offline_workspace, run_offline_attempt
 
 
 REQ_TEXT = """# Offline pytest repair skill
@@ -64,6 +63,10 @@ def assert_registered_report(result):
 def test_offline_api_is_exported():
     assert skillfoundry.build_offline is build_offline
     assert skillfoundry.OfflineWorkerMode is OfflineWorkerMode
+    assert not hasattr(skillfoundry, "prepare_offline_workspace")
+    assert not hasattr(skillfoundry, "run_offline_attempt")
+    assert offline_module.prepare_offline_workspace is prepare_offline_workspace
+    assert offline_module.run_offline_attempt is run_offline_attempt
 
 
 def test_build_new_normal_path_registers_and_writes_final_report(tmp_path):

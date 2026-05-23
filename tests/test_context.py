@@ -4,11 +4,10 @@ import skillfoundry
 from skillfoundry import (
     SkillFoundryContextAdapter,
     Verifier,
-    WorkerAdapter,
-    WorkerExecutionOutcome,
     audit_report_to_json,
     initialize_job_workspace,
 )
+from skillfoundry.worker import WorkerAdapter, WorkerExecutionOutcome
 
 
 VALID_SKILL_MD = """---
