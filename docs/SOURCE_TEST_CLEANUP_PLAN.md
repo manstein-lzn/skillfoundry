@@ -487,6 +487,37 @@ Rationale:
   narratives.
 - Real product validation remains a later phase after cleanup closeout.
 
+## Phase 13N
+
+Status: implemented in this cleanup slice.
+
+Closed:
+
+- Final new-user cleanup gate.
+- Root tracked-file audit for local artifacts, generated packages, caches,
+  root-level agent briefs, `.metaloop`, `.local`, `.venv`, `runs`, and egg-info.
+- Package-root public API audit through `tests/test_public_api.py`.
+- Current-doc index check for system map, public API, legacy compatibility, test
+  ownership, cleanup closeout, and product-validation-later boundaries.
+
+Final deterministic gate:
+
+```bash
+git diff --check
+.venv/bin/python -m pytest tests/test_public_api.py -q
+make focused
+make test
+make fresh-clone-smoke
+```
+
+Rationale:
+
+- Short-term cleanup is complete when a new user can understand the current
+  source/docs/test boundaries from current docs and reproduce the deterministic
+  baseline from a fresh clone.
+- Real product validation with live Codex and real Skill scenarios remains a
+  separate later plan.
+
 ## Test Ownership
 
 Current mainline tests:
@@ -501,7 +532,7 @@ Current mainline tests:
 - `tests/test_graph_v2*.py`
 - `tests/test_api.py`
 
-Legacy/compatibility tests to audit next:
+Legacy/compatibility tests classified by `tests/README.md`:
 
 - `tests/test_offline.py`
 - `tests/test_worker.py`

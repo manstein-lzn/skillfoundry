@@ -14,6 +14,7 @@ Read these first, in order:
 - [Test Ownership](../tests/README.md): which tests protect current mainline, compatibility, legacy fixtures, scripts, and live opt-in support.
 - [Development Workflow](DEVELOPMENT_WORKFLOW.md): local commands and validation gates.
 - [Fresh Clone Gate](FRESH_CLONE_GATE.md): new-user reproducibility check.
+- [SkillFoundry Cleanup Completion Plan](SKILLFOUNDRY_CLEANUP_COMPLETION_PLAN.md): completed short-term cleanup plan; product validation remains later.
 
 ## Current Mainline
 

@@ -23,7 +23,7 @@ legacy offline builder paths, legacy worker adapters, and old owned-call
 context adapters may remain as compatibility islands, but they must not define
 the current product architecture.
 
-Cleanup already completed:
+Cleanup completed:
 
 - Phase 13A retired the old WP2 graph.
 - Phase 13B retired the old `llm_builder.py`.
@@ -34,6 +34,14 @@ Cleanup already completed:
   `skillfoundry`.
 - Phase 13G removed legacy context adapter internals from top-level
   `skillfoundry`.
+- Phase 13H defined and tested the package-root public API contract.
+- Phase 13I made feedback, QA, and ops support surfaces module-scoped.
+- Phase 13J made graph v2 and direct Goal Runtime compatibility helpers
+  module-scoped while keeping `seed_goal_harness_context` top-level.
+- Phase 13K added the legacy compatibility index.
+- Phase 13L added the test ownership map.
+- Phase 13M consolidated the current docs entry path and system map.
+- Phase 13N closed the final new-user cleanup gate.
 
 The repo now has a runnable deterministic baseline:
 
@@ -91,7 +99,7 @@ This cleanup plan does not include:
 - Do not move large amounts of code just to make the tree look tidy; move only
   when it improves comprehension or prevents incorrect usage.
 
-## Remaining Cleanup Phases
+## Cleanup Phases
 
 ### Phase 13H: Package Root Public API Contract
 
@@ -373,6 +381,8 @@ git diff --check
 
 ### Phase 13N: Final New-User Cleanup Gate
 
+Status: implemented.
+
 Goal:
 
 Close short-term cleanup with a fresh clone, source tree, docs, and package API
@@ -396,6 +406,19 @@ Acceptance:
 - `main` equals `origin/main`.
 - Fresh clone smoke passes.
 - The cleanup plan can move from active to completed.
+
+Implemented result:
+
+- Root tracked-file audit excludes local runtime artifacts, generated packages,
+  root-level agent briefs, caches, `.metaloop`, `.local`, `.venv`, `runs`, and
+  egg-info.
+- Package-root API is protected by `tests/test_public_api.py`.
+- Current docs now point to `docs/SYSTEM_MAP.md`, `docs/PUBLIC_API.md`,
+  `docs/LEGACY_COMPATIBILITY.md`, and `tests/README.md` before archive
+  material.
+- Final cleanup validation gate is:
+  `git diff --check`, package-root public API tests, docs/index search,
+  `make focused`, `make test`, and `make fresh-clone-smoke`.
 
 Suggested validators:
 
@@ -438,6 +461,10 @@ are true:
 
 At that point, additional cleanup without product validation has diminishing
 returns.
+
+Status: stopped. The short-term cleanup work is complete through Phase 13N.
+Further work should be driven by real product validation, not more speculative
+cleanup.
 
 ## Product Validation Later
 

@@ -19,6 +19,10 @@ FrontDesk
 `LangGraph + ContextForge + ForgeUnit + Codex exec boundary + independent Verifier`
 为准。
 
+短期 cleanup 已完成到 Phase 13N。当前仓库已经有 public API contract、legacy
+compatibility index、test ownership map、system map 和 fresh-clone gate。真实产品验证
+仍然是后续单独阶段，不属于 cleanup。
+
 ## Start Here
 
 新接手时优先读：
@@ -149,25 +153,11 @@ Codex，不应依赖本机 sibling `../ForgeUnit`。
 
 ## Next Useful Work
 
-1. 继续把产品主路径收敛到 `src/forgeunit_skillfoundry/`。
-2. 继续隔离或退役 legacy `worker.py`、`context.py`、`offline.py`
-   等旧路径；`src/skillfoundry/graph.py` 已在 Phase 13A 删除，
-   `src/skillfoundry/llm_builder.py` 已在 Phase 13B 删除，
-   `final_report.py` 已在 Phase 13C 从 `offline.py` 解耦，
-   legacy API `POST /jobs` offline 创建入口已在 Phase 13D 退役，
-   ops offline concurrent build helper 已在 Phase 13E 退役，
-   legacy worker/offline internals 已在 Phase 13F 从顶层 public API 移除，
-   legacy context adapter internals 已在 Phase 13G 从顶层 public API 移除，
-   Phase 13H 已新增 public API 合同并移除明显内部 fake-worker/result/factory 顶层导出，
-   Phase 13I 已把 feedback/QA/ops support surfaces 收口为 module-scoped，
-   Phase 13J 已把 direct Goal Runtime 和 graph v2 compatibility helpers 收口为
-   module-scoped，
-   Phase 13K 已新增 legacy compatibility index，
-   Phase 13L 已新增 tests ownership map，
-   Phase 13M 已新增 system map 并收敛 docs entry path。
-3. 完善 API/UI 对 registry outcome、repair decision、human review 和 refs-only
+1. 用 3-5 个真实 Skill 需求做 opt-in live Codex semantic eval，记录失败分类和修复策略。
+2. 完善 API/UI 对 registry outcome、repair decision、human review 和 refs-only
    evidence 的展示。
-4. 用 3-5 个真实 Skill 需求做 opt-in live Codex semantic eval，记录失败分类和修复策略。
+3. 只有当真实产品验证暴露理解成本或维护成本时，再继续删除/迁移 compatibility islands；
+   当前 legacy boundaries 先按 `docs/LEGACY_COMPATIBILITY.md` 维护。
 
 ## Git Notes
 

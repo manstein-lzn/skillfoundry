@@ -132,6 +132,10 @@ docs/                         # current docs plus archive
 SkillFoundry currently proves a governed Codex Skill factory path. It is not yet
 presented as a production multi-tenant platform.
 
+Short-term repository cleanup is complete through Phase 13N. See
+[docs/SKILLFOUNDRY_CLEANUP_COMPLETION_PLAN.md](docs/SKILLFOUNDRY_CLEANUP_COMPLETION_PLAN.md).
+Real product validation with live Codex scenarios is intentionally later.
+
 Not default:
 
 - live Codex calls;
