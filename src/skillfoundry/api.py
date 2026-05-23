@@ -49,7 +49,8 @@ from .goal_runtime import (
 )
 from .graph_v2 import GRAPH_V2_STATE_REF, run_verified_skillfoundry_v2_graph, validate_v2_graph_state
 from .live_llm import DEFAULT_FRONTDESK_MODEL
-from .offline import OfflineWorkerMode, build_offline, read_final_report
+from .final_report import read_final_report
+from .offline import OfflineWorkerMode, build_offline
 from .registry import APPROVAL_APPROVED, LocalSkillRegistry, QUARANTINE_NONE
 from .schema import JsonValue, RegistryEntry, ensure_json_compatible, sha256_file, utc_now
 from .security import PathSecurityError, assert_under_root, resolve_under_root, validate_relative_path

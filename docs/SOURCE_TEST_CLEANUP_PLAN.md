@@ -80,6 +80,34 @@ Dependency fix:
   `LLM_SKILL_BUILDER_*` constants.
 - `workers_v2.OwnedLLMSkillBuilderWorker` remains exported and tested.
 
+## Phase 13C
+
+Status: implemented in this cleanup slice.
+
+Extracted:
+
+- `src/skillfoundry/final_report.py`
+
+Rationale:
+
+- `src/skillfoundry/offline.py` was carrying two responsibilities: the legacy
+  deterministic offline builder and the current `final_report.json` evidence
+  envelope used by v2/runtime paths.
+- `final_report.json` is still current because graph v2, ForgeUnit adapter,
+  API status reads, CLI report refresh, and registry gates use it as a compact
+  evidence index.
+- The old offline builder can now be audited or retired later without making
+  current ForgeUnit/graph_v2 paths import the legacy builder module for final
+  report helpers.
+
+Dependency fix:
+
+- `goal_runtime.py`, `graph_v2.py`, `forgeunit_adapter.py`, `api.py`,
+  `cli.py`, and public package exports now import `emit_final_report` /
+  `read_final_report` from `final_report.py`.
+- `offline.py` keeps importing those helpers for legacy compatibility, so the
+  public API and old offline tests continue to work during the transition.
+
 ## Current Keep List
 
 Keep as current mainline or current dependency:
@@ -97,6 +125,7 @@ Keep as current mainline or current dependency:
 - `src/skillfoundry/goal_runtime.py`
 - `src/skillfoundry/contracts.py`
 - `src/skillfoundry/verification_bridge.py`
+- `src/skillfoundry/final_report.py`
 - `src/skillfoundry/acceptance.py`
 - `src/skillfoundry/verifier.py`
 - `src/skillfoundry/registry.py`
@@ -110,7 +139,9 @@ These modules need a separate audit before deletion or shrinking:
 
 - `src/skillfoundry/offline.py`
   - Legacy offline compatibility route.
-  - Still used by API compatibility and final-report helpers.
+  - Final-report helpers have been extracted.
+  - Still used by API compatibility, CLI build/verify/register commands,
+    ops tests, and deterministic offline fixtures.
 - `src/skillfoundry/worker.py`
   - Old WorkerAdapter/CodexWorker/FakeWorker path.
   - Still used by legacy tests, offline compatibility, verifier fixtures, and
@@ -132,6 +163,7 @@ Current mainline tests:
 - `tests/test_forgeunit_skillfoundry_*.py`
 - `tests/test_frontdesk_*.py`
 - `tests/test_forgeunit_adapter.py`
+- `tests/test_final_report.py`
 - `tests/test_verification_bridge.py`
 - `tests/test_registry.py`
 - `tests/test_acceptance_coverage.py`

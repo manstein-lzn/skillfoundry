@@ -259,8 +259,8 @@ from .verification_bridge import (
     VERIFICATION_BRIDGE_VERSION,
     bridge_skillfoundry_verification_result,
 )
+from .final_report import OFFLINE_REPORT_VERSION, emit_final_report, read_final_report
 from .offline import (
-    OFFLINE_REPORT_VERSION,
     DEFAULT_REVIEW_STATUS,
     OfflineDeterministicWorker,
     OfflineRunResult,
@@ -268,10 +268,8 @@ from .offline import (
     Route,
     WorkflowStatus,
     build_offline,
-    emit_final_report,
     load_offline_workspace,
     prepare_offline_workspace,
-    read_final_report,
     register_offline,
     run_offline_attempt,
     verify_offline,

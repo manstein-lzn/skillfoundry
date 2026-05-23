@@ -664,7 +664,7 @@ def build_forgeunit_registry_gate_node(
                 "ForgeUnit registry gate failed: " + "; ".join(verification_report.failures)
             )
 
-        from .offline import emit_final_report
+        from .final_report import emit_final_report
 
         final_report = emit_final_report(
             workspace.root,

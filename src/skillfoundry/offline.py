@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from .final_report import OFFLINE_REPORT_VERSION, emit_final_report, read_final_report
 from .registry import (
     APPROVAL_APPROVED,
     DEFAULT_REGISTRY_VERSION,
@@ -33,7 +34,6 @@ from .schema import (
     VerificationSpec,
     ensure_json_compatible,
     sha256_file,
-    sha256_json,
     utc_now,
 )
 from .security import validate_relative_path
@@ -48,7 +48,6 @@ from .worker import (
 from .workspace import JOB_ID_RE, LOCKED_INPUT_PATHS, JobWorkspace, initialize_job_workspace
 
 
-OFFLINE_REPORT_VERSION = "skillfoundry.offline.final_report.v1"
 OFFLINE_WORKER_TYPE_PREFIX = "offline"
 DEFAULT_REVIEW_STATUS = "offline_wp7_verified"
 
@@ -77,15 +76,6 @@ class WorkflowStatus(StrEnum):
     REPORT_EMITTED = "report_emitted"
     HUMAN_REVIEW_REQUIRED = "human_review_required"
     FAIL_CLOSED = "fail_closed"
-
-
-_TERMINAL_STATUSES = {
-    WorkflowStatus.REGISTERED.value,
-    WorkflowStatus.REUSED.value,
-    WorkflowStatus.REJECTED.value,
-    WorkflowStatus.HUMAN_REVIEW_REQUIRED.value,
-    WorkflowStatus.FAIL_CLOSED.value,
-}
 
 
 class OfflineWorkerMode(StrEnum):
@@ -366,44 +356,6 @@ def register_offline(
     workspace = load_offline_workspace(job)
     registry = LocalSkillRegistry(registry_path, duplicate_policy=duplicate_policy)
     return registry.add_verified(workspace, version=version, review_status=review_status)
-
-
-def emit_final_report(
-    job: str | Path,
-    *,
-    final_status: str | WorkflowStatus | None = None,
-    route: Route | str | None = None,
-    registry_path: str | Path | None = None,
-    registry_entry: RegistryEntry | None = None,
-    errors: list[dict[str, JsonValue]] | None = None,
-    human_review: Mapping[str, Any] | None = None,
-) -> dict[str, JsonValue]:
-    """Write and return the machine-readable final report for a job."""
-
-    workspace = load_offline_workspace(job)
-    status_value = _status_value(final_status) if final_status is not None else _infer_final_status(workspace)
-    route_value = _coerce_route(route).value if route is not None else None
-    report = _build_final_report(
-        workspace,
-        final_status=status_value,
-        route=route_value,
-        registry_path=Path(registry_path) if registry_path is not None else None,
-        registry_entry=registry_entry,
-        errors=errors or [],
-        human_review=dict(human_review or {}),
-    )
-    _write_json(workspace.resolve_path("final_report.json"), report)
-    return report
-
-
-def read_final_report(job: str | Path) -> dict[str, JsonValue]:
-    """Read ``final_report.json`` from an offline job workspace."""
-
-    path = Path(job) / "final_report.json"
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("final_report.json must be a JSON object")
-    return ensure_json_compatible(payload)  # type: ignore[return-value]
 
 
 def _run_build_loop(
@@ -694,65 +646,6 @@ def _select_reuse_entry(
     return candidates[0] if candidates else None
 
 
-def _build_final_report(
-    workspace: JobWorkspace,
-    *,
-    final_status: str,
-    route: str | None,
-    registry_path: Path | None,
-    registry_entry: RegistryEntry | None,
-    errors: list[dict[str, JsonValue]],
-    human_review: dict[str, Any],
-) -> dict[str, JsonValue]:
-    verification_result = _read_verification_result(workspace)
-    registry_entry = registry_entry or _find_registry_entry_for_workspace(workspace, registry_path)
-    attempts = _attempt_summaries(workspace)
-    latest_execution = _latest_execution_report_ref(workspace)
-    artifact_manifest = _file_ref(workspace, "artifact_manifest.json")
-    package_hash = _package_hash_for_report(workspace, verification_result, registry_entry)
-    registry_payload = _registry_report_payload(registry_path, registry_entry)
-
-    report = {
-        "schema_version": OFFLINE_REPORT_VERSION,
-        "job_id": workspace.job_id,
-        "route": route,
-        "final_status": final_status,
-        "created_at": utc_now(),
-        "refs": {
-            "build_contract": _file_ref(workspace, "build_contract.yaml"),
-            "skill_spec": _file_ref(workspace, "skill_spec.yaml"),
-            "worker_input": _file_ref(workspace, "worker_input.md"),
-            "attempts": attempts,
-            "latest_execution_report": latest_execution,
-            "verifier_result": _verification_result_payload(workspace, verification_result),
-            "registry_entry": registry_payload,
-            "artifact_manifest": artifact_manifest,
-            "package": {
-                "ref": "package",
-                "sha256": package_hash,
-            },
-        },
-        "hashes": {
-            "build_contract": _sha_if_exists(workspace, "build_contract.yaml"),
-            "skill_spec": _sha_if_exists(workspace, "skill_spec.yaml"),
-            "worker_input": _sha_if_exists(workspace, "worker_input.md"),
-            "artifact_manifest": artifact_manifest.get("sha256") if artifact_manifest else None,
-            "package": package_hash,
-            "latest_execution_report": latest_execution.get("sha256") if latest_execution else None,
-            "verifier_result": (
-                sha256_file(workspace.resolve_path("verifier/verification_result.json", must_exist=True))
-                if verification_result is not None
-                else None
-            ),
-            "registry_entry": registry_payload.get("entry_hash") if registry_payload else None,
-        },
-        "package_hash": package_hash,
-        "human_review": ensure_json_compatible(human_review),
-        "errors": errors,
-    }
-    return ensure_json_compatible(report)  # type: ignore[return-value]
-
-
 def _attempt_summaries(workspace: JobWorkspace) -> list[dict[str, JsonValue]]:
     attempts_dir = workspace.resolve_path("attempts", must_exist=True)
     attempts: list[dict[str, JsonValue]] = []
@@ -787,66 +680,6 @@ def _file_ref(workspace: JobWorkspace, ref: str) -> dict[str, JsonValue] | None:
     if not path.is_file():
         return None
     return {"ref": ref, "sha256": sha256_file(path)}
-
-
-def _verification_result_payload(
-    workspace: JobWorkspace,
-    result: VerificationResult | None,
-) -> dict[str, JsonValue] | None:
-    if result is None:
-        return None
-    ref_payload = _file_ref(workspace, "verifier/verification_result.json")
-    payload = {
-        "ref": "verifier/verification_result.json",
-        "sha256": ref_payload.get("sha256") if ref_payload else None,
-        "result_id": result.result_id,
-        "passed": result.passed,
-        "package_hash": result.package_hash,
-        "verification_spec_hash": result.verification_spec_hash,
-        "verifier_version": result.verifier_version,
-        "evidence_refs": result.evidence_refs,
-    }
-    return ensure_json_compatible(payload)  # type: ignore[return-value]
-
-
-def _registry_report_payload(
-    registry_path: Path | None,
-    entry: RegistryEntry | None,
-) -> dict[str, JsonValue] | None:
-    if entry is None:
-        return None
-    payload: dict[str, Any] = {
-        "skill_id": entry.skill_id,
-        "version": entry.version,
-        "approval_status": entry.approval_status,
-        "quarantine_status": entry.quarantine_status,
-        "build_job_id": entry.build_job_id,
-        "package_hash": entry.package_hash,
-        "entry_hash": sha256_json(entry.to_dict()),
-        "entry": entry.to_dict(),
-    }
-    if registry_path is not None:
-        payload["registry_path"] = registry_path.as_posix()
-        payload["registry_hash"] = sha256_file(registry_path) if registry_path.exists() else None
-    return ensure_json_compatible(payload)  # type: ignore[return-value]
-
-
-def _find_registry_entry_for_workspace(
-    workspace: JobWorkspace,
-    registry_path: Path | None,
-) -> RegistryEntry | None:
-    if registry_path is None or not registry_path.exists():
-        return None
-    try:
-        entries = LocalSkillRegistry(registry_path).list(status="all", include_quarantined=True)
-    except Exception:
-        return None
-    approved = [
-        entry
-        for entry in entries
-        if entry.build_job_id == workspace.job_id and entry.approval_status == APPROVAL_APPROVED
-    ]
-    return approved[0] if approved else None
 
 
 def _rewrite_build_contract(workspace: JobWorkspace, *, attempt_limit: int, timeout_seconds: int) -> None:
@@ -1024,48 +857,6 @@ def _is_security_execution_failure(report: ExecutionReport) -> bool:
     return report.exit_status == "rejected" or any("outside allowed" in item or "unsafe" in item for item in report.failures)
 
 
-def _package_hash_for_report(
-    workspace: JobWorkspace,
-    verification_result: VerificationResult | None,
-    registry_entry: RegistryEntry | None,
-) -> str | None:
-    if registry_entry is not None:
-        return registry_entry.package_hash
-    if verification_result is not None:
-        return verification_result.package_hash
-    try:
-        return _hash_package_dir(workspace.resolve_path("package", must_exist=True))
-    except Exception:
-        return None
-
-
-def _hash_package_dir(package_dir: Path) -> str:
-    entries: list[dict[str, JsonValue]] = []
-    root = package_dir.resolve(strict=True)
-    for path in sorted(root.rglob("*")):
-        if path.is_symlink():
-            relative = path.relative_to(root).as_posix()
-            entries.append({"path": relative, "kind": "symlink", "target": str(path.readlink())})
-        elif path.is_file():
-            relative = path.relative_to(root).as_posix()
-            validate_relative_path(relative)
-            entries.append({"path": relative, "kind": "file", "sha256": sha256_file(path), "size": path.stat().st_size})
-        elif path.is_dir():
-            relative = path.relative_to(root).as_posix()
-            if relative != ".":
-                validate_relative_path(relative)
-                entries.append({"path": relative, "kind": "dir"})
-    return sha256_json(entries)
-
-
-def _sha_if_exists(workspace: JobWorkspace, ref: str) -> str | None:
-    payload = _file_ref(workspace, ref)
-    if payload is None:
-        return None
-    value = payload.get("sha256")
-    return str(value) if value is not None else None
-
-
 def _infer_worker_mode(workspace: JobWorkspace) -> OfflineWorkerMode | None:
     attempts_dir = workspace.resolve_path("attempts", must_exist=True)
     candidates = sorted(
@@ -1092,27 +883,6 @@ def _infer_worker_mode(workspace: JobWorkspace) -> OfflineWorkerMode | None:
             except ValueError:
                 continue
     return None
-
-
-def _infer_final_status(workspace: JobWorkspace) -> str:
-    existing = workspace.root / "final_report.json"
-    if existing.exists():
-        try:
-            payload = json.loads(existing.read_text(encoding="utf-8"))
-        except Exception:
-            payload = {}
-        if isinstance(payload, dict) and payload.get("final_status") in _TERMINAL_STATUSES:
-            return str(payload["final_status"])
-    result = _read_verification_result(workspace)
-    if result is not None and result.passed:
-        return WorkflowStatus.VERIFIED.value
-    return WorkflowStatus.FAIL_CLOSED.value
-
-
-def _status_value(status: str | WorkflowStatus) -> str:
-    if isinstance(status, WorkflowStatus):
-        return status.value
-    return str(status)
 
 
 def _coerce_route(route: Route | str | None) -> Route:

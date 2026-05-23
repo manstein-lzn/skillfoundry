@@ -312,7 +312,7 @@ def run_verified_offline_goal_harness(
             require_contextforge_verification=True,
         )
 
-        from .offline import emit_final_report
+        from .final_report import emit_final_report
 
         final_report = emit_final_report(
             workspace.root,
@@ -556,7 +556,7 @@ def run_verified_repair_goal_harness(
             require_contextforge_verification=True,
         )
 
-        from .offline import emit_final_report
+        from .final_report import emit_final_report
 
         final_report = emit_final_report(
             workspace.root,

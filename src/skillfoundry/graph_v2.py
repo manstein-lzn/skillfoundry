@@ -727,7 +727,7 @@ def build_verified_registry_gate_node(
                 require_contextforge_verification=True,
             )
             _require_registry_entry_for_workspace(entry, workspace)
-            from .offline import emit_final_report
+            from .final_report import emit_final_report
 
             final_report = emit_final_report(
                 workspace.root,
