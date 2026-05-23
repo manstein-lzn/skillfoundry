@@ -118,6 +118,48 @@ Path("evidence/transcript.md").write_text("no package was written\\n", encoding=
     assert not worker_result.exists()
 
 
+def test_forgeunit_codex_exec_worker_normalizes_incomplete_existing_manifest(tmp_path: Path) -> None:
+    task_dir, run_dir, worker_result = _forgeunit_env_dirs(tmp_path)
+    fake_codex = tmp_path / "fake_codex_incomplete_manifest.py"
+    fake_codex.write_text(
+        """
+from pathlib import Path
+import json
+import sys
+
+_ = sys.stdin.read()
+Path("package").mkdir(exist_ok=True)
+Path("evidence").mkdir(exist_ok=True)
+Path("package/SKILL.md").write_text("# Fake Skill\\n\\n## Overview\\nBody.\\n", encoding="utf-8")
+Path("evidence/transcript.md").write_text("fake codex transcript summary\\n", encoding="utf-8")
+Path("evidence/manifest.json").write_text(json.dumps({
+    "schema": "forgeunit.worker_evidence_manifest",
+    "version": "0.6",
+    "status": "completed",
+    "changed_files": ["package/SKILL.md", "evidence/transcript.md", "evidence/manifest.json"],
+    "commands": [{"command": "fake codex", "exit_code": 0}],
+    "usage": None,
+    "usage_unavailable_reason": "external_worker_no_provider_telemetry"
+}, indent=2), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+
+    completed = _run_wrapper(
+        task_dir=task_dir,
+        run_dir=run_dir,
+        worker_result=worker_result,
+        codex_command=f"{sys.executable} {fake_codex}",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    manifest = json.loads((task_dir / "evidence" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["unit_id"] == "execute"
+    assert manifest["output_artifacts"][0]["path"] == "package/SKILL.md"
+    assert manifest["evidence_artifacts"][0]["path"] == "evidence/transcript.md"
+    assert manifest["commands"][0]["summary"] == ""
+
+
 def test_forgeunit_real_codex_exec_wrapper_can_drive_command_bridge_graph(tmp_path: Path) -> None:
     runs_root = tmp_path / "runs"
     registry_path = tmp_path / "registry.json"

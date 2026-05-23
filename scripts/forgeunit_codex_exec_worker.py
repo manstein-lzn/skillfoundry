@@ -268,7 +268,12 @@ def _ensure_manifest(*, task_dir: Path, unit_id: str, command_returncode: int) -
     path = _resolve_task_ref(task_dir, MANIFEST_REF)
     if path.exists() and path.is_file():
         payload = _read_json_object(path, "worker evidence manifest")
-        _validate_manifest_payload(payload)
+        payload = _normalized_manifest_payload(
+            existing=payload,
+            unit_id=unit_id,
+            command_returncode=command_returncode,
+        )
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return path
     payload = _default_manifest_payload(unit_id=unit_id, command_returncode=command_returncode)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -304,9 +309,62 @@ def _default_manifest_payload(*, unit_id: str, command_returncode: int) -> dict[
 def _validate_manifest_payload(payload: Mapping[str, Any]) -> None:
     if payload.get("schema") != "forgeunit.worker_evidence_manifest":
         raise WorkerBoundaryError("evidence/manifest.json has invalid schema")
+    if not isinstance(payload.get("unit_id"), str) or not str(payload.get("unit_id")).strip():
+        raise WorkerBoundaryError("evidence/manifest.json is missing unit_id")
     if payload.get("status") != "completed":
         raise WorkerBoundaryError("evidence/manifest.json status must be completed")
     _validate_changed_files(_string_list(payload.get("changed_files")))
+
+
+def _normalized_manifest_payload(
+    *,
+    existing: Mapping[str, Any],
+    unit_id: str,
+    command_returncode: int,
+) -> dict[str, Any]:
+    if existing.get("schema") not in {None, "forgeunit.worker_evidence_manifest"}:
+        raise WorkerBoundaryError("evidence/manifest.json has invalid schema")
+    default = _default_manifest_payload(unit_id=unit_id, command_returncode=command_returncode)
+    payload = dict(existing)
+    payload["schema"] = "forgeunit.worker_evidence_manifest"
+    payload["version"] = "0.6"
+    payload["unit_id"] = str(payload.get("unit_id") or unit_id)
+    payload["status"] = "completed"
+    if not payload.get("output_artifacts"):
+        payload["output_artifacts"] = default["output_artifacts"]
+    if not payload.get("evidence_artifacts"):
+        payload["evidence_artifacts"] = default["evidence_artifacts"]
+    if not payload.get("changed_files"):
+        payload["changed_files"] = default["changed_files"]
+    if not payload.get("commands"):
+        payload["commands"] = default["commands"]
+    else:
+        payload["commands"] = _normalized_manifest_commands(payload.get("commands"))
+    if "usage" not in payload:
+        payload["usage"] = None
+    if not payload.get("usage_unavailable_reason") and payload.get("usage") is None:
+        payload["usage_unavailable_reason"] = "external_worker_no_provider_telemetry"
+    _validate_manifest_payload(payload)
+    return payload
+
+
+def _normalized_manifest_commands(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        command = item.get("command")
+        if not isinstance(command, str) or not command.strip():
+            continue
+        exit_code = item.get("exit_code")
+        if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+            continue
+        normalized = dict(item)
+        normalized["summary"] = str(normalized.get("summary") or "")
+        result.append(normalized)
+    return result
 
 
 def _ensure_worker_result(
