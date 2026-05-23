@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import importlib
 import json
 import os
@@ -11,7 +10,6 @@ from pathlib import Path
 import shutil
 from typing import Any, Mapping, Sequence
 
-from .offline import build_offline
 from .registry import (
     APPROVAL_APPROVED,
     APPROVAL_REJECTED,
@@ -19,12 +17,11 @@ from .registry import (
     LocalSkillRegistry,
 )
 from .schema import JsonValue, ensure_json_compatible, sha256_file, utc_now
-from .security import PathSecurityError, assert_under_root, validate_relative_path
+from .security import PathSecurityError, assert_under_root
 from .workspace import JOB_ID_RE, LOCKED_INPUT_PATHS
 
 
 OPS_VERSION = "skillfoundry.ops.wp12.v1"
-OPS_CONCURRENT_BUILD_REPORT_VERSION = "skillfoundry.ops.concurrent_build_report.v1"
 OPS_CLEANUP_REPORT_VERSION = "skillfoundry.ops.cleanup_report.v1"
 OPS_HEALTH_REPORT_VERSION = "skillfoundry.ops.health_report.v1"
 OPS_OBSERVABILITY_REPORT_VERSION = "skillfoundry.ops.observability_report.v1"
@@ -47,51 +44,6 @@ class SkillFoundryOps:
         self.runs_root.mkdir(parents=True, exist_ok=True)
         self._runs_root_resolved = self.runs_root.resolve(strict=True)
         self.registry_path = self._resolve_registry_path(registry_path)
-
-    def build_jobs_concurrently(
-        self,
-        jobs: Sequence[Mapping[str, Any]],
-        *,
-        max_workers: int | None = None,
-    ) -> dict[str, JsonValue]:
-        """Run several deterministic offline builds in isolated workspaces."""
-
-        specs = [self._normalize_build_spec(job, index=index) for index, job in enumerate(jobs)]
-        worker_count = max_workers or min(4, max(1, len(specs)))
-        results: list[dict[str, JsonValue]] = []
-
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = {executor.submit(self._build_one_job, spec): spec for spec in specs}
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                except Exception as exc:  # pragma: no cover - defensive boundary
-                    spec = futures[future]
-                    result = {
-                        "job_id": spec["job_id"],
-                        "status": "failed",
-                        "final_status": None,
-                        "workspace": self._job_root(str(spec["job_id"])).as_posix(),
-                        "error": {
-                            "type": type(exc).__name__,
-                            "message": str(exc),
-                        },
-                    }
-                results.append(ensure_json_compatible(result))  # type: ignore[arg-type]
-
-        results.sort(key=lambda item: str(item["job_id"]))
-        return ensure_json_compatible(
-            {
-                "schema_version": OPS_CONCURRENT_BUILD_REPORT_VERSION,
-                "created_at": utc_now(),
-                "runs_root": self._runs_root_resolved.as_posix(),
-                "registry_path": self.registry_path.as_posix(),
-                "requested": len(specs),
-                "completed": len([item for item in results if item.get("status") == "completed"]),
-                "failed": len([item for item in results if item.get("status") == "failed"]),
-                "jobs": results,
-            }
-        )  # type: ignore[return-value]
 
     def cleanup_artifacts(self, *, dry_run: bool = True) -> dict[str, JsonValue]:
         """Remove only known transient artifacts, with dry-run by default."""
@@ -352,63 +304,6 @@ class SkillFoundryOps:
         if not path.is_absolute():
             path = self._runs_root_resolved / path
         return path.resolve(strict=False)
-
-    def _normalize_build_spec(self, spec: Mapping[str, Any], *, index: int) -> dict[str, Any]:
-        if not isinstance(spec, Mapping):
-            raise ValueError("job spec must be a mapping")
-        job_id = spec.get("job_id") or f"ops-job-{index + 1:03d}"
-        if not isinstance(job_id, str) or not JOB_ID_RE.fullmatch(job_id):
-            raise ValueError(f"job_id must be a safe path segment: {job_id!r}")
-        safe_job_id = validate_relative_path(job_id).as_posix()
-        if "/" in safe_job_id:
-            raise ValueError("job_id must be one path segment")
-        requirement = spec.get("requirement")
-        if not isinstance(requirement, str) or not requirement.strip():
-            raise ValueError(f"job {job_id!r} must include a non-empty requirement")
-        return {
-            "job_id": safe_job_id,
-            "requirement": requirement,
-            "worker_mode": spec.get("worker_mode"),
-            "attempt_limit": spec.get("attempt_limit", 2),
-            "timeout_seconds": spec.get("timeout_seconds", 300),
-            "version": spec.get("version", "0.1.0"),
-            "overwrite": bool(spec.get("overwrite", False)),
-        }
-
-    def _build_one_job(self, spec: Mapping[str, Any]) -> dict[str, JsonValue]:
-        job_id = str(spec["job_id"])
-        requirement_path = self._write_requirement(job_id, str(spec["requirement"]))
-        result = build_offline(
-            requirement_path=requirement_path,
-            output=self._job_root(job_id),
-            registry_path=self.registry_path,
-            worker_mode=spec.get("worker_mode"),
-            attempt_limit=int(spec.get("attempt_limit", 2)),
-            timeout_seconds=int(spec.get("timeout_seconds", 300)),
-            version=str(spec.get("version", "0.1.0")),
-            overwrite=bool(spec.get("overwrite", False)),
-        )
-        return ensure_json_compatible(
-            {
-                "job_id": job_id,
-                "status": "completed",
-                "final_status": result.final_report.get("final_status"),
-                "workspace": result.workspace.root.resolve(strict=True).as_posix(),
-                "final_report_ref": result.final_report_path.resolve(strict=True).as_posix(),
-                "registered": result.registry_entry is not None,
-                "package_hash": result.final_report.get("package_hash"),
-                "error": None,
-            }
-        )  # type: ignore[return-value]
-
-    def _write_requirement(self, job_id: str, requirement: str) -> Path:
-        requirement_dir = self._runs_root_resolved / ".ops_requirements"
-        requirement_dir.mkdir(parents=True, exist_ok=True)
-        assert_under_root(self._runs_root_resolved, requirement_dir)
-        path = requirement_dir / f"{job_id}.md"
-        assert_under_root(self._runs_root_resolved, path)
-        path.write_text(requirement.strip() + "\n", encoding="utf-8")
-        return path
 
     def _job_root(self, job_id: str) -> Path:
         return self._runs_root_resolved / job_id

@@ -136,6 +136,30 @@ Dependency fix:
   endpoints remain because current FrontDesk build responses still link to
   those evidence views.
 
+## Phase 13E
+
+Status: implemented in this cleanup slice.
+
+Retired:
+
+- `SkillFoundryOps.build_jobs_concurrently(...)`
+- `OPS_CONCURRENT_BUILD_REPORT_VERSION`
+
+Rationale:
+
+- The ops surface should report health, observability, and cleanup status for
+  existing workspaces.
+- A hidden ops method that creates deterministic offline builds was another
+  legacy build entrypoint after API/UI `POST /jobs` was retired.
+- Direct `build_offline` and CLI `skillfoundry build` remain available as
+  explicit deterministic compatibility fixtures.
+
+Dependency fix:
+
+- `src/skillfoundry/ops.py` no longer imports or calls `build_offline`.
+- Ops tests now keep the registry concurrency check without relying on an ops
+  offline build method.
+
 ## Current Keep List
 
 Keep as current mainline or current dependency:
@@ -169,8 +193,9 @@ These modules need a separate audit before deletion or shrinking:
   - Legacy deterministic offline CLI/test compatibility.
   - Final-report helpers have been extracted.
   - API/UI no longer create offline builds through `POST /jobs`.
-  - Still used by CLI build/verify/register commands, ops tests, and
-    deterministic offline fixtures.
+  - `ops.py` no longer creates offline builds.
+  - Still used by CLI build/verify/register commands and deterministic offline
+    fixtures.
 - `src/skillfoundry/worker.py`
   - Old WorkerAdapter/CodexWorker/FakeWorker path.
   - Still used by legacy tests, offline compatibility, verifier fixtures, and

@@ -12,8 +12,6 @@ Default local layout:
 runs/
   registry.json                 # JSON LocalSkillRegistry store
   .registry.json.lock           # sidecar registry write lock
-  .api_requirements/            # request text written by the minimal API/UI
-  .ops_requirements/            # request text written by SkillFoundryOps
   <job-id>/
     build_contract.yaml         # locked input
     skill_spec.yaml             # locked input
@@ -75,20 +73,23 @@ Run the WP9 minimal internal API/UI:
   --port 8765
 ```
 
-Open `http://127.0.0.1:8765/` for the HTML UI. The API creates jobs
-synchronously through the same offline build loop. It does not provide auth,
-multi-tenant isolation, a queue, or live worker scheduling.
+Open `http://127.0.0.1:8765/` for the HTML UI. Legacy offline creation through
+`POST /jobs` has been retired; current product builds use the FrontDesk
+approved/frozen job flow and graph v2 build endpoint. The server does not
+provide auth, multi-tenant isolation, a queue, or live worker scheduling.
 
 Useful endpoints:
 
 ```text
 GET  /
-POST /jobs
+POST /jobs                         # retired; returns legacy_offline_jobs_retired
 GET  /jobs
 GET  /jobs/<job-id>
 GET  /jobs/<job-id>/report
 GET  /jobs/<job-id>/package.zip
 GET  /registry
+POST /frontdesk/jobs
+POST /frontdesk/jobs/<job-id>/build
 ```
 
 ## Health and Readiness
@@ -199,21 +200,7 @@ events, and attempt provenance files. Symlinks are skipped rather than followed.
 
 ## Concurrent Internal Runs
 
-`SkillFoundryOps.build_jobs_concurrently()` runs multiple deterministic offline
-builds in separate workspaces and shares one hardened registry:
-
-```python
-from skillfoundry import SkillFoundryOps
-
-ops = SkillFoundryOps("runs")
-report = ops.build_jobs_concurrently(
-    [
-        {"job_id": "beta-a", "requirement": "Build a local Skill package."},
-        {"job_id": "beta-b", "requirement": "Build a second local Skill package."},
-    ],
-    max_workers=2,
-)
-```
-
-This is a small-scale internal beta helper. It is not a production queue,
-scheduler, retry service, or distributed worker pool.
+Historical note: `SkillFoundryOps.build_jobs_concurrently()` was retired during
+source cleanup. The current ops surface is health, observability, and cleanup
+for existing workspaces. Use explicit CLI/dev fixtures for deterministic
+offline build compatibility.

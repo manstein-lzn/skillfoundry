@@ -15,8 +15,8 @@ local health check pass.
 
 What is hardened:
 
-- multiple deterministic offline jobs can run concurrently in isolated
-  workspaces;
+- historical local concurrent offline build fixtures existed in WP12; current
+  ops no longer exposes a concurrent offline build helper;
 - registry read-modify-write mutations are serialized with a local file lock
   and atomic replace;
 - transient cleanup supports dry-run and explicit apply;

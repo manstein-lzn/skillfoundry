@@ -34,39 +34,6 @@ def test_ops_api_is_exported():
     assert skillfoundry.SkillFoundryOps is SkillFoundryOps
 
 
-def test_multi_job_concurrent_builds_are_isolated_and_registered(tmp_path):
-    ops = SkillFoundryOps(tmp_path / "runs")
-    jobs = [
-        {"job_id": "ops-job-a", "requirement": REQ_TEXT, "version": "1.0.0"},
-        {"job_id": "ops-job-b", "requirement": REQ_TEXT, "version": "1.0.0"},
-        {"job_id": "ops-job-c", "requirement": REQ_TEXT, "version": "1.0.0"},
-    ]
-
-    report = ops.build_jobs_concurrently(jobs, max_workers=3)
-
-    assert report["requested"] == 3
-    assert report["completed"] == 3
-    assert report["failed"] == 0
-    registry_entries = LocalSkillRegistry(tmp_path / "runs" / "registry.json").list(
-        status="all",
-        include_quarantined=True,
-    )
-    assert {entry.build_job_id for entry in registry_entries} == {"ops-job-a", "ops-job-b", "ops-job-c"}
-    assert len({entry.package_path for entry in registry_entries}) == 3
-
-    for job in report["jobs"]:
-        job_id = str(job["job_id"])
-        workspace = tmp_path / "runs" / job_id
-        final_report = read_json(workspace / "final_report.json")
-        skill_text = (workspace / "package" / "SKILL.md").read_text(encoding="utf-8")
-        assert final_report["job_id"] == job_id
-        assert final_report["final_status"] == "registered"
-        assert f"{job_id}-skill" not in skill_text
-        assert (workspace / "artifact_manifest.json").is_file()
-        other_job_ids = {"ops-job-a", "ops-job-b", "ops-job-c"} - {job_id}
-        assert all(not (workspace / other).exists() for other in other_job_ids)
-
-
 def test_concurrent_registry_additions_do_not_corrupt_json(tmp_path):
     registry_path = tmp_path / "registry.json"
     workspaces = []
