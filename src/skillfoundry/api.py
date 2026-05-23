@@ -50,7 +50,6 @@ from .goal_runtime import (
 from .graph_v2 import GRAPH_V2_STATE_REF, run_verified_skillfoundry_v2_graph, validate_v2_graph_state
 from .live_llm import DEFAULT_FRONTDESK_MODEL
 from .final_report import read_final_report
-from .offline import OfflineWorkerMode, build_offline
 from .registry import APPROVAL_APPROVED, LocalSkillRegistry, QUARANTINE_NONE
 from .schema import JsonValue, RegistryEntry, ensure_json_compatible, sha256_file, utc_now
 from .security import PathSecurityError, assert_under_root, resolve_under_root, validate_relative_path
@@ -74,7 +73,6 @@ BUILD_PATH_WORKSPACE_ONLY = "workspace_only"
 FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF = "contextforge/forgeunit_skillfoundry_summary.json"
 FORGEUNIT_SKILLFOUNDRY_PRODUCT_STATE_REF = "contextforge/forgeunit_skillfoundry_product_state.json"
 FORGEUNIT_SKILLFOUNDRY_GRAPH_STATE_REF = "contextforge/forgeunit_skillfoundry_graph_state.json"
-ALLOW_LEGACY_OFFLINE_JOBS_ENV = "SKILLFOUNDRY_ALLOW_LEGACY_OFFLINE_JOBS"
 FORGEUNIT_COMMAND_ENV = "SKILLFOUNDRY_FORGEUNIT_COMMAND"
 FORGEUNIT_REPAIR_COMMAND_ENV = "SKILLFOUNDRY_FORGEUNIT_REPAIR_COMMAND"
 FrontDeskClientFactory = Callable[[str, str, int], Any]
@@ -134,7 +132,6 @@ class SkillFoundryAPI:
         registry_path: str | Path | None = None,
         frontdesk_client_factory: FrontDeskClientFactory | None = None,
         frontdesk_model: str | None = None,
-        allow_legacy_offline_jobs: bool | None = None,
         forgeunit_command: str | None = None,
         forgeunit_repair_command: str | None = None,
     ) -> None:
@@ -149,11 +146,6 @@ class SkillFoundryAPI:
             forgeunit_repair_command,
             FORGEUNIT_REPAIR_COMMAND_ENV,
         )
-        self.allow_legacy_offline_jobs = (
-            _query_bool(os.environ.get(ALLOW_LEGACY_OFFLINE_JOBS_ENV, ""))
-            if allow_legacy_offline_jobs is None
-            else bool(allow_legacy_offline_jobs)
-        )
 
     def _configured_command_value(self, value: str | None, env_name: str) -> str | None:
         if value is not None:
@@ -164,57 +156,15 @@ class SkillFoundryAPI:
         return env_value
 
     def create_job(self, payload: Mapping[str, Any]) -> dict[str, JsonValue]:
-        """Create one synchronous offline job from a JSON-like payload."""
+        """Reject the retired legacy offline creation route."""
 
         if not isinstance(payload, Mapping):
             raise APIError(400, "invalid_json", "request body must be a JSON object")
-        if not self.allow_legacy_offline_jobs:
-            raise APIError(
-                403,
-                "legacy_offline_jobs_disabled",
-                "POST /jobs is a legacy compatibility route; use /frontdesk/jobs and /frontdesk/jobs/{job_id}/build, or enable legacy offline jobs explicitly.",
-            )
-
-        job_id = payload.get("job_id")
-        if job_id is None or job_id == "":
-            job_id = self._generate_job_id()
-        if not isinstance(job_id, str):
-            raise APIError(400, "invalid_job_id", "job_id must be a string")
-        safe_job_id = self._validate_job_id(job_id)
-
-        requirement = payload.get("requirement")
-        if not isinstance(requirement, str) or not requirement.strip():
-            raise APIError(400, "invalid_requirement", "requirement must be a non-empty string")
-
-        worker_mode = payload.get("worker_mode")
-        if worker_mode is not None:
-            if not isinstance(worker_mode, str):
-                raise APIError(400, "invalid_worker_mode", "worker_mode must be a string")
-            try:
-                worker_mode = OfflineWorkerMode(worker_mode).value
-            except ValueError as exc:
-                raise APIError(400, "invalid_worker_mode", f"unknown worker_mode: {worker_mode}") from exc
-
-        attempt_limit = self._coerce_attempt_limit(payload.get("attempt_limit", 2))
-        job_root = self._job_root(safe_job_id)
-        if job_root.exists() and any(job_root.iterdir()):
-            raise APIError(409, "job_exists", f"job already exists: {safe_job_id}")
-
-        requirement_path = self._write_requirement(safe_job_id, requirement)
-        try:
-            result = build_offline(
-                requirement_path=requirement_path,
-                output=job_root,
-                registry_path=self.registry_path,
-                worker_mode=worker_mode,
-                attempt_limit=attempt_limit,
-            )
-        except FileExistsError as exc:
-            raise APIError(409, "job_exists", str(exc)) from exc
-        except ValueError as exc:
-            raise APIError(400, "job_create_failed", str(exc)) from exc
-
-        return self._job_payload(safe_job_id, report=result.final_report)
+        raise APIError(
+            410,
+            "legacy_offline_jobs_retired",
+            "POST /jobs legacy offline creation has been retired; use POST /frontdesk/jobs and POST /frontdesk/jobs/{job_id}/build.",
+        )
 
     def create_frontdesk_job(self, payload: Mapping[str, Any]) -> dict[str, JsonValue]:
         """Create a real Front Desk clarification job and run one round."""
@@ -1024,7 +974,6 @@ class SkillFoundryAPI:
         jobs = [self._job_summary(path.name) for path in self._job_dirs()]
         frontdesk_jobs = [self._frontdesk_job_summary(path.name) for path in self._frontdesk_job_dirs()]
         registry_entries = self.query_registry()["entries"]
-        legacy_form_html = self._legacy_offline_factory_form_html()
         return "\n".join(
             [
                 "<!doctype html>",
@@ -1090,8 +1039,7 @@ class SkillFoundryAPI:
                 '    <section class="panel">',
                 "      <details>",
                 "      <summary>内部调试</summary>",
-                *legacy_form_html,
-                "      <h2>离线 Job</h2>",
+                "      <h2>构建记录</h2>",
                 self._jobs_table_html(jobs),
                 "      </details>",
                 "    </section>",
@@ -1101,25 +1049,6 @@ class SkillFoundryAPI:
                 "</html>",
             ]
         )
-
-    def _legacy_offline_factory_form_html(self) -> list[str]:
-        if not self.allow_legacy_offline_jobs:
-            return []
-        return [
-            "      <h2>离线工厂</h2>",
-            '      <form method="post" action="/jobs">',
-            '        <label>Job ID <input name="job_id" autocomplete="off"></label>',
-            '        <label>Worker Mode <select name="worker_mode">'
-            + "".join(
-                f'<option value="{escape(mode.value)}">{escape(mode.value)}</option>' for mode in OfflineWorkerMode
-            )
-            + "</select></label>",
-            '        <label>Attempt Limit <input name="attempt_limit" inputmode="numeric" value="2"></label>',
-            '        <label>Requirement <textarea name="requirement" required></textarea></label>',
-            "        <button type=\"submit\">运行离线闭环</button>",
-            '          <div class="small muted" data-submit-status></div>',
-            "        </form>",
-        ]
 
     def render_frontdesk_job_html(self, job_id: str) -> str:
         """Render one user-facing Front Desk conversation page."""
@@ -1350,15 +1279,7 @@ class SkillFoundryAPI:
             if method == "POST" and route == ["jobs"]:
                 content_type = _header(headers, "content-type")
                 payload = self._parse_body(body, content_type=content_type)
-                created = self.create_job(payload)
-                if content_type.startswith("application/x-www-form-urlencoded"):
-                    return APIHTTPResult(
-                        303,
-                        "text/plain; charset=utf-8",
-                        b"",
-                        headers=(("Location", f"/jobs/{created['job_id']}"),),
-                    )
-                return self._json_response(created, status=201)
+                return self._json_response(self.create_job(payload), status=201)
 
             if method == "GET" and route == ["jobs"]:
                 return self._json_response(self.list_jobs())
@@ -1551,15 +1472,6 @@ class SkillFoundryAPI:
         if not package_dir.is_dir():
             raise APIError(404, "package_missing", "package path is not a directory")
         return package_dir
-
-    def _write_requirement(self, job_id: str, requirement: str) -> Path:
-        requirement_dir = self._runs_root_resolved / ".api_requirements"
-        requirement_dir.mkdir(parents=True, exist_ok=True)
-        assert_under_root(self._runs_root_resolved, requirement_dir)
-        path = requirement_dir / f"{job_id}.md"
-        assert_under_root(self._runs_root_resolved, path)
-        path.write_text(requirement.strip() + "\n", encoding="utf-8")
-        return path
 
     def _read_report(self, job_id: str) -> dict[str, JsonValue]:
         job_root = self._require_job_root(job_id)
@@ -2984,14 +2896,12 @@ def serve_http(
     registry_path: str | Path | None = None,
     host: str = DEFAULT_SERVE_HOST,
     port: int = DEFAULT_SERVE_PORT,
-    allow_legacy_offline_jobs: bool | None = None,
 ) -> None:
     """Serve the minimal internal API/UI until interrupted."""
 
     api = SkillFoundryAPI(
         runs_root,
         registry_path=registry_path,
-        allow_legacy_offline_jobs=allow_legacy_offline_jobs,
     )
     server = make_server(api, host=host, port=port)
     try:

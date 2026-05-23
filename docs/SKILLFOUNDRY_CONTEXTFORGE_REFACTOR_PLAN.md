@@ -278,7 +278,7 @@ verified offline build path 已经存在。
 - API/UI
   - 已有部分 ContextForge observability。
   - 还不是完整 v2 产品外壳。
-  - `POST /jobs` 旧离线 builder 兼容路线仍存在，但默认已禁用，只能通过显式 compatibility opt-in 使用；它不能被当作 v2 产品入口。v2 canonical 入口必须是 Front Desk approved/frozen job 通过 `/frontdesk/jobs/{job_id}/build` 进入 graph v2。
+  - `POST /jobs` 旧离线 builder API/UI 创建路线已退役，不能再通过 constructor flag、环境变量或 serve CLI flag 开启；v2 canonical 入口必须是 Front Desk approved/frozen job 通过 `/frontdesk/jobs/{job_id}/build` 进入 graph v2。
 
 下一步代码收敛中，最容易误导新 contributor 的点是：
 
@@ -288,7 +288,7 @@ verified offline build path 已经存在。
 共同成立，才是 canonical graph_v2_goal_harness build path。
 ```
 
-因此 legacy `/jobs` 当前只能作为显式 opt-in compatibility surface，而不是默认产品入口。
+因此 legacy offline build 当前只能作为显式 CLI/dev fixture，而不是 API/UI 产品入口。
 
 ### 2.4 当前实现矩阵
 
@@ -303,7 +303,7 @@ verified offline build path 已经存在。
 | `src/skillfoundry/frontdesk_goal_runtime.py` | implemented | Core Need、Solution Planner、Spec Auditor Goal Harness slices 已存在，默认 no-key Front Desk 路径已接入；Front Desk-generated criteria 已映射到 deterministic verifier checks。 | 后续保持 raw conversation forbidden 和 approved-review/freeze gate。 |
 | `src/skillfoundry/verification_bridge.py` | implemented | SkillFoundry verifier / acceptance coverage 能桥接到 ContextForge VerificationResult，并消费 Front Desk deterministic verifier check IDs。 | 加强语义验收和 post-verifier evidence hash binding。 |
 | `src/skillfoundry/registry.py` | implemented / partial | Registry 已要求 verifier / coverage / ContextForge evidence，拒绝 self-report/stale/fabricated evidence；默认 Front Desk frozen job 可通过 graph v2 API happy path register。 | 继续覆盖 repair/human-review/manual acceptance 场景。 |
-| API/UI | implemented / partial | API 可以创建 Front Desk job、plan review，并通过 `/frontdesk/jobs/{job_id}/build` 运行 graph v2 verified build/registry happy path；ContextForge status 暴露 v2 refs/status 摘要；human-review 已有 request / decision artifact 和 API decision endpoint；旧 `POST /jobs` 作为 legacy offline compatibility route 保留且默认禁用，需要 constructor flag、env var 或 CLI flag 显式开启。 | 继续完善 UI 的 registry outcome、repair/human-review decision 和 evidence 摘要，并推进 legacy route 最终退役。 |
+| API/UI | implemented / partial | API 可以创建 Front Desk job、plan review，并通过 `/frontdesk/jobs/{job_id}/build` 运行 graph v2 verified build/registry happy path；ContextForge status 暴露 v2 refs/status 摘要；human-review 已有 request / decision artifact 和 API decision endpoint；旧 `POST /jobs` offline 创建路线已退役，`GET /jobs...` 继续作为 evidence/read view。 | 继续完善 UI 的 registry outcome、repair/human-review decision 和 evidence 摘要，并继续收敛 legacy offline/worker/context 模块。 |
 | live provider / real Codex SDK thread | future opt-in | 当前不是默认路径，也不是生产承诺。 | 等离线 v2 主路径稳定后做内部 pilot，并记录 usage unavailable reason / telemetry。 |
 
 ## 3. ContextForge 当前能力边界
@@ -1480,7 +1480,7 @@ ContextForge 当前不能被 SkillFoundry 宣称已经具备的能力：
 当前仍不能宣称完成的产品事实：
 
 - `graph_v2.py` 还没有成为唯一产品 build / verify / repair / registry 路由。
-- 旧 `POST /jobs` 离线 builder 兼容路线仍存在；它已经默认 opt-in 隔离，并在 status 中标记为 `legacy_offline_compatibility`，避免新用户误用为产品主入口。
+- 旧 `POST /jobs` 离线 builder API/UI 创建路线已退役；直接 `build_offline` / CLI build 仍作为 deterministic compatibility fixture 保留，status 仍会把这类 workspace 标记为 `legacy_offline_compatibility` / `canonical: false`。
 - 旧 `context.py`、`worker.py`、`offline.py` 仍存在，需要隔离或退役；旧 `graph.py` 和 `llm_builder.py` 已删除。
 - API/UI 对 repair、human-review、registry evidence 的体验还不完整；`GET /jobs/{job_id}/contextforge` 已有 refs-only 摘要，`GET /jobs/{job_id}` 也已有最小 refs-only HTML evidence 页面，但完整 operator workbench 仍需产品化。
 - human-review 已从纯 route/status 前进到 request / decision artifacts 和 API decision endpoint；它还不是完整运营工作台或自动重新调度系统。
@@ -1520,7 +1520,7 @@ legacy paths 已经全部退役。
 | ContextForge `metric_gates` | ContextForge schema 有 `metric_gates` 字段，但当前 core `VerificationRunner` 不执行 metric gates；SkillFoundry bridge 已通过 `contextforge_gate_metric_gates_supported` 对非空 metric gates fail closed。 | 不得声称 metric gates 已被 ContextForge core 执行。要么在 ContextForge upstream 实现 metric gate runner，要么继续在 SkillFoundry bridge 中 fail closed。 | `tests/test_verification_bridge.py::test_bridge_fails_closed_for_unsupported_metric_gates`；WP5/verification hardening。 |
 | `GoalHarness` 范围 | ContextForge `GoalHarness` 是单 agent node runtime，不做 scheduler、多 agent routing 或最终产品验收。 | SkillFoundry `graph_v2.py` 继续承担 refs-only orchestration、repair/human-review/registry route；不要把完整 workflow 平台责任下放给 ContextForge。 | `tests/test_graph_v2.py`, `tests/test_graph_v2_runtime.py`。 |
 | Registry 首次注册时序 | canonical `graph_v2` route 现在调用 verified runtime 时使用 `promote_to_registry=False`，只产出 candidate package + verifier / coverage / ContextForge evidence；`graph_v2` registry gate 随后执行 `LocalSkillRegistry.add_verified()`、`final_report.json`、registry decision 和 entry snapshot。Direct `run_verified_offline_goal_harness()` 默认仍注册并写 final report，作为 compatibility helper。 | 目标产品路径由 graph v2 registry gate 作为产品批准点；直接 helper 的自动注册语义只能被视为 compatibility surface，不能作为 canonical route。 | `tests/test_graph_v2_runtime.py::test_verified_build_node_defers_first_registry_approval_to_registry_gate`；WP1/WP6。 |
-| legacy `/jobs` | `POST /jobs` 默认返回 `legacy_offline_jobs_disabled`；只有显式 constructor flag、env var 或 CLI flag 开启时才会运行 `build_offline()` 并生成 `final_report.json`。 | 默认 API/UI 产品入口只走 Front Desk -> graph v2；legacy `/jobs` 保持 opt-in compatibility surface，后续再退役或迁移到专用兼容入口。 | `tests/test_api.py`, `tests/test_frontdesk_api.py`；WP1/WP6。 |
+| legacy `/jobs` | `POST /jobs` 返回 `legacy_offline_jobs_retired`；constructor flag、env var 和 serve CLI flag 已移除，API/UI 不再运行 `build_offline()`。直接 CLI/offline fixtures 仍可生成 `legacy_offline_compatibility` workspace 供迁移和测试。 | 默认 API/UI 产品入口只走 Front Desk -> graph v2；legacy offline 仅保留为显式 CLI/dev compatibility，后续再审计 `offline.py` 本体。 | `tests/test_api.py`, `tests/test_frontdesk_api.py`；WP1/WP6。 |
 | raw conversation ledger include | `seed_goal_harness_context()` 仍会把 `frontdesk/conversation.jsonl` 作为 `raw_frontdesk_conversation` provenance 写入 ledger，但该 item 现在默认 `prompt_include=False`，并继续由 forbidden selector / leakage tests 证明不会进入 builder 或 repair prompt。Front Desk v2 runtime 同样把 raw conversation 作为 non prompt-includable provenance。 | Raw provenance 可以保存用于审计和排除证明，但不得成为 builder/repair visible context。 | `tests/test_goal_harness_slice.py`, `tests/test_frontdesk_goal_runtime.py`, `tests/test_graph_v2_runtime.py`。 |
 | legacy Front Desk prompt | 旧 RequirementsElicitor / SpecAuditor 可把 raw conversation 当作 `UNTRUSTED USER CONVERSATION CONTENT` 放入 Front Desk prompt。 | 只允许 Front Desk governed summarizer/auditor 看 raw conversation；builder、repair、registry 和 API status 永远不可见。 | Front Desk hardening tests；不要复制旧 prompt pattern 到 builder path。 |
 | worker self-report marker | `worker_self_report_not_acceptance` 当前是声明性 verifier marker，不是通用语义扫描器。 | 文档必须说清真实防线是 verifier freshness、coverage freshness、package hash、ContextForge result semantics 和 Registry 复验。 | `tests/test_registry.py`, `tests/test_verification_bridge.py`。 |
@@ -1716,9 +1716,9 @@ Raw Front Desk conversation 可以作为 provenance 被记录到 workspace 或 l
 - package 文件内容；
 - full replay bundle。
 
-### 18.6 Legacy compatibility route policy
+### 18.6 Legacy compatibility policy
 
-SkillFoundry 仍保留一些 v0 兼容入口和测试 fixture，其中最重要的是 `POST /jobs` 旧离线 builder 路线。
+SkillFoundry 仍保留一些 v0 兼容测试 fixture，其中最重要的是直接 `build_offline` / CLI 离线 builder 路线。
 
 这条路线的正确定位是：
 
@@ -1751,21 +1751,24 @@ POST /frontdesk/jobs
   = canonical product route
 
 POST /jobs
-  = opt-in compatibility route only
+  = retired API/UI creation route
+
+skillfoundry build / direct build_offline()
+  = explicit deterministic compatibility fixture
 ```
 
 当前代码收敛方式：
 
-- `SkillFoundryAPI` 默认不允许 `POST /jobs` 创建 legacy offline build。
-- 测试或迁移工具需要旧路线时，通过显式 constructor flag、`SKILLFOUNDRY_ALLOW_LEGACY_OFFLINE_JOBS=1` 环境变量，或 `skillfoundry serve --allow-legacy-offline-jobs` CLI flag 开启。
-- server-rendered UI 默认不展示旧 `/jobs` debug form。
+- `SkillFoundryAPI` 不再允许 `POST /jobs` 创建 legacy offline build，并返回 `legacy_offline_jobs_retired`。
+- constructor flag、`SKILLFOUNDRY_ALLOW_LEGACY_OFFLINE_JOBS` 环境变量和 `skillfoundry serve --allow-legacy-offline-jobs` CLI flag 已移除。
+- server-rendered UI 不再展示旧 `/jobs` debug form。
 - `GET /jobs` 可以继续列出现有 workspace，但必须通过 `build_path` 明确标记：
   - `graph_v2_goal_harness` / `canonical: true`
   - `legacy_offline_compatibility` / `canonical: false`
   - `workspace_only` / `canonical: false`
 - `GET /jobs/{job_id}/contextforge` 不能仅凭 `final_report.json` 推断 canonical；必须验证 `contextforge/graph_v2_state.json`。
 
-这项收敛属于 WP1/WP6 的交界：它不是删除历史能力，而是让默认 API/UI 产品面不再误导新人继续沿旧骨架开发。后续 WP6 可继续把 opt-in route 迁移到专用 compatibility entry 或完全归档。
+这项收敛属于 WP1/WP6 的交界：它不是删除历史能力，而是让 API/UI 产品面不再误导新人继续沿旧骨架开发。后续 WP6 可继续审计 `offline.py`、`worker.py`、`context.py`，决定保留显式 fixture、迁移或归档。
 
 ## 19. 后续实施工作包
 
@@ -1805,7 +1808,7 @@ WP1 和 WP6 应作为同一个 canonicalization gate 看待：任何新增 build
 - 所有 Front Desk frozen build 默认进入 `run_verified_skillfoundry_v2_graph`。
 - legacy `graph.py` 不再作为新产品路径。
 - 旧 graph 若保留，只能作为 compatibility wrapper 或 historical fixture。
-- `POST /jobs` 旧 offline build route 默认关闭或从产品 UI 隐藏，只能通过显式 compatibility opt-in 使用。
+- `POST /jobs` 旧 offline build route 在 API/UI 中退役，不能通过 flag/env 重新开启。
 - job list/status 必须继续用 `build_path` 区分 `graph_v2_goal_harness`、`legacy_offline_compatibility` 和 `workspace_only`。
 - repair 后必须重新经过 verifier、acceptance coverage、ContextForge bridge 和 registry gate。
 - failed repair verification 必须进入 human review，不能注册。
@@ -2123,7 +2126,7 @@ The `rg` command above is not a pass/fail by itself; it is a claim-audit prompt.
 | `/frontdesk/jobs/{id}/build` response 泄漏 | `graph_v2_state` 保持 refs-only，`final_report` 只包含 governed report fields。 | `tests/test_frontdesk_api.py` target hardening |
 | metric gates 被误认为已执行 | 非空 ContextForge metric gates 必须 fail closed，直到 core runner 支持。 | `tests/test_verification_bridge.py::test_bridge_fails_closed_for_unsupported_metric_gates` |
 | worker self-report 伪造 acceptance | 只有 worker completed 或 self-report 时不能 registry approve；必须有 verifier、coverage、ContextForge verification 和 hash freshness。 | `tests/test_registry.py`, `tests/test_verification_bridge.py` |
-| legacy route 被当作 canonical | legacy `POST /jobs` 默认 UI/API 不应鼓励使用；status 必须标 `legacy_offline_compatibility` / `canonical: false`。 | `tests/test_api.py` target hardening |
+| legacy route 被当作 canonical | legacy `POST /jobs` API/UI 创建 route 已退役；直接 offline fixture workspace 的 status 必须标 `legacy_offline_compatibility` / `canonical: false`。 | `tests/test_api.py` target hardening |
 | provider cache 过度声明 | 没有 provider telemetry 时只能记录 expected cacheable tokens 和 usage unavailable reason。 | WP5 tests in ContextForge/SkillFoundry |
 | Codex boundary 被过度声明 | Codex worker metadata 必须是 boundary-only，记录 transcript/diff/artifact refs 和 usage unavailable reason，不声称 replay internals。 | `tests/test_workers_v2.py`, future Codex pilot tests |
 
@@ -2208,7 +2211,7 @@ required_doc_changes_verified:
   - readiness 分层已补齐，区分 documentation baseline、offline v2 skeleton、internal pilot 和 production ready。
 residual_risks:
   - SkillFoundry 仍处于 mixed migration；graph_v2 还不是唯一产品 build / verify / repair / registry 路由。
-  - Legacy /jobs 已默认隔离为 opt-in compatibility route，但完整退役仍是后续代码收敛事项。
+  - Legacy `POST /jobs` API/UI 创建路线已退役；`offline.py` / direct CLI fixture 的去留仍是后续代码收敛事项。
   - Raw conversation 的短期 ledger/selector 风险仍需实现和负向测试持续守住。
   - 审查时 registry 首次批准时序仍是待收敛实现项；后续实现更新已记录 canonical graph_v2 route 的修正。
 status: approved for this documentation slice; remaining risks are implementation followups, not document blockers

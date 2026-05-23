@@ -45,6 +45,8 @@ FrontDesk
   - FrontDesk API。
   - `POST /frontdesk/jobs/{job_id}/build` 默认走
     `forgeunit_skillfoundry_vnext`。
+  - legacy `POST /jobs` offline 创建入口已退役；`GET /jobs...` 仍作为 evidence/read
+    view 保留。
 - `src/skillfoundry/forgeunit_adapter.py`
   - `JobWorkspace -> ForgeUnit task pack -> command boundary -> SkillFoundry evidence`
     的适配层。
@@ -112,7 +114,8 @@ Codex，不应依赖本机 sibling `../ForgeUnit`。
 2. 继续隔离或退役 legacy `worker.py`、`context.py`、`offline.py`
    等旧路径；`src/skillfoundry/graph.py` 已在 Phase 13A 删除，
    `src/skillfoundry/llm_builder.py` 已在 Phase 13B 删除，
-   `final_report.py` 已在 Phase 13C 从 `offline.py` 解耦。
+   `final_report.py` 已在 Phase 13C 从 `offline.py` 解耦，
+   legacy API `POST /jobs` offline 创建入口已在 Phase 13D 退役。
 3. 完善 API/UI 对 registry outcome、repair decision、human review 和 refs-only
    evidence 的展示。
 4. 用 3-5 个真实 Skill 需求做 opt-in live Codex semantic eval，记录失败分类和修复策略。

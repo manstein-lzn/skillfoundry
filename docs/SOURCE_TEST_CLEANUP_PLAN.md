@@ -108,6 +108,34 @@ Dependency fix:
 - `offline.py` keeps importing those helpers for legacy compatibility, so the
   public API and old offline tests continue to work during the transition.
 
+## Phase 13D
+
+Status: implemented in this cleanup slice.
+
+Retired from API/UI:
+
+- Legacy `POST /jobs` offline build creation.
+- `SkillFoundryAPI(..., allow_legacy_offline_jobs=...)`.
+- `SKILLFOUNDRY_ALLOW_LEGACY_OFFLINE_JOBS`.
+- `skillfoundry serve --allow-legacy-offline-jobs`.
+- The server-rendered legacy offline factory form.
+
+Rationale:
+
+- New product creation must enter through FrontDesk and
+  `/frontdesk/jobs/{job_id}/build`.
+- Direct `build_offline` remains available as deterministic developer
+  compatibility for tests, ops, and migration fixtures, but it is no longer an
+  API/UI product entrypoint.
+
+Dependency fix:
+
+- `api.py` no longer imports `build_offline` or `OfflineWorkerMode`.
+- `POST /jobs` returns `legacy_offline_jobs_retired` and never writes a job.
+- Existing `GET /jobs`, report, package, human-review, and ContextForge status
+  endpoints remain because current FrontDesk build responses still link to
+  those evidence views.
+
 ## Current Keep List
 
 Keep as current mainline or current dependency:
@@ -138,10 +166,11 @@ Keep as current mainline or current dependency:
 These modules need a separate audit before deletion or shrinking:
 
 - `src/skillfoundry/offline.py`
-  - Legacy offline compatibility route.
+  - Legacy deterministic offline CLI/test compatibility.
   - Final-report helpers have been extracted.
-  - Still used by API compatibility, CLI build/verify/register commands,
-    ops tests, and deterministic offline fixtures.
+  - API/UI no longer create offline builds through `POST /jobs`.
+  - Still used by CLI build/verify/register commands, ops tests, and
+    deterministic offline fixtures.
 - `src/skillfoundry/worker.py`
   - Old WorkerAdapter/CodexWorker/FakeWorker path.
   - Still used by legacy tests, offline compatibility, verifier fixtures, and

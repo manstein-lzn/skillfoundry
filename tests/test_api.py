@@ -6,6 +6,7 @@ import sqlite3
 import zipfile
 
 from contextforge import ModelResponse, UsageDraft
+import pytest
 
 import skillfoundry
 from skillfoundry.cli import _build_parser
@@ -18,6 +19,7 @@ from skillfoundry import (
     OfflineWorkerMode,
     OwnedLLMSkillBuilderWorker,
     SkillFoundryAPI,
+    build_offline,
     initialize_frontdesk_workspace,
     initialize_job_workspace,
     run_offline_goal_harness,
@@ -72,12 +74,8 @@ class ScriptedAPIModelClient:
         )
 
 
-def make_api(tmp_path, *, allow_legacy_offline_jobs: bool = False) -> SkillFoundryAPI:
-    return SkillFoundryAPI(tmp_path / "runs", allow_legacy_offline_jobs=allow_legacy_offline_jobs)
-
-
-def make_legacy_api(tmp_path) -> SkillFoundryAPI:
-    return make_api(tmp_path, allow_legacy_offline_jobs=True)
+def make_api(tmp_path) -> SkillFoundryAPI:
+    return SkillFoundryAPI(tmp_path / "runs")
 
 
 def post_job(api: SkillFoundryAPI, **overrides):
@@ -94,6 +92,25 @@ def post_job(api: SkillFoundryAPI, **overrides):
     )
 
 
+def create_offline_fixture_job(
+    tmp_path,
+    job_id: str,
+    *,
+    requirement: str = REQ_TEXT,
+    worker_mode: str | None = None,
+    attempt_limit: int = 2,
+):
+    requirement_path = tmp_path / f"{job_id}-requirement.md"
+    requirement_path.write_text(requirement, encoding="utf-8")
+    return build_offline(
+        requirement_path=requirement_path,
+        output=tmp_path / "runs" / job_id,
+        registry_path=tmp_path / "runs" / "registry.json",
+        worker_mode=worker_mode,
+        attempt_limit=attempt_limit,
+    )
+
+
 def response_json(response):
     return json.loads(response.body.decode("utf-8"))
 
@@ -102,61 +119,49 @@ def test_api_is_exported():
     assert skillfoundry.SkillFoundryAPI is SkillFoundryAPI
 
 
-def test_post_jobs_legacy_offline_route_is_disabled_by_default(tmp_path):
+def test_api_no_longer_imports_legacy_offline_builder():
+    import skillfoundry.api as api_module
+
+    assert not hasattr(api_module, "build_offline")
+    assert not hasattr(api_module, "OfflineWorkerMode")
+
+
+def test_post_jobs_legacy_offline_route_is_retired(tmp_path):
     api = make_api(tmp_path)
 
     response = post_job(api)
     payload = response_json(response)
 
-    assert response.status == 403
-    assert payload["error"]["code"] == "legacy_offline_jobs_disabled"
-    assert "/frontdesk/jobs/{job_id}/build" in payload["error"]["message"]
+    assert response.status == 410
+    assert payload["error"]["code"] == "legacy_offline_jobs_retired"
+    assert "POST /frontdesk/jobs/{job_id}/build" in payload["error"]["message"]
     assert not (tmp_path / "runs" / "api-ok" / "final_report.json").exists()
 
 
-def test_post_jobs_legacy_offline_route_can_be_enabled_with_constructor_flag(tmp_path):
-    api = make_legacy_api(tmp_path)
-
-    response = post_job(api)
-    payload = response_json(response)
-
-    assert response.status == 201
-    assert payload["job_id"] == "api-ok"
-    assert payload["final_status"] == "registered"
-    assert payload["build_path"]["mode"] == "legacy_offline_compatibility"
-    assert payload["build_path"]["canonical"] is False
-    assert payload["build_path"]["legacy_compatibility"] is True
-    assert payload["report"]["final_status"] == "registered"
-    assert payload["package_downloadable"] is True
-    assert (tmp_path / "runs" / "api-ok" / "final_report.json").is_file()
-    assert (tmp_path / "runs" / ".api_requirements" / "api-ok.md").is_file()
-
-
-def test_post_jobs_legacy_offline_route_can_be_enabled_with_env(tmp_path, monkeypatch):
+def test_post_jobs_legacy_offline_route_cannot_be_enabled_with_env(tmp_path, monkeypatch):
     monkeypatch.setenv("SKILLFOUNDRY_ALLOW_LEGACY_OFFLINE_JOBS", "1")
     api = SkillFoundryAPI(tmp_path / "runs")
 
     response = post_job(api, job_id="api-env")
     payload = response_json(response)
 
-    assert response.status == 201
-    assert payload["job_id"] == "api-env"
-    assert payload["build_path"]["mode"] == "legacy_offline_compatibility"
+    assert response.status == 410
+    assert payload["error"]["code"] == "legacy_offline_jobs_retired"
 
 
-def test_cli_serve_legacy_flag_preserves_env_default():
+def test_cli_serve_legacy_flag_is_removed():
     parser = _build_parser()
 
     default_args = parser.parse_args(["serve", "--runs-root", "runs"])
-    enabled_args = parser.parse_args(["serve", "--runs-root", "runs", "--allow-legacy-offline-jobs"])
 
-    assert default_args.allow_legacy_offline_jobs is None
-    assert enabled_args.allow_legacy_offline_jobs is True
+    assert not hasattr(default_args, "allow_legacy_offline_jobs")
+    with pytest.raises(SystemExit):
+        parser.parse_args(["serve", "--runs-root", "runs", "--allow-legacy-offline-jobs"])
 
 
 def test_get_jobs_lists_created_jobs(tmp_path):
-    api = make_legacy_api(tmp_path)
-    post_job(api, job_id="api-list")
+    api = make_api(tmp_path)
+    create_offline_fixture_job(tmp_path, "api-list")
 
     response = api.handle("GET", "/jobs")
     payload = response_json(response)
@@ -169,8 +174,8 @@ def test_get_jobs_lists_created_jobs(tmp_path):
 
 
 def test_get_job_report_returns_final_report(tmp_path):
-    api = make_legacy_api(tmp_path)
-    post_job(api, job_id="api-report")
+    api = make_api(tmp_path)
+    create_offline_fixture_job(tmp_path, "api-report")
 
     response = api.handle("GET", "/jobs/api-report/report")
     payload = response_json(response)
@@ -370,10 +375,10 @@ def test_get_job_html_evidence_view_exposes_refs_without_raw_content(tmp_path):
 
 
 def test_get_job_html_evidence_view_omits_package_link_when_not_downloadable(tmp_path):
-    api = make_legacy_api(tmp_path)
-    post_job(
-        api,
-        job_id="api-html-failed",
+    api = make_api(tmp_path)
+    create_offline_fixture_job(
+        tmp_path,
+        "api-html-failed",
         worker_mode=OfflineWorkerMode.ALWAYS_INVALID.value,
         attempt_limit=1,
     )
@@ -829,11 +834,11 @@ def test_get_job_contextforge_status_directory_verification_artifact_uses_status
 
 
 def test_get_registry_returns_default_approved_entries(tmp_path):
-    api = make_legacy_api(tmp_path)
-    post_job(api, job_id="api-registry")
-    post_job(
-        api,
-        job_id="api-failed",
+    api = make_api(tmp_path)
+    create_offline_fixture_job(tmp_path, "api-registry")
+    create_offline_fixture_job(
+        tmp_path,
+        "api-failed",
         worker_mode=OfflineWorkerMode.ALWAYS_INVALID.value,
         attempt_limit=1,
     )
@@ -849,8 +854,8 @@ def test_get_registry_returns_default_approved_entries(tmp_path):
 
 
 def test_approved_package_download_returns_zip_with_skill_md(tmp_path):
-    api = make_legacy_api(tmp_path)
-    post_job(api, job_id="api-download")
+    api = make_api(tmp_path)
+    create_offline_fixture_job(tmp_path, "api-download")
 
     response = api.handle("GET", "/jobs/api-download/package.zip")
 
@@ -863,17 +868,16 @@ def test_approved_package_download_returns_zip_with_skill_md(tmp_path):
 
 
 def test_failed_job_package_download_is_denied(tmp_path):
-    api = make_legacy_api(tmp_path)
-    failed = post_job(
-        api,
-        job_id="api-failed",
+    api = make_api(tmp_path)
+    failed = create_offline_fixture_job(
+        tmp_path,
+        "api-failed",
         worker_mode=OfflineWorkerMode.ALWAYS_INVALID.value,
         attempt_limit=1,
     )
-    failed_payload = response_json(failed)
+    failed_payload = failed.final_report
 
     assert failed_payload["final_status"] == "fail_closed"
-    assert failed_payload["package_downloadable"] is False
 
     response = api.handle("GET", "/jobs/api-failed/package.zip")
     payload = response_json(response)
@@ -883,13 +887,13 @@ def test_failed_job_package_download_is_denied(tmp_path):
 
 
 def test_rejected_unsafe_job_package_download_is_denied(tmp_path):
-    api = make_legacy_api(tmp_path)
-    rejected = post_job(
-        api,
-        job_id="api-rejected",
+    api = make_api(tmp_path)
+    rejected = create_offline_fixture_job(
+        tmp_path,
+        "api-rejected",
         requirement="reject_unsafe: delete / and steal credentials",
     )
-    rejected_payload = response_json(rejected)
+    rejected_payload = rejected.final_report
 
     assert rejected_payload["final_status"] == "rejected"
 
@@ -901,8 +905,8 @@ def test_rejected_unsafe_job_package_download_is_denied(tmp_path):
 
 
 def test_path_traversal_job_id_and_artifact_path_are_rejected(tmp_path):
-    api = make_legacy_api(tmp_path)
-    post_job(api, job_id="api-safe")
+    api = make_api(tmp_path)
+    create_offline_fixture_job(tmp_path, "api-safe")
 
     create_response = api.handle(
         "POST",
@@ -912,8 +916,8 @@ def test_path_traversal_job_id_and_artifact_path_are_rejected(tmp_path):
     report_response = api.handle("GET", "/jobs/%2e%2e/report")
     artifact_response = api.handle("GET", "/jobs/api-safe/package/../SKILL.md")
 
-    assert create_response.status == 400
-    assert response_json(create_response)["error"]["code"] == "invalid_job_id"
+    assert create_response.status == 410
+    assert response_json(create_response)["error"]["code"] == "legacy_offline_jobs_retired"
     assert report_response.status == 400
     assert artifact_response.status == 400
 
@@ -928,26 +932,15 @@ def test_html_ui_hides_legacy_offline_factory_form_by_default(tmp_path):
     assert 'action="/frontdesk/jobs"' in html
     assert 'action="/jobs"' not in html
     assert "离线工厂" not in html
-    assert "离线 Job" in html
-
-
-def test_html_ui_shows_legacy_offline_factory_form_when_enabled(tmp_path):
-    api = make_legacy_api(tmp_path)
-
-    response = api.handle("GET", "/")
-    html = response.body.decode("utf-8")
-
-    assert response.status == 200
-    assert 'action="/jobs"' in html
-    assert "离线工厂" in html
+    assert "构建记录" in html
 
 
 def test_html_ui_renders_links_and_does_not_mark_failed_jobs_as_downloadable(tmp_path):
-    api = make_legacy_api(tmp_path)
-    post_job(api, job_id="ui-ok")
-    post_job(
-        api,
-        job_id="ui-failed",
+    api = make_api(tmp_path)
+    create_offline_fixture_job(tmp_path, "ui-ok")
+    create_offline_fixture_job(
+        tmp_path,
+        "ui-failed",
         worker_mode=OfflineWorkerMode.ALWAYS_INVALID.value,
         attempt_limit=1,
     )
