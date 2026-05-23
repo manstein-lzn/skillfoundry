@@ -102,6 +102,7 @@ Current mainline docs:
 
 - [Development Workflow](docs/DEVELOPMENT_WORKFLOW.md)
 - [Fresh Clone Gate](docs/FRESH_CLONE_GATE.md)
+- [Legacy Compatibility](docs/LEGACY_COMPATIBILITY.md)
 - [FrontDesk Live Semantic Eval](docs/FRONTDESK_LIVE_SEMANTIC_EVAL.md)
 - [SkillFoundry v2 Baseline](docs/SKILLFOUNDRY_V2_BASELINE.md)
 - [SkillFoundry ContextForge Refactor Plan](docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md)

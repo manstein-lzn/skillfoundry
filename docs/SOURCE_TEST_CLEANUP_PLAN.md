@@ -403,6 +403,38 @@ Rationale:
 - Keeping these APIs module-scoped reduces package-root noise without hiding or
   deleting working runtime code.
 
+## Phase 13K
+
+Status: implemented in this cleanup slice.
+
+Added:
+
+- `docs/LEGACY_COMPATIBILITY.md`, a single index for remaining compatibility
+  islands and archived WP/CodexWorker material.
+
+Indexed:
+
+- `skillfoundry.offline`
+- `skillfoundry.worker`
+- `skillfoundry.context`
+- `skillfoundry.graph_v2`
+- `skillfoundry.goal_runtime`
+- `skillfoundry.feedback`
+- `skillfoundry.qa`
+- `skillfoundry.ops`
+- archived WP0-WP17 roadmaps, agent briefs, pilots, and operations notes
+
+Linked:
+
+- `docs/README.md`
+- `HANDOFF.md`
+
+Rationale:
+
+- Compatibility code should be visible and explainable before it is deleted.
+- New users need one page that distinguishes current mainline, allowed
+  maintenance/fixture uses, and forbidden new-product uses.
+
 ## Test Ownership
 
 Current mainline tests:

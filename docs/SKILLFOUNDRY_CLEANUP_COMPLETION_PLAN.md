@@ -242,6 +242,8 @@ make test
 
 ### Phase 13K: Legacy Island Index
 
+Status: implemented.
+
 Goal:
 
 Make remaining compatibility islands explicit so new users know they are not
@@ -268,6 +270,15 @@ Acceptance:
 - New contributors can identify all compatibility islands from one page.
 - Existing archive docs do not need to be deleted, but current docs point to the
   compatibility index before archive material.
+
+Implemented result:
+
+- `docs/LEGACY_COMPATIBILITY.md` indexes remaining compatibility islands:
+  `offline.py`, `worker.py`, `context.py`, `graph_v2.py`, `goal_runtime.py`,
+  `feedback.py`, `qa.py`, `ops.py`, and archived WP/CodexWorker material.
+- The index states allowed uses and not-allowed uses for each island.
+- `docs/README.md` and `HANDOFF.md` link the compatibility index from the
+  current reading path.
 
 Suggested validators:
 

@@ -9,6 +9,7 @@ Read these first:
 - [Development Workflow](DEVELOPMENT_WORKFLOW.md): local commands and validation gates.
 - [Fresh Clone Gate](FRESH_CLONE_GATE.md): new-user reproducibility check.
 - [SkillFoundry Public API](PUBLIC_API.md): package-root API contract during cleanup.
+- [Legacy Compatibility](LEGACY_COMPATIBILITY.md): compatibility islands that remain for fixtures, maintenance, or history.
 - [SkillFoundry Cleanup Completion Plan](SKILLFOUNDRY_CLEANUP_COMPLETION_PLAN.md): remaining short-term cleanup route before product validation.
 - [SkillFoundry v2 Baseline](SKILLFOUNDRY_V2_BASELINE.md): current rebuild premise.
 - [SkillFoundry ContextForge Refactor Plan](SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md): current architecture map.

@@ -29,6 +29,7 @@ FrontDesk
 - `docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md`：当前架构蓝图。
 - `docs/FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md`：当前 clean composition layer。
 - `docs/DEVELOPMENT_WORKFLOW.md`：本地开发和验证命令。
+- `docs/LEGACY_COMPATIBILITY.md`：仍保留的 compatibility islands 和禁止作为新主线的边界。
 
 历史 whitepaper、WP 文档、roadmap、pilot、operations notes 和 agent briefs 已归档到
 `docs/archive/`。它们解释历史，不定义当前实现合同。
@@ -81,6 +82,9 @@ FrontDesk
 - `src/skillfoundry/final_report.py`
   - 当前 `final_report.json` evidence envelope 的读写和构建逻辑。
   - 已从 legacy `offline.py` 拆出，避免当前 v2/runtime 路径依赖旧离线 builder。
+- `docs/LEGACY_COMPATIBILITY.md`
+  - 剩余 compatibility islands 的统一索引。
+  - 新用户先看这里判断哪些旧模块只能用于 fixture、maintenance 或 history。
 - `scripts/run_forgeunit_skill_factory.py`
   - 本地 vNext CLI smoke，支持 deterministic fake 和显式 command。
 - `scripts/run_frontdesk_forgeunit_command_pilot.py`
@@ -148,7 +152,8 @@ Codex，不应依赖本机 sibling `../ForgeUnit`。
    Phase 13H 已新增 public API 合同并移除明显内部 fake-worker/result/factory 顶层导出，
    Phase 13I 已把 feedback/QA/ops support surfaces 收口为 module-scoped，
    Phase 13J 已把 direct Goal Runtime 和 graph v2 compatibility helpers 收口为
-   module-scoped。
+   module-scoped，
+   Phase 13K 已新增 legacy compatibility index。
 3. 完善 API/UI 对 registry outcome、repair decision、human review 和 refs-only
    evidence 的展示。
 4. 用 3-5 个真实 Skill 需求做 opt-in live Codex semantic eval，记录失败分类和修复策略。
