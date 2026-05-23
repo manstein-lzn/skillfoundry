@@ -1001,6 +1001,11 @@ def _human_review_evidence_refs(refs: Mapping[str, Any]) -> dict[str, str]:
         "contextforge_verification_result",
         "goal_runtime_ledger",
         "goal_runtime_result",
+        "forgeunit_boundary_verification",
+        "forgeunit_codex_exec_plan",
+        "forgeunit_run",
+        "forgeunit_summary",
+        "forgeunit_task_yaml",
         "repair_attempt",
         "repair_graph_state",
         "repair_instructions",
@@ -1018,6 +1023,9 @@ def _human_review_evidence_refs(refs: Mapping[str, Any]) -> dict[str, str]:
 
 
 def _human_review_reason_code(state: Mapping[str, Any], contextforge: Mapping[str, Any]) -> str:
+    forgeunit_reason = _optional_str(contextforge.get("forgeunit_boundary_reason_code"))
+    if forgeunit_reason is not None:
+        return forgeunit_reason
     verification_status = _optional_str(contextforge.get("last_verification_status"))
     if verification_status == "failed" and _attempts_exhausted(state):
         return "verification_failed_attempt_limit"

@@ -9,14 +9,24 @@ from typing import Any, Mapping
 
 import yaml
 
-from .graph_v2 import SkillFoundryV2State, V2Route, V2Stage, V2Status, validate_v2_graph_state
-from .schema import sha256_file
+from .graph_v2 import (
+    SkillFoundryV2State,
+    V2Route,
+    V2Stage,
+    V2Status,
+    build_human_review_node,
+    compile_skillfoundry_v2_graph,
+    validate_v2_graph_state,
+)
+from .schema import JsonValue, ensure_json_compatible, sha256_file, utc_now
 from .workspace import JOB_ID_RE, JobWorkspace
 
 
 FORGEUNIT_ADAPTER_VERSION = "skillfoundry.forgeunit_adapter.v1"
 FORGEUNIT_TASK_YAML_REF = "task.yaml"
 FORGEUNIT_SUMMARY_REF = "contextforge/forgeunit_summary.json"
+FORGEUNIT_BOUNDARY_VERIFICATION_REF = "contextforge/forgeunit_boundary_verification.json"
+FORGEUNIT_PILOT_GRAPH_STATE_REF = "contextforge/forgeunit_pilot_graph_state.json"
 FORGEUNIT_CODEX_EXEC_UNIT_ID = "execute"
 
 
@@ -243,6 +253,127 @@ def build_forgeunit_codex_exec_node(
     return _node
 
 
+def build_forgeunit_boundary_verification_node(
+    runs_root: str | Path,
+    *,
+    created_at: str | None = None,
+) -> Any:
+    """Return a verifier node that truthfully stops ForgeUnit boundary dry-runs."""
+
+    runs_path = Path(runs_root)
+
+    def _node(state: SkillFoundryV2State) -> SkillFoundryV2State:
+        validate_v2_graph_state(state)
+        job_id = _job_id(state)
+        workspace = JobWorkspace(root=runs_path / job_id, job_id=job_id)
+        workspace.resolve_path("contextforge").mkdir(parents=True, exist_ok=True)
+
+        reason_code = _boundary_reason_code(state)
+        verification_status = "human_acceptance_required"
+        boundary_status = "dry_run_plan_ready" if reason_code == "forgeunit_codex_exec_dry_run_boundary_pending" else "boundary_pending"
+        payload = _boundary_verification_payload(
+            job_id=job_id,
+            state=state,
+            verification_status=verification_status,
+            boundary_status=boundary_status,
+            reason_code=reason_code,
+            created_at=created_at or utc_now(),
+        )
+        boundary_path = workspace.resolve_path(FORGEUNIT_BOUNDARY_VERIFICATION_REF)
+        _write_json(boundary_path, payload)
+
+        refs = dict(state.get("refs", {}))
+        refs["forgeunit_boundary_verification"] = FORGEUNIT_BOUNDARY_VERIFICATION_REF
+        hashes = dict(state.get("hashes", {}))
+        hashes["forgeunit_boundary_verification"] = sha256_file(boundary_path)
+        contextforge = dict(state.get("contextforge", {}))
+        contextforge.update(
+            {
+                "last_verification_result_id": str(payload["verification_result_id"]),
+                "last_verification_status": verification_status,
+                "forgeunit_boundary_status": boundary_status,
+                "forgeunit_boundary_reason_code": reason_code,
+                "forgeunit_boundary_verification_ref": FORGEUNIT_BOUNDARY_VERIFICATION_REF,
+                "worker_self_report_is_not_acceptance": True,
+            }
+        )
+        next_state: SkillFoundryV2State = dict(state)
+        next_state.update(
+            {
+                "stage": V2Stage.VERIFY.value,
+                "status": V2Status.HUMAN_REVIEW_REQUIRED.value,
+                "refs": refs,
+                "hashes": hashes,
+                "contextforge": contextforge,
+                "human_review_required": True,
+                "next_route": V2Route.HUMAN_REVIEW.value,
+            }
+        )
+        validate_v2_graph_state(next_state)
+        return next_state
+
+    return _node
+
+
+def compile_forgeunit_pilot_graph(
+    runs_root: str | Path,
+    *,
+    dry_run: bool = True,
+    command: str | None = None,
+    unit_id: str = FORGEUNIT_CODEX_EXEC_UNIT_ID,
+    created_at: str | None = None,
+) -> Any:
+    """Compile the dedicated ForgeUnit-backed SkillFoundry pilot graph."""
+
+    return compile_skillfoundry_v2_graph(
+        build_node_callable=build_forgeunit_codex_exec_node(
+            runs_root,
+            dry_run=dry_run,
+            command=command,
+            unit_id=unit_id,
+        ),
+        verify_node_callable=build_forgeunit_boundary_verification_node(
+            runs_root,
+            created_at=created_at,
+        ),
+        human_review_node_callable=build_human_review_node(
+            runs_root,
+            created_at=created_at,
+        ),
+    )
+
+
+def run_forgeunit_pilot_graph(
+    runs_root: str | Path,
+    job_id: str,
+    *,
+    attempt_limit: int = 2,
+    dry_run: bool = True,
+    command: str | None = None,
+    unit_id: str = FORGEUNIT_CODEX_EXEC_UNIT_ID,
+    created_at: str | None = None,
+) -> SkillFoundryV2State:
+    """Run the dedicated ForgeUnit-backed pilot graph and persist refs-only state."""
+
+    if not isinstance(job_id, str) or not JOB_ID_RE.fullmatch(job_id):
+        raise ForgeUnitIntegrationError("job_id must be a safe SkillFoundry job id")
+    runs_path = Path(runs_root)
+    graph = compile_forgeunit_pilot_graph(
+        runs_path,
+        dry_run=dry_run,
+        command=command,
+        unit_id=unit_id,
+        created_at=created_at,
+    )
+    result = graph.invoke({"job_id": job_id, "attempt_limit": attempt_limit})
+    validate_v2_graph_state(result)
+    workspace = JobWorkspace(root=runs_path / job_id, job_id=job_id)
+    workspace.resolve_path("contextforge").mkdir(parents=True, exist_ok=True)
+    state_path = workspace.resolve_path(FORGEUNIT_PILOT_GRAPH_STATE_REF)
+    _write_json(state_path, result)
+    return result
+
+
 def _validate_with_forgeunit(task_pack_dir: Path) -> None:
     try:
         from forgeunit import validate_task_pack_or_raise
@@ -272,6 +403,73 @@ def _refs_only_forgeunit_summary(node_state: Mapping[str, Any]) -> dict[str, Any
     if adapter_result:
         summary["adapter_result"] = adapter_result
     return summary
+
+
+def _boundary_reason_code(state: Mapping[str, Any]) -> str:
+    refs = state.get("refs") if isinstance(state.get("refs"), Mapping) else {}
+    contextforge = state.get("contextforge") if isinstance(state.get("contextforge"), Mapping) else {}
+    assert isinstance(refs, Mapping)
+    assert isinstance(contextforge, Mapping)
+    if contextforge.get("forgeunit_codex_exec_dry_run") is True or refs.get("forgeunit_codex_exec_plan"):
+        return "forgeunit_codex_exec_dry_run_boundary_pending"
+    return "forgeunit_boundary_result_pending"
+
+
+def _boundary_verification_payload(
+    *,
+    job_id: str,
+    state: Mapping[str, Any],
+    verification_status: str,
+    boundary_status: str,
+    reason_code: str,
+    created_at: str,
+) -> dict[str, JsonValue]:
+    refs = state.get("refs") if isinstance(state.get("refs"), Mapping) else {}
+    contextforge = state.get("contextforge") if isinstance(state.get("contextforge"), Mapping) else {}
+    assert isinstance(refs, Mapping)
+    assert isinstance(contextforge, Mapping)
+    payload = {
+        "schema_version": "skillfoundry.forgeunit_boundary_verification.v1",
+        "verification_result_id": f"{job_id}:forgeunit-boundary:{int(state.get('attempt_count', 0)) or 1}",
+        "job_id": job_id,
+        "status": verification_status,
+        "boundary_status": boundary_status,
+        "reason_code": reason_code,
+        "created_at": created_at,
+        "forgeunit": {
+            "run_id": contextforge.get("forgeunit_run_id"),
+            "status": contextforge.get("forgeunit_status"),
+            "route": contextforge.get("forgeunit_route"),
+            "current_node": contextforge.get("forgeunit_current_node"),
+            "codex_exec_dry_run": contextforge.get("forgeunit_codex_exec_dry_run") is True,
+        },
+        "evidence_refs": {
+            key: value
+            for key, value in refs.items()
+            if key
+            in {
+                "forgeunit_task_yaml",
+                "forgeunit_run",
+                "forgeunit_summary",
+                "forgeunit_codex_exec_plan",
+            }
+            and isinstance(value, str)
+            and value
+        },
+        "trust_boundaries": {
+            "worker_self_report_is_not_acceptance": True,
+            "dry_run_is_not_verification": True,
+            "registry_promotion_allowed": False,
+            "raw_prompt_included": False,
+            "raw_transcript_included": False,
+            "raw_requirement_included": False,
+            "package_body_included": False,
+        },
+    }
+    compatible = ensure_json_compatible(payload)
+    if not isinstance(compatible, dict):
+        raise ForgeUnitIntegrationError("boundary verification payload must be a JSON object")
+    return compatible  # type: ignore[return-value]
 
 
 def _job_id(state: Mapping[str, Any]) -> str:

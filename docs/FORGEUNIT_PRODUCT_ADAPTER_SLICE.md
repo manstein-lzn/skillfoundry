@@ -33,6 +33,9 @@ It provides:
 - `materialize_forgeunit_task_pack(workspace)`
 - `run_forgeunit_codex_exec_node(workspace, dry_run=True, command=None)`
 - `build_forgeunit_codex_exec_node(runs_root, dry_run=True, command=None)`
+- `build_forgeunit_boundary_verification_node(runs_root)`
+- `compile_forgeunit_pilot_graph(runs_root, dry_run=True, command=None)`
+- `run_forgeunit_pilot_graph(runs_root, job_id, dry_run=True, command=None)`
 
 The adapter depends on ForgeUnit v1.2. For local development with the sibling
 checkout:
@@ -116,14 +119,40 @@ build_node = build_forgeunit_codex_exec_node("runs", dry_run=True)
 state = build_node({"job_id": "demo", "attempt_limit": 2})
 ```
 
-The next implementation step can wire this node into a dedicated pilot graph
-path:
+The adapter now includes a dedicated pilot graph path:
 
 ```text
-Front Desk approved/frozen job
+Initialized SkillFoundry JobWorkspace
   -> ForgeUnit codex_exec build
-  -> SkillFoundry verifier
-  -> registry gate
+  -> ForgeUnit boundary verification
+  -> human review
+```
+
+In dry-run mode this is intentionally not a successful build. It stops at human
+review with:
+
+```text
+contextforge/forgeunit_boundary_verification.json
+human_review/request.json
+contextforge/forgeunit_pilot_graph_state.json
+```
+
+The boundary verification records:
+
+```text
+status: human_acceptance_required
+boundary_status: dry_run_plan_ready
+reason_code: forgeunit_codex_exec_dry_run_boundary_pending
+```
+
+It does not route to registry and does not write `final_report`.
+
+Run it from Python:
+
+```python
+from skillfoundry import run_forgeunit_pilot_graph
+
+state = run_forgeunit_pilot_graph("runs", "demo-job", dry_run=True)
 ```
 
 ## Non-Goals
@@ -151,5 +180,7 @@ The tests prove:
 - a `JobWorkspace` can be materialized as a valid ForgeUnit task pack;
 - the v2 node invokes ForgeUnit codex exec dry-run through ForgeUnit's public
   surface;
+- the dedicated pilot graph routes ForgeUnit dry-run to human review instead of
+  registry promotion;
 - SkillFoundry graph state remains refs-only;
 - raw requirement bodies are not inlined into state or summaries.

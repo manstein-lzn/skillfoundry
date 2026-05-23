@@ -239,15 +239,20 @@ from .graph_v2 import (
 )
 from .forgeunit_adapter import (
     FORGEUNIT_ADAPTER_VERSION,
+    FORGEUNIT_BOUNDARY_VERIFICATION_REF,
     FORGEUNIT_CODEX_EXEC_UNIT_ID,
+    FORGEUNIT_PILOT_GRAPH_STATE_REF,
     FORGEUNIT_SUMMARY_REF,
     FORGEUNIT_TASK_YAML_REF,
     ForgeUnitIntegrationError,
     ForgeUnitNodeResult,
     ForgeUnitTaskPackArtifacts,
+    build_forgeunit_boundary_verification_node,
     build_forgeunit_codex_exec_node,
+    compile_forgeunit_pilot_graph,
     materialize_forgeunit_task_pack,
     run_forgeunit_codex_exec_node,
+    run_forgeunit_pilot_graph,
 )
 from .verification_bridge import (
     CONTEXTFORGE_VERIFICATION_RESULT_REF,

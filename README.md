@@ -154,7 +154,10 @@ LangGraph 编排
 第一层代码位于 `src/skillfoundry/forgeunit_adapter.py`，可以把现有
 `JobWorkspace` 物化为 ForgeUnit task pack，并通过 ForgeUnit v1.2 的
 `ForgeUnitNode("codex_exec", dry_run=True)` 返回 refs-only v2 graph state。
-该切片默认不调用 live Codex。
+该切片默认不调用 live Codex。当前也提供 dedicated pilot graph：
+`run_forgeunit_pilot_graph(...)` 会在 dry-run 后生成
+`forgeunit_boundary_verification.json` 和 `human_review/request.json`，并明确
+停在 human review，不会把 dry-run 当成 verifier 通过或 registry approval。
 
 ## 设计原则
 

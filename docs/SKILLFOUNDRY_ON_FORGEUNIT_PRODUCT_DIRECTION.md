@@ -293,7 +293,8 @@ src/skillfoundry/forgeunit_adapter.py
 SkillFoundry JobWorkspace
   -> task.yaml
   -> ForgeUnitNode("codex_exec", dry_run=True)
-  -> refs-only SkillFoundry v2 state
+  -> ForgeUnit boundary verification
+  -> human review
 ```
 
 对应说明见：
@@ -303,7 +304,8 @@ docs/FORGEUNIT_PRODUCT_ADAPTER_SLICE.md
 ```
 
 这还不是完整产品主路径替换。它的价值是先把
-`JobWorkspace -> ForgeUnit task pack -> ForgeUnit public API` 这条边界跑通，
+`JobWorkspace -> ForgeUnit task pack -> ForgeUnit public API -> governed stop`
+这条边界跑通。dry-run 不会被当作 verifier 通过，也不会进入 registry。
 后续再把真实 Codex exec、SkillFoundry verifier、repair、registry gate 接上。
 
 ## 6. 期望的代码形态
