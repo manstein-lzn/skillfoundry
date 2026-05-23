@@ -13,7 +13,6 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from .graph import Route, WorkflowStatus
 from .registry import (
     APPROVAL_APPROVED,
     DEFAULT_REGISTRY_VERSION,
@@ -52,6 +51,33 @@ from .workspace import JOB_ID_RE, LOCKED_INPUT_PATHS, JobWorkspace, initialize_j
 OFFLINE_REPORT_VERSION = "skillfoundry.offline.final_report.v1"
 OFFLINE_WORKER_TYPE_PREFIX = "offline"
 DEFAULT_REVIEW_STATUS = "offline_wp7_verified"
+
+
+class Route(StrEnum):
+    """Legacy offline route values retained for the explicit compatibility path."""
+
+    BUILD_NEW = "build_new"
+    REUSE_EXISTING = "reuse_existing"
+    REJECT_UNSAFE = "reject_unsafe"
+    ASK_CLARIFYING_QUESTION = "ask_clarifying_question"
+
+
+class WorkflowStatus(StrEnum):
+    """Legacy offline final-report statuses retained outside the retired WP2 graph."""
+
+    RUNNING = "running"
+    NEEDS_CLARIFICATION = "needs_clarification"
+    REJECTED = "rejected"
+    REUSED = "reused"
+    BUILT = "built"
+    VERIFIED = "verified"
+    VERIFICATION_FAILED = "verification_failed"
+    REPAIR_PLANNED = "repair_planned"
+    REGISTERED = "registered"
+    REPORT_EMITTED = "report_emitted"
+    HUMAN_REVIEW_REQUIRED = "human_review_required"
+    FAIL_CLOSED = "fail_closed"
+
 
 _TERMINAL_STATUSES = {
     WorkflowStatus.REGISTERED.value,
