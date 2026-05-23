@@ -237,6 +237,37 @@ Dependency fix:
 - Public-package checks assert that legacy context adapter internals no longer
   leak through `skillfoundry.__all__` or top-level attributes.
 
+## Phase 13H
+
+Status: implemented in this cleanup slice.
+
+Added:
+
+- `docs/PUBLIC_API.md`, the package-root public API contract for the cleanup
+  period.
+- `tests/test_public_api.py`, static checks for current package-root
+  entrypoints, explicit compatibility entrypoints, and denied internal leaks.
+
+Narrowed:
+
+- Top-level `skillfoundry` no longer exports FrontDesk Goal Runtime fake worker
+  classes and result dataclasses.
+- Top-level `skillfoundry` no longer exports Goal Runtime result/factory
+  dataclasses.
+
+Kept:
+
+- Current top-level run functions and evidence helpers remain available.
+- The removed types remain module-scoped in `skillfoundry.frontdesk_goal_runtime`
+  and `skillfoundry.goal_runtime` for maintenance and focused tests.
+
+Rationale:
+
+- Fake worker/result/factory types are implementation details, not package-root
+  API.
+- A documented API contract is now available before the broader support-surface
+  and graph/runtime export audits in Phases 13I and 13J.
+
 ## Current Keep List
 
 Keep as current mainline or current dependency:
@@ -291,6 +322,8 @@ These modules need a separate audit before deletion or shrinking:
   - Public export surface is still broad, but legacy worker internals, offline
     helper internals, and legacy context adapter internals have been removed
     from the package root.
+  - Phase 13H added a public API contract and removed obvious internal
+    fake-worker/result/factory exports.
   - Continue shrinking after each legacy module is retired.
 
 ## Test Ownership

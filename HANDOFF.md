@@ -59,6 +59,9 @@ FrontDesk
   - 仍保留为旧 FrontDesk owned-call/context adapter compatibility island。
   - legacy context adapter internals 不再从顶层 `skillfoundry` 导出；维护旧夹具时
     直接从 `skillfoundry.context` 导入。
+- `docs/PUBLIC_API.md`
+  - 当前 cleanup 阶段的 package-root public API 合同。
+  - 新增顶层导出前必须确认属于 current product path 或显式 compatibility entrypoint。
 - `src/skillfoundry/forgeunit_adapter.py`
   - `JobWorkspace -> ForgeUnit task pack -> command boundary -> SkillFoundry evidence`
     的适配层。
@@ -130,7 +133,8 @@ Codex，不应依赖本机 sibling `../ForgeUnit`。
    legacy API `POST /jobs` offline 创建入口已在 Phase 13D 退役，
    ops offline concurrent build helper 已在 Phase 13E 退役，
    legacy worker/offline internals 已在 Phase 13F 从顶层 public API 移除，
-   legacy context adapter internals 已在 Phase 13G 从顶层 public API 移除。
+   legacy context adapter internals 已在 Phase 13G 从顶层 public API 移除，
+   Phase 13H 已新增 public API 合同并移除明显内部 fake-worker/result/factory 顶层导出。
 3. 完善 API/UI 对 registry outcome、repair decision、human review 和 refs-only
    evidence 的展示。
 4. 用 3-5 个真实 Skill 需求做 opt-in live Codex semantic eval，记录失败分类和修复策略。

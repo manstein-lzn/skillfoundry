@@ -95,6 +95,8 @@ This cleanup plan does not include:
 
 ### Phase 13H: Package Root Public API Contract
 
+Status: implemented.
+
 Goal:
 
 Define and enforce the intended `skillfoundry` package-root API after phases
@@ -125,6 +127,15 @@ Acceptance:
 - Static tests prove disallowed legacy/internal exports do not leak through
   `skillfoundry.__all__`.
 - Existing current tests still pass.
+
+Implemented result:
+
+- `docs/PUBLIC_API.md` defines package-root groups, module-scoped surfaces, and
+  cleanup rules.
+- `tests/test_public_api.py` proves current entrypoints and compatibility
+  entrypoints remain while internal fake-worker/result/factory types are hidden.
+- Obvious FrontDesk Goal Runtime and Goal Runtime internal types were removed
+  from package-root exports.
 
 Suggested validators:
 
