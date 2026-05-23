@@ -9,6 +9,29 @@ from typing import Any, Mapping
 
 import yaml
 
+from contextforge import ContextKernel, ContextLedger
+
+from .acceptance import (
+    ACCEPTANCE_COVERAGE_PLAN_REF,
+    ACCEPTANCE_COVERAGE_RESULT_REF,
+    ACCEPTANCE_CRITERIA_REF,
+    AcceptanceCoverageEvaluator,
+    AcceptanceCriteriaPlanner,
+)
+from .contracts import (
+    BUILD_NODE_CONTRACT_REF,
+    CONTRACT_MANIFEST_REF,
+    GOAL_CONTRACT_REF,
+    VERIFICATION_GATE_REF,
+    write_contextforge_contract_artifacts,
+)
+from .goal_runtime import (
+    GOAL_RUNTIME_LEDGER_REF,
+    GOAL_RUNTIME_RESULT_REF,
+    GOAL_RUNTIME_STATE_REF,
+    GOAL_RUNTIME_STATE_SCHEMA_VERSION,
+    seed_goal_harness_context,
+)
 from .graph_v2 import (
     SkillFoundryV2State,
     V2Route,
@@ -24,6 +47,7 @@ from .schema import (
     ArtifactRecord,
     ExecutionReport,
     JsonValue,
+    VerificationResult,
     ensure_json_compatible,
     sha256_file,
     sha256_json,
@@ -40,10 +64,17 @@ FORGEUNIT_BOUNDARY_VERIFICATION_REF = "contextforge/forgeunit_boundary_verificat
 FORGEUNIT_PILOT_GRAPH_STATE_REF = "contextforge/forgeunit_pilot_graph_state.json"
 FORGEUNIT_CODEX_EXEC_UNIT_ID = "execute"
 FORGEUNIT_SKILLFOUNDRY_ATTEMPT_ID = "001"
+FORGEUNIT_REPAIR_ATTEMPT_ID = "002"
 FORGEUNIT_VERIFICATION_RESULT_REF = "verifier/verification_result.json"
+FORGEUNIT_REPAIR_PACKET_REF = "contextforge/forgeunit_repair_packet.json"
+FORGEUNIT_REPAIR_GRAPH_STATE_REF = "contextforge/forgeunit_repair_graph_state.json"
 FORGEUNIT_REGISTRY_DECISION_REF = "registry/decision.json"
 FORGEUNIT_REGISTRY_ENTRY_REF = "registry/entry.json"
 FORGEUNIT_FINAL_REPORT_REF = "final_report.json"
+_FRONTDESK_CONVERSATION_REF = "frontdesk/conversation.jsonl"
+_FORGEUNIT_CONTEXT_GRAPH_ID = "skillfoundry-v2"
+_FORGEUNIT_CONTEXT_TASK_ID = "build_skill"
+_FORGEUNIT_CONTEXT_NODE_ID = "build_skill"
 
 
 class ForgeUnitIntegrationError(RuntimeError):
@@ -510,6 +541,62 @@ def bridge_forgeunit_success_to_skillfoundry_attempt(
     )
 
 
+def write_forgeunit_repair_packet(
+    workspace: JobWorkspace,
+    state: Mapping[str, Any],
+    verification_result: VerificationResult,
+    *,
+    failed_attempt_id: str = FORGEUNIT_SKILLFOUNDRY_ATTEMPT_ID,
+    repair_attempt_id: str = FORGEUNIT_REPAIR_ATTEMPT_ID,
+    failed_summary_ref: str | None = None,
+    created_at: str | None = None,
+) -> str:
+    """Write a refs-only packet describing why the ForgeUnit boundary must repair."""
+
+    if not failed_attempt_id.isdecimal() or not repair_attempt_id.isdecimal():
+        raise ForgeUnitIntegrationError("repair packet attempt ids must be decimal")
+    failed_summary = failed_summary_ref or _forgeunit_summary_archive_ref(failed_attempt_id)
+    failed_check_names = _failed_primary_check_names(verification_result)
+    payload = {
+        "schema_version": "skillfoundry.forgeunit_repair_packet.v1",
+        "job_id": workspace.job_id,
+        "failed_attempt_id": failed_attempt_id,
+        "repair_attempt_id": repair_attempt_id,
+        "created_at": created_at or utc_now(),
+        "reason_code": "skillfoundry_verifier_failed",
+        "verification_result_id": verification_result.result_id,
+        "verification_result_ref": _verification_archive_ref(failed_attempt_id),
+        "failed_execution_report_ref": f"attempts/{failed_attempt_id}/execution_report.json",
+        "failed_forgeunit_summary_ref": failed_summary,
+        "latest_forgeunit_summary_ref": FORGEUNIT_SUMMARY_REF,
+        "failure_count": len(verification_result.failures),
+        "failed_check_names": failed_check_names,
+        "repair_boundary": {
+            "worker_type": "forgeunit.codex_exec.command_bridge",
+            "next_attempt_id": repair_attempt_id,
+            "worker_self_report_is_not_acceptance": True,
+        },
+        "trust_boundaries": {
+            "worker_self_report_is_not_acceptance": True,
+            "raw_prompt_included": False,
+            "raw_transcript_included": False,
+            "package_body_included": False,
+            "raw_worker_input_included": False,
+            "registry_promotion_allowed": False,
+        },
+    }
+    compatible = ensure_json_compatible(payload)
+    if not isinstance(compatible, dict):
+        raise ForgeUnitIntegrationError("repair packet payload must be a JSON object")
+    _write_json(workspace.resolve_path(FORGEUNIT_REPAIR_PACKET_REF), compatible)
+    _upsert_manifest_records(
+        workspace,
+        [FORGEUNIT_REPAIR_PACKET_REF],
+        created_by="skillfoundry.forgeunit_adapter",
+    )
+    return FORGEUNIT_REPAIR_PACKET_REF
+
+
 def build_forgeunit_skillfoundry_verification_node(
     runs_root: str | Path,
     *,
@@ -531,80 +618,12 @@ def build_forgeunit_skillfoundry_verification_node(
 
         job_id = _job_id(state)
         workspace = JobWorkspace(root=runs_path / job_id, job_id=job_id)
-        bridge = bridge_forgeunit_success_to_skillfoundry_attempt(
+        return _bridge_and_verify_forgeunit_attempt_state(
             workspace,
             state,
             attempt_id=FORGEUNIT_SKILLFOUNDRY_ATTEMPT_ID,
             created_at=created_at,
         )
-        result = Verifier().verify(workspace, attempt_id=bridge.attempt_id)
-
-        refs_out = dict(refs)
-        refs_out.update(
-            {
-                "forgeunit_attempt_input_manifest": bridge.input_manifest_ref,
-                "forgeunit_attempt_execution_report": bridge.execution_report_ref,
-                "forgeunit_attempt_transcript": bridge.transcript_ref,
-                "forgeunit_attempt_diff": bridge.diff_ref,
-                "skillfoundry_verification_result": FORGEUNIT_VERIFICATION_RESULT_REF,
-                "verification_result": FORGEUNIT_VERIFICATION_RESULT_REF,
-            }
-        )
-        hashes = dict(state.get("hashes", {}))
-        hashes.update(
-            {
-                "artifact_manifest": sha256_file(workspace.resolve_path(bridge.artifact_manifest_ref, must_exist=True)),
-                "forgeunit_attempt_input_manifest": sha256_file(
-                    workspace.resolve_path(bridge.input_manifest_ref, must_exist=True)
-                ),
-                "forgeunit_attempt_execution_report": sha256_file(
-                    workspace.resolve_path(bridge.execution_report_ref, must_exist=True)
-                ),
-                "forgeunit_attempt_transcript": sha256_file(
-                    workspace.resolve_path(bridge.transcript_ref, must_exist=True)
-                ),
-                "forgeunit_attempt_diff": sha256_file(workspace.resolve_path(bridge.diff_ref, must_exist=True)),
-                "skillfoundry_verification_result": sha256_file(
-                    workspace.resolve_path(FORGEUNIT_VERIFICATION_RESULT_REF, must_exist=True)
-                ),
-                "verification_result": sha256_file(
-                    workspace.resolve_path(FORGEUNIT_VERIFICATION_RESULT_REF, must_exist=True)
-                ),
-            }
-        )
-
-        contextforge_out = dict(contextforge)
-        contextforge_out.update(
-            {
-                "last_verification_result_id": result.result_id,
-                "last_verification_status": "passed" if result.passed else "failed",
-                "skillfoundry_verification_result_ref": FORGEUNIT_VERIFICATION_RESULT_REF,
-                "forgeunit_command_bridge_attempt_id": bridge.attempt_id,
-                "worker_self_report_is_not_acceptance": True,
-                "registry_approved": False,
-            }
-        )
-        status = V2Status.VERIFIED.value if result.passed else V2Status.VERIFICATION_FAILED.value
-        route_state = dict(state)
-        route_state.update({"status": status, "contextforge": contextforge_out})
-        next_state: SkillFoundryV2State = dict(state)
-        next_state.update(
-            {
-                "schema_version": str(state.get("schema_version") or "skillfoundry.graph_v2_state.v1"),
-                "job_id": job_id,
-                "stage": V2Stage.VERIFY.value,
-                "status": status,
-                "attempt_count": max(int(state.get("attempt_count", 0)), 1),
-                "attempt_limit": int(state.get("attempt_limit", 1)),
-                "refs": refs_out,
-                "hashes": hashes,
-                "contextforge": contextforge_out,
-                "human_review_required": False,
-                "next_route": route_after_verification(route_state),
-            }
-        )
-        validate_v2_graph_state(next_state)
-        return next_state
 
     return _node
 
@@ -625,6 +644,7 @@ def build_forgeunit_registry_gate_node(
         validate_v2_graph_state(state)
         job_id = _job_id(state)
         workspace = JobWorkspace(root=runs_path / job_id, job_id=job_id)
+        state = _maybe_write_acceptance_coverage(workspace, state)
         contextforge = dict(state.get("contextforge", {}))
         if contextforge.get("last_verification_status") != "passed":
             raise ForgeUnitIntegrationError("ForgeUnit registry gate requires passed SkillFoundry verification")
@@ -725,6 +745,55 @@ def build_forgeunit_registry_gate_node(
         return next_state
 
     return _node
+
+
+def _maybe_write_acceptance_coverage(
+    workspace: JobWorkspace,
+    state: SkillFoundryV2State,
+) -> SkillFoundryV2State:
+    try:
+        workspace.resolve_path(ACCEPTANCE_CRITERIA_REF, must_exist=True)
+    except Exception:
+        return state
+
+    try:
+        plan = AcceptanceCriteriaPlanner().plan(workspace)
+        result = AcceptanceCoverageEvaluator().evaluate(workspace, plan=plan)
+    except Exception as exc:
+        raise ForgeUnitIntegrationError(f"acceptance coverage evaluation failed: {exc}") from exc
+
+    if result.passed is not True:
+        raise ForgeUnitIntegrationError("acceptance coverage evaluation did not pass")
+
+    refs = dict(state.get("refs", {}))
+    refs.update(
+        {
+            "acceptance_coverage_plan": ACCEPTANCE_COVERAGE_PLAN_REF,
+            "acceptance_coverage_result": ACCEPTANCE_COVERAGE_RESULT_REF,
+        }
+    )
+    hashes = dict(state.get("hashes", {}))
+    hashes.update(
+        {
+            "acceptance_coverage_plan": sha256_file(
+                workspace.resolve_path(ACCEPTANCE_COVERAGE_PLAN_REF, must_exist=True)
+            ),
+            "acceptance_coverage_result": sha256_file(
+                workspace.resolve_path(ACCEPTANCE_COVERAGE_RESULT_REF, must_exist=True)
+            ),
+        }
+    )
+    contextforge = dict(state.get("contextforge", {}))
+    contextforge.update(
+        {
+            "acceptance_coverage_passed": True,
+            "acceptance_coverage_result_ref": ACCEPTANCE_COVERAGE_RESULT_REF,
+        }
+    )
+    next_state: SkillFoundryV2State = dict(state)
+    next_state.update({"refs": refs, "hashes": hashes, "contextforge": contextforge})
+    validate_v2_graph_state(next_state)
+    return next_state
 
 
 def compile_forgeunit_pilot_graph(
@@ -854,6 +923,451 @@ def run_forgeunit_command_bridge_pilot_graph(
     state_path = workspace.resolve_path(FORGEUNIT_PILOT_GRAPH_STATE_REF)
     _write_json(state_path, result)
     return result
+
+
+def run_forgeunit_repair_pilot_graph(
+    runs_root: str | Path,
+    job_id: str,
+    *,
+    registry_path: str | Path,
+    build_command: str,
+    repair_command: str,
+    attempt_limit: int = 2,
+    unit_id: str = FORGEUNIT_CODEX_EXEC_UNIT_ID,
+    version: str = DEFAULT_REGISTRY_VERSION,
+    created_at: str | None = None,
+) -> SkillFoundryV2State:
+    """Run the minimal offline ForgeUnit repair pilot through verifier and registry gates."""
+
+    if not isinstance(job_id, str) or not JOB_ID_RE.fullmatch(job_id):
+        raise ForgeUnitIntegrationError("job_id must be a safe SkillFoundry job id")
+    if attempt_limit < 2:
+        raise ForgeUnitIntegrationError("repair pilot requires attempt_limit >= 2")
+    if not isinstance(build_command, str) or not build_command.strip():
+        raise ForgeUnitIntegrationError("build_command must be a non-empty explicit command bridge")
+    if not isinstance(repair_command, str) or not repair_command.strip():
+        raise ForgeUnitIntegrationError("repair_command must be a non-empty explicit command bridge")
+
+    runs_path = Path(runs_root)
+    workspace = JobWorkspace(root=runs_path / job_id, job_id=job_id)
+    build_node = build_forgeunit_codex_exec_node(
+        runs_path,
+        dry_run=False,
+        command=build_command,
+        unit_id=unit_id,
+    )
+    repair_node = build_forgeunit_codex_exec_node(
+        runs_path,
+        dry_run=False,
+        command=repair_command,
+        unit_id=unit_id,
+    )
+
+    first_build_state = build_node({"job_id": job_id, "attempt_limit": attempt_limit})
+    first_verified_state = _bridge_and_verify_forgeunit_attempt_state(
+        workspace,
+        first_build_state,
+        attempt_id=FORGEUNIT_SKILLFOUNDRY_ATTEMPT_ID,
+        created_at=created_at,
+    )
+    first_summary_ref = _archive_current_forgeunit_summary(
+        workspace,
+        FORGEUNIT_SKILLFOUNDRY_ATTEMPT_ID,
+    )
+    first_verification_ref, first_verification = _archive_current_verification_result(
+        workspace,
+        FORGEUNIT_SKILLFOUNDRY_ATTEMPT_ID,
+    )
+    if first_verification.passed:
+        raise ForgeUnitIntegrationError("repair pilot expected attempt 001 verifier failure")
+
+    repair_packet_ref = write_forgeunit_repair_packet(
+        workspace,
+        first_verified_state,
+        first_verification,
+        failed_attempt_id=FORGEUNIT_SKILLFOUNDRY_ATTEMPT_ID,
+        repair_attempt_id=FORGEUNIT_REPAIR_ATTEMPT_ID,
+        failed_summary_ref=first_summary_ref,
+        created_at=created_at,
+    )
+    repair_ready_state = _with_repair_packet_state(
+        workspace,
+        first_verified_state,
+        repair_packet_ref=repair_packet_ref,
+        first_summary_ref=first_summary_ref,
+        first_verification_ref=first_verification_ref,
+    )
+
+    repair_input_state: SkillFoundryV2State = dict(repair_ready_state)
+    repair_input_state["attempt_count"] = int(FORGEUNIT_REPAIR_ATTEMPT_ID)
+    second_build_state = repair_node(repair_input_state)
+    second_verified_state = _bridge_and_verify_forgeunit_attempt_state(
+        workspace,
+        second_build_state,
+        attempt_id=FORGEUNIT_REPAIR_ATTEMPT_ID,
+        created_at=created_at,
+    )
+    second_summary_ref = _archive_current_forgeunit_summary(workspace, FORGEUNIT_REPAIR_ATTEMPT_ID)
+    second_verification_ref, second_verification = _archive_current_verification_result(
+        workspace,
+        FORGEUNIT_REPAIR_ATTEMPT_ID,
+    )
+    if not second_verification.passed:
+        raise ForgeUnitIntegrationError("repair pilot expected attempt 002 verifier success")
+
+    repaired_state = _with_repair_success_state(
+        workspace,
+        second_verified_state,
+        second_summary_ref=second_summary_ref,
+        second_verification_ref=second_verification_ref,
+    )
+    registry_state = build_forgeunit_registry_gate_node(
+        runs_path,
+        registry_path=registry_path,
+        version=version,
+        created_at=created_at,
+    )(repaired_state)
+
+    refs = dict(registry_state.get("refs", {}))
+    refs["forgeunit_repair_graph_state"] = FORGEUNIT_REPAIR_GRAPH_STATE_REF
+    final_state: SkillFoundryV2State = dict(registry_state)
+    final_state.update(
+        {
+            "stage": V2Stage.EMIT_REPORT.value,
+            "status": V2Status.REPORT_EMITTED.value,
+            "refs": refs,
+            "human_review_required": False,
+            "next_route": V2Route.CONTINUE.value,
+        }
+    )
+    validate_v2_graph_state(final_state)
+    workspace.resolve_path("contextforge").mkdir(parents=True, exist_ok=True)
+    _write_json(workspace.resolve_path(FORGEUNIT_REPAIR_GRAPH_STATE_REF), final_state)
+    return final_state
+
+
+def _bridge_and_verify_forgeunit_attempt_state(
+    workspace: JobWorkspace,
+    state: Mapping[str, Any],
+    *,
+    attempt_id: str,
+    created_at: str | None,
+) -> SkillFoundryV2State:
+    bridge = bridge_forgeunit_success_to_skillfoundry_attempt(
+        workspace,
+        state,
+        attempt_id=attempt_id,
+        created_at=created_at,
+    )
+    _maybe_write_contextforge_frontdesk_boundary_evidence(workspace, created_at=created_at)
+    result = Verifier().verify(workspace, attempt_id=bridge.attempt_id)
+
+    refs_out = dict(state.get("refs", {}))
+    refs_out.update(
+        {
+            "forgeunit_attempt_input_manifest": bridge.input_manifest_ref,
+            "forgeunit_attempt_execution_report": bridge.execution_report_ref,
+            "forgeunit_attempt_transcript": bridge.transcript_ref,
+            "forgeunit_attempt_diff": bridge.diff_ref,
+            "skillfoundry_verification_result": FORGEUNIT_VERIFICATION_RESULT_REF,
+            "verification_result": FORGEUNIT_VERIFICATION_RESULT_REF,
+        }
+    )
+    if attempt_id == FORGEUNIT_REPAIR_ATTEMPT_ID:
+        refs_out.update(
+            {
+                "forgeunit_repair_attempt_input_manifest": bridge.input_manifest_ref,
+                "forgeunit_repair_attempt_execution_report": bridge.execution_report_ref,
+                "forgeunit_repair_attempt_transcript": bridge.transcript_ref,
+                "forgeunit_repair_attempt_diff": bridge.diff_ref,
+            }
+        )
+
+    hashes = dict(state.get("hashes", {}))
+    hashes.update(
+        {
+            "artifact_manifest": sha256_file(workspace.resolve_path(bridge.artifact_manifest_ref, must_exist=True)),
+            "forgeunit_attempt_input_manifest": sha256_file(
+                workspace.resolve_path(bridge.input_manifest_ref, must_exist=True)
+            ),
+            "forgeunit_attempt_execution_report": sha256_file(
+                workspace.resolve_path(bridge.execution_report_ref, must_exist=True)
+            ),
+            "forgeunit_attempt_transcript": sha256_file(workspace.resolve_path(bridge.transcript_ref, must_exist=True)),
+            "forgeunit_attempt_diff": sha256_file(workspace.resolve_path(bridge.diff_ref, must_exist=True)),
+            "skillfoundry_verification_result": sha256_file(
+                workspace.resolve_path(FORGEUNIT_VERIFICATION_RESULT_REF, must_exist=True)
+            ),
+            "verification_result": sha256_file(
+                workspace.resolve_path(FORGEUNIT_VERIFICATION_RESULT_REF, must_exist=True)
+            ),
+        }
+    )
+    if attempt_id == FORGEUNIT_REPAIR_ATTEMPT_ID:
+        hashes.update(
+            {
+                "forgeunit_repair_attempt_input_manifest": hashes["forgeunit_attempt_input_manifest"],
+                "forgeunit_repair_attempt_execution_report": hashes["forgeunit_attempt_execution_report"],
+                "forgeunit_repair_attempt_transcript": hashes["forgeunit_attempt_transcript"],
+                "forgeunit_repair_attempt_diff": hashes["forgeunit_attempt_diff"],
+            }
+        )
+
+    contextforge_out = dict(state.get("contextforge", {}))
+    contextforge_out.update(
+        {
+            "last_verification_result_id": result.result_id,
+            "last_verification_status": "passed" if result.passed else "failed",
+            "skillfoundry_verification_result_ref": FORGEUNIT_VERIFICATION_RESULT_REF,
+            "forgeunit_command_bridge_attempt_id": bridge.attempt_id,
+            "worker_self_report_is_not_acceptance": True,
+            "registry_approved": False,
+        }
+    )
+    if attempt_id == FORGEUNIT_REPAIR_ATTEMPT_ID:
+        contextforge_out["forgeunit_repair_attempt_id"] = attempt_id
+
+    status = V2Status.VERIFIED.value if result.passed else V2Status.VERIFICATION_FAILED.value
+    route_state = dict(state)
+    route_state.update({"status": status, "contextforge": contextforge_out})
+    next_state: SkillFoundryV2State = dict(state)
+    next_state.update(
+        {
+            "schema_version": str(state.get("schema_version") or "skillfoundry.graph_v2_state.v1"),
+            "job_id": workspace.job_id,
+            "stage": V2Stage.VERIFY.value,
+            "status": status,
+            "attempt_count": max(int(state.get("attempt_count", 0)), int(attempt_id)),
+            "attempt_limit": int(state.get("attempt_limit", 1)),
+            "refs": refs_out,
+            "hashes": hashes,
+            "contextforge": contextforge_out,
+            "human_review_required": False,
+            "next_route": route_after_verification(route_state),
+        }
+    )
+    validate_v2_graph_state(next_state)
+    return next_state
+
+
+def _maybe_write_contextforge_frontdesk_boundary_evidence(
+    workspace: JobWorkspace,
+    *,
+    created_at: str | None,
+) -> None:
+    raw_path = workspace.root.joinpath(*Path(_FRONTDESK_CONVERSATION_REF).parts)
+    if not raw_path.is_file():
+        return
+
+    timestamp = created_at or utc_now()
+    run_id = f"{workspace.job_id}-forgeunit-context-boundary"
+    try:
+        contracts = write_contextforge_contract_artifacts(workspace, created_at=timestamp)
+        ledger = ContextLedger.connect(workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF))
+        ledger.initialize()
+        try:
+            seed_goal_harness_context(
+                workspace,
+                ledger,
+                contracts,
+                run_id=run_id,
+                created_at=timestamp,
+                task_id=_FORGEUNIT_CONTEXT_TASK_ID,
+                node_id=_FORGEUNIT_CONTEXT_NODE_ID,
+            )
+            compiled_context = ContextKernel(ledger).prepare_goal_context(
+                contracts.goal_contract,
+                contracts.build_node_contract,
+                graph_id=_FORGEUNIT_CONTEXT_GRAPH_ID,
+                run_id=run_id,
+                task_id=_FORGEUNIT_CONTEXT_TASK_ID,
+                created_at=timestamp,
+                metadata={
+                    "skillfoundry_job_id": workspace.job_id,
+                    "worker_boundary": "forgeunit_codex_exec_command_bridge",
+                    "raw_frontdesk_conversation_policy": "forbidden_from_prompt",
+                },
+            )
+        finally:
+            ledger.close()
+    except Exception as exc:
+        raise ForgeUnitIntegrationError(f"ContextForge FrontDesk boundary evidence failed: {exc}") from exc
+
+    state_payload = {
+        "schema_version": GOAL_RUNTIME_STATE_SCHEMA_VERSION,
+        "job_id": workspace.job_id,
+        "stage": "build",
+        "status": "context_boundary_prepared",
+        "attempt_count": 1,
+        "refs": {
+            "goal_contract": GOAL_CONTRACT_REF,
+            "build_node_contract": BUILD_NODE_CONTRACT_REF,
+            "verification_gate": VERIFICATION_GATE_REF,
+            "contract_manifest": CONTRACT_MANIFEST_REF,
+            "ledger": GOAL_RUNTIME_LEDGER_REF,
+            "runtime_result": GOAL_RUNTIME_RESULT_REF,
+        },
+        "hashes": {
+            "goal_contract": contracts.goal_contract.contract_hash,
+            "build_node_contract": contracts.build_node_contract.contract_hash,
+            "verification_gate": contracts.verification_gate.gate_hash,
+        },
+        "contextforge": {
+            "last_context_view_id": compiled_context.context_view.context_view_id,
+            "last_prompt_cache_plan_id": compiled_context.cache_plan.cache_plan_id,
+            "forgeunit_context_boundary": True,
+            "raw_frontdesk_conversation_forbidden": True,
+        },
+        "next_route": "verify",
+        "created_at": timestamp,
+    }
+    workspace.resolve_path("contextforge").mkdir(parents=True, exist_ok=True)
+    _write_json(workspace.resolve_path(GOAL_RUNTIME_STATE_REF), state_payload)
+
+
+def _archive_current_forgeunit_summary(workspace: JobWorkspace, attempt_id: str) -> str:
+    archive_ref = _forgeunit_summary_archive_ref(attempt_id)
+    payload = _read_json_object(
+        workspace.resolve_path(FORGEUNIT_SUMMARY_REF, must_exist=True),
+        "ForgeUnit summary",
+    )
+    _write_json(workspace.resolve_path(archive_ref), payload)
+    _upsert_manifest_records(
+        workspace,
+        [FORGEUNIT_SUMMARY_REF, archive_ref],
+        created_by="skillfoundry.forgeunit_adapter",
+    )
+    return archive_ref
+
+
+def _archive_current_verification_result(
+    workspace: JobWorkspace,
+    attempt_id: str,
+) -> tuple[str, VerificationResult]:
+    result = VerificationResult.read_json_file(
+        workspace.resolve_path(FORGEUNIT_VERIFICATION_RESULT_REF, must_exist=True)
+    )
+    archive_ref = _verification_archive_ref(attempt_id)
+    result.write_json_file(workspace.resolve_path(archive_ref))
+    _upsert_manifest_records(
+        workspace,
+        [
+            FORGEUNIT_VERIFICATION_RESULT_REF,
+            archive_ref,
+            "verifier/static_report.json",
+            "verifier/sandbox.log",
+        ],
+        created_by="skillfoundry.forgeunit_adapter",
+    )
+    return archive_ref, result
+
+
+def _with_repair_packet_state(
+    workspace: JobWorkspace,
+    state: Mapping[str, Any],
+    *,
+    repair_packet_ref: str,
+    first_summary_ref: str,
+    first_verification_ref: str,
+) -> SkillFoundryV2State:
+    refs = dict(state.get("refs", {}))
+    refs.update(
+        {
+            "forgeunit_repair_packet": repair_packet_ref,
+            "forgeunit_initial_summary": first_summary_ref,
+            "forgeunit_initial_verification_result": first_verification_ref,
+        }
+    )
+    hashes = dict(state.get("hashes", {}))
+    hashes.update(
+        {
+            "forgeunit_repair_packet": sha256_file(workspace.resolve_path(repair_packet_ref, must_exist=True)),
+            "forgeunit_initial_summary": sha256_file(workspace.resolve_path(first_summary_ref, must_exist=True)),
+            "forgeunit_initial_verification_result": sha256_file(
+                workspace.resolve_path(first_verification_ref, must_exist=True)
+            ),
+        }
+    )
+    contextforge = dict(state.get("contextforge", {}))
+    contextforge.update(
+        {
+            "forgeunit_repair_packet_ref": repair_packet_ref,
+            "forgeunit_repair_failed_attempt_id": FORGEUNIT_SKILLFOUNDRY_ATTEMPT_ID,
+            "forgeunit_repair_attempt_id": FORGEUNIT_REPAIR_ATTEMPT_ID,
+            "forgeunit_repair_status": "repair_packet_written",
+        }
+    )
+    next_state: SkillFoundryV2State = dict(state)
+    next_state.update(
+        {
+            "stage": V2Stage.REPAIR_GOAL_NODE.value,
+            "status": V2Status.REPAIR_PLANNED.value,
+            "refs": refs,
+            "hashes": hashes,
+            "contextforge": contextforge,
+            "human_review_required": False,
+            "next_route": V2Route.CONTINUE.value,
+        }
+    )
+    validate_v2_graph_state(next_state)
+    return next_state
+
+
+def _with_repair_success_state(
+    workspace: JobWorkspace,
+    state: Mapping[str, Any],
+    *,
+    second_summary_ref: str,
+    second_verification_ref: str,
+) -> SkillFoundryV2State:
+    refs = dict(state.get("refs", {}))
+    refs.update(
+        {
+            "forgeunit_repair_summary": second_summary_ref,
+            "forgeunit_repair_verification_result": second_verification_ref,
+        }
+    )
+    hashes = dict(state.get("hashes", {}))
+    hashes.update(
+        {
+            "forgeunit_repair_summary": sha256_file(workspace.resolve_path(second_summary_ref, must_exist=True)),
+            "forgeunit_repair_verification_result": sha256_file(
+                workspace.resolve_path(second_verification_ref, must_exist=True)
+            ),
+        }
+    )
+    contextforge = dict(state.get("contextforge", {}))
+    contextforge.update(
+        {
+            "forgeunit_repair_attempt_id": FORGEUNIT_REPAIR_ATTEMPT_ID,
+            "forgeunit_repair_status": "repaired_and_verified",
+        }
+    )
+    next_state: SkillFoundryV2State = dict(state)
+    next_state.update({"refs": refs, "hashes": hashes, "contextforge": contextforge})
+    validate_v2_graph_state(next_state)
+    return next_state
+
+
+def _failed_primary_check_names(result: VerificationResult) -> list[str]:
+    names: list[str] = []
+    for check in result.checks:
+        if not isinstance(check, Mapping):
+            continue
+        if check.get("severity") != "error" or check.get("passed") is not False:
+            continue
+        name = check.get("name")
+        if isinstance(name, str) and name and name not in names:
+            names.append(name)
+    return names
+
+
+def _verification_archive_ref(attempt_id: str) -> str:
+    return f"attempts/{attempt_id}/verification_result.json"
+
+
+def _forgeunit_summary_archive_ref(attempt_id: str) -> str:
+    return f"attempts/{attempt_id}/forgeunit_summary.json"
 
 
 def _read_json_object(path: Path, label: str) -> dict[str, Any]:

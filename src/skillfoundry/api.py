@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 from uuid import uuid4
@@ -64,10 +65,16 @@ FRONTDESK_CORE_NEED_BRIEF_REF = "frontdesk/core_need_brief.json"
 FRONTDESK_SOLUTION_PLAN_REF = "frontdesk/solution_plan.json"
 FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF = "frontdesk/solution_plan.md"
 PLAN_REVIEW_REF_TEMPLATE = "frontdesk/plan_review_{sequence:03d}.json"
+BUILD_PATH_FORGEUNIT_SKILLFOUNDRY = "forgeunit_skillfoundry_vnext"
 BUILD_PATH_GRAPH_V2 = "graph_v2_goal_harness"
 BUILD_PATH_LEGACY_COMPATIBILITY = "legacy_offline_compatibility"
 BUILD_PATH_WORKSPACE_ONLY = "workspace_only"
+FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF = "contextforge/forgeunit_skillfoundry_summary.json"
+FORGEUNIT_SKILLFOUNDRY_PRODUCT_STATE_REF = "contextforge/forgeunit_skillfoundry_product_state.json"
+FORGEUNIT_SKILLFOUNDRY_GRAPH_STATE_REF = "contextforge/forgeunit_skillfoundry_graph_state.json"
 ALLOW_LEGACY_OFFLINE_JOBS_ENV = "SKILLFOUNDRY_ALLOW_LEGACY_OFFLINE_JOBS"
+FORGEUNIT_COMMAND_ENV = "SKILLFOUNDRY_FORGEUNIT_COMMAND"
+FORGEUNIT_REPAIR_COMMAND_ENV = "SKILLFOUNDRY_FORGEUNIT_REPAIR_COMMAND"
 FrontDeskClientFactory = Callable[[str, str, int], Any]
 
 
@@ -126,6 +133,8 @@ class SkillFoundryAPI:
         frontdesk_client_factory: FrontDeskClientFactory | None = None,
         frontdesk_model: str | None = None,
         allow_legacy_offline_jobs: bool | None = None,
+        forgeunit_command: str | None = None,
+        forgeunit_repair_command: str | None = None,
     ) -> None:
         self.runs_root = Path(runs_root).expanduser()
         self.runs_root.mkdir(parents=True, exist_ok=True)
@@ -133,11 +142,24 @@ class SkillFoundryAPI:
         self.registry_path = self._resolve_registry_path(registry_path)
         self.frontdesk_client_factory = frontdesk_client_factory
         self.frontdesk_model = frontdesk_model or os.environ.get("SKILLFOUNDRY_FRONTDESK_MODEL", DEFAULT_FRONTDESK_MODEL)
+        self.forgeunit_command = self._configured_command_value(forgeunit_command, FORGEUNIT_COMMAND_ENV)
+        self.forgeunit_repair_command = self._configured_command_value(
+            forgeunit_repair_command,
+            FORGEUNIT_REPAIR_COMMAND_ENV,
+        )
         self.allow_legacy_offline_jobs = (
             _query_bool(os.environ.get(ALLOW_LEGACY_OFFLINE_JOBS_ENV, ""))
             if allow_legacy_offline_jobs is None
             else bool(allow_legacy_offline_jobs)
         )
+
+    def _configured_command_value(self, value: str | None, env_name: str) -> str | None:
+        if value is not None:
+            return value
+        env_value = os.environ.get(env_name)
+        if env_value is None or not env_value.strip():
+            return None
+        return env_value
 
     def create_job(self, payload: Mapping[str, Any]) -> dict[str, JsonValue]:
         """Create one synchronous offline job from a JSON-like payload."""
@@ -425,7 +447,7 @@ class SkillFoundryAPI:
         return self._frontdesk_payload(safe_job_id, result=result)
 
     def build_frontdesk_job(self, job_id: str, payload: Mapping[str, Any] | None = None) -> dict[str, JsonValue]:
-        """Run a frozen Front Desk job through the v2 graph build/verify/register path."""
+        """Run a frozen Front Desk job through the configured build/verify/register path."""
 
         if payload is not None and not isinstance(payload, Mapping):
             raise APIError(400, "invalid_json", "request body must be a JSON object")
@@ -444,6 +466,82 @@ class SkillFoundryAPI:
                 "frontdesk job must be approved and frozen before build",
             )
         attempt_limit = self._coerce_attempt_limit(payload.get("attempt_limit", 2))
+        build_mode = self._coerce_frontdesk_build_mode(payload.get("build_mode") or payload.get("mode"))
+        if build_mode == BUILD_PATH_GRAPH_V2:
+            return self._build_frontdesk_job_graph_v2(
+                safe_job_id,
+                state=state,
+                attempt_limit=attempt_limit,
+            )
+
+        command, repair_command = self._frontdesk_forgeunit_commands(workspace, payload)
+        version = self._optional_non_empty_str(payload.get("version"), "version")
+        created_at = self._optional_non_empty_str(payload.get("created_at"), "created_at")
+        try:
+            from forgeunit_skillfoundry import read_evidence_summary, run_frozen_frontdesk_skill_factory
+
+            run_frozen_frontdesk_skill_factory(
+                workspace,
+                registry_path=self.registry_path,
+                command=command,
+                repair_command=repair_command,
+                attempt_limit=attempt_limit,
+                version=version or "frontdesk-forgeunit-vnext",
+                created_at=created_at,
+            )
+        except Exception as exc:
+            raise APIError(
+                500,
+                "frontdesk_build_failed",
+                "frontdesk ForgeUnit vNext build failed before producing a verified refs-only result",
+            ) from exc
+
+        final_report = self._try_read_report(safe_job_id)
+        if final_report is None:
+            raise APIError(
+                500,
+                "frontdesk_build_missing_report",
+                "frontdesk ForgeUnit vNext build did not write final_report",
+            )
+        try:
+            summary = read_evidence_summary(workspace)
+        except Exception as exc:
+            raise APIError(
+                500,
+                "frontdesk_build_missing_summary",
+                "frontdesk ForgeUnit vNext build did not write a valid refs-only summary",
+            ) from exc
+        contextforge_status = self.get_contextforge_status(safe_job_id)
+        result: dict[str, Any] = {
+            "schema_version": "skillfoundry.api.frontdesk_build.v1",
+            "job_id": safe_job_id,
+            "status": str(final_report.get("final_status") or summary.get("status") or "unknown"),
+            "frontdesk_status": state.next_action,
+            "build_path": self._build_path_summary(safe_job_id),
+            "forgeunit_skillfoundry_summary_ref": FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF,
+            "forgeunit_skillfoundry_summary": summary,
+            "forgeunit_skillfoundry_graph_state_ref": FORGEUNIT_SKILLFOUNDRY_GRAPH_STATE_REF,
+            "forgeunit_skillfoundry_product_state_ref": FORGEUNIT_SKILLFOUNDRY_PRODUCT_STATE_REF,
+            "graph_v2_state_ref": None,
+            "final_report": final_report,
+            "contextforge_status": contextforge_status,
+            "links": {
+                "job": f"/jobs/{safe_job_id}",
+                "report": f"/jobs/{safe_job_id}/report",
+                "contextforge": f"/jobs/{safe_job_id}/contextforge",
+                "frontdesk": f"/frontdesk/jobs/{safe_job_id}",
+                "package": f"/jobs/{safe_job_id}/package.zip",
+            },
+        }
+        return ensure_json_compatible(result)  # type: ignore[return-value]
+
+    def _build_frontdesk_job_graph_v2(
+        self,
+        safe_job_id: str,
+        *,
+        state: FrontDeskState,
+        attempt_limit: int,
+    ) -> dict[str, JsonValue]:
         try:
             graph_state = run_verified_skillfoundry_v2_graph(
                 self._runs_root_resolved,
@@ -478,6 +576,82 @@ class SkillFoundryAPI:
             },
         }
         return ensure_json_compatible(result)  # type: ignore[return-value]
+
+    def _coerce_frontdesk_build_mode(self, value: Any) -> str:
+        if value is None or value == "":
+            return BUILD_PATH_FORGEUNIT_SKILLFOUNDRY
+        if not isinstance(value, str):
+            raise APIError(400, "invalid_build_mode", "build_mode must be a string")
+        normalized = value.strip().lower().replace("-", "_")
+        if normalized in {"forgeunit", "forgeunit_vnext", "forgeunit_skillfoundry", "forgeunit_skillfoundry_vnext"}:
+            return BUILD_PATH_FORGEUNIT_SKILLFOUNDRY
+        if normalized in {"graph_v2", "legacy_graph_v2", "graph_v2_goal_harness"}:
+            return BUILD_PATH_GRAPH_V2
+        raise APIError(400, "invalid_build_mode", f"unknown build_mode: {value}")
+
+    def _frontdesk_forgeunit_commands(
+        self,
+        workspace: JobWorkspace,
+        payload: Mapping[str, Any],
+    ) -> tuple[str, str | None]:
+        fake_mode = self._optional_non_empty_str(payload.get("fake_mode"), "fake_mode")
+        command = self._optional_non_empty_str(payload.get("command"), "command")
+        repair_command = self._optional_non_empty_str(payload.get("repair_command"), "repair_command")
+        configured_command = self._optional_non_empty_str(self.forgeunit_command, "forgeunit_command")
+        configured_repair_command = self._optional_non_empty_str(
+            self.forgeunit_repair_command,
+            "forgeunit_repair_command",
+        )
+        if fake_mode and (command or repair_command):
+            raise APIError(400, "ambiguous_worker_command", "fake_mode cannot be combined with command fields")
+        if fake_mode is not None:
+            return self._frontdesk_fake_forgeunit_commands(workspace, fake_mode)
+        if command is not None:
+            return command, repair_command
+        if configured_command is not None:
+            return configured_command, repair_command or configured_repair_command
+        return self._frontdesk_fake_forgeunit_commands(workspace, "happy")
+
+    def _frontdesk_fake_forgeunit_commands(
+        self,
+        workspace: JobWorkspace,
+        fake_mode: str,
+    ) -> tuple[str, str | None]:
+        from forgeunit_skillfoundry.testing import (
+            INVALID_CODEX_SKILL,
+            VALID_CODEX_SKILL,
+            write_fake_codex_exec_command,
+        )
+
+        normalized = fake_mode.strip().lower().replace("-", "_")
+        if normalized == "happy":
+            script = write_fake_codex_exec_command(
+                workspace.root,
+                script_name="fake_api_codex_exec.py",
+            )
+            return f"{sys.executable} {script.name}", None
+        if normalized == "repair":
+            bad_script = write_fake_codex_exec_command(
+                workspace.root,
+                skill_text=INVALID_CODEX_SKILL,
+                script_name="fake_api_bad_codex_exec.py",
+            )
+            repair_script = write_fake_codex_exec_command(
+                workspace.root,
+                skill_text=VALID_CODEX_SKILL,
+                script_name="fake_api_repair_codex_exec.py",
+            )
+            return f"{sys.executable} {bad_script.name}", f"{sys.executable} {repair_script.name}"
+        raise APIError(400, "invalid_fake_mode", "fake_mode must be happy or repair")
+
+    def _optional_non_empty_str(self, value: Any, field_name: str) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise APIError(400, f"invalid_{field_name}", f"{field_name} must be a string")
+        if not value.strip():
+            raise APIError(400, f"invalid_{field_name}", f"{field_name} must be non-empty when provided")
+        return value
 
     def get_frontdesk_job(self, job_id: str) -> dict[str, JsonValue]:
         """Return Front Desk state, questions, and artifact refs for one job."""
@@ -526,6 +700,11 @@ class SkillFoundryAPI:
         workspace = JobWorkspace(root=job_root, job_id=safe_job_id)
         runtime_result = self._read_optional_json_ref(workspace, GOAL_RUNTIME_RESULT_REF)
         graph_state = self._read_optional_json_ref(workspace, GOAL_RUNTIME_STATE_REF)
+        forgeunit_summary_read = self._read_optional_json_ref_status(
+            workspace,
+            FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF,
+        )
+        forgeunit_summary = forgeunit_summary_read.payload if forgeunit_summary_read.valid else None
         graph_v2_state_read = self._read_optional_json_ref_status(workspace, GRAPH_V2_STATE_REF)
         graph_v2_state = graph_v2_state_read.payload if graph_v2_state_read.valid else None
         graph_v2_state_valid = (
@@ -578,6 +757,18 @@ class SkillFoundryAPI:
                 "goal_runtime_state": self._artifact_ref_status(workspace, GOAL_RUNTIME_STATE_REF),
                 "verified_runtime_result": self._artifact_ref_status(workspace, VERIFIED_GOAL_RUNTIME_RESULT_REF),
                 "graph_v2_state": self._artifact_ref_status(workspace, GRAPH_V2_STATE_REF),
+                "forgeunit_skillfoundry_summary": self._artifact_ref_status(
+                    workspace,
+                    FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF,
+                ),
+                "forgeunit_skillfoundry_product_state": self._artifact_ref_status(
+                    workspace,
+                    FORGEUNIT_SKILLFOUNDRY_PRODUCT_STATE_REF,
+                ),
+                "forgeunit_skillfoundry_graph_state": self._artifact_ref_status(
+                    workspace,
+                    FORGEUNIT_SKILLFOUNDRY_GRAPH_STATE_REF,
+                ),
                 "goal_runtime_ledger": self._artifact_ref_status(workspace, GOAL_RUNTIME_LEDGER_REF),
                 "contextforge_verification_result": contextforge_verification_ref_status,
                 "frontdesk_v2_goal_contract": self._artifact_ref_status(workspace, FRONTDESK_V2_GOAL_CONTRACT_REF),
@@ -592,6 +783,7 @@ class SkillFoundryAPI:
                 "runtime": _json_mapping(runtime_result.get("status")) if runtime_result else {},
                 "graph": _json_mapping(graph_state.get("contextforge")) if graph_state else {},
                 "graph_v2": _graph_v2_status_summary(graph_v2_state),
+                "forgeunit_skillfoundry": _forgeunit_skillfoundry_status_summary(forgeunit_summary),
                 "verification": {
                     "status": verification_status,
                     "passed": verification_passed,
@@ -2061,23 +2253,34 @@ class SkillFoundryAPI:
 
     def _build_path_summary(self, job_id: str) -> dict[str, JsonValue]:
         job_root = self._job_root(job_id)
+        workspace = JobWorkspace(root=job_root, job_id=job_id)
+        forgeunit_summary_read = self._read_optional_json_ref_status(workspace, FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF)
         graph_v2_state_path = job_root / GRAPH_V2_STATE_REF
         final_report_path = job_root / "final_report.json"
+        forgeunit_summary_valid = forgeunit_summary_read.valid
         graph_v2_state_valid = self._graph_v2_state_file_valid(job_id) if graph_v2_state_path.is_file() else False
-        if graph_v2_state_valid:
+        if forgeunit_summary_valid:
+            mode = BUILD_PATH_FORGEUNIT_SKILLFOUNDRY
+        elif graph_v2_state_valid:
             mode = BUILD_PATH_GRAPH_V2
         elif final_report_path.is_file():
             mode = BUILD_PATH_LEGACY_COMPATIBILITY
         else:
             mode = BUILD_PATH_WORKSPACE_ONLY
-        canonical = mode == BUILD_PATH_GRAPH_V2
+        canonical = mode in {BUILD_PATH_FORGEUNIT_SKILLFOUNDRY, BUILD_PATH_GRAPH_V2}
         return ensure_json_compatible(
             {
                 "mode": mode,
                 "canonical": canonical,
                 "legacy_compatibility": mode == BUILD_PATH_LEGACY_COMPATIBILITY,
                 "canonical_entrypoint": "POST /frontdesk/jobs/{job_id}/build",
-                "graph_v2_state_ref": GRAPH_V2_STATE_REF if canonical else None,
+                "forgeunit_skillfoundry_summary_ref": (
+                    FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF if mode == BUILD_PATH_FORGEUNIT_SKILLFOUNDRY else None
+                ),
+                "forgeunit_skillfoundry_summary_valid": (
+                    forgeunit_summary_read.valid if forgeunit_summary_read.exists else None
+                ),
+                "graph_v2_state_ref": GRAPH_V2_STATE_REF if mode == BUILD_PATH_GRAPH_V2 else None,
                 "graph_v2_state_valid": graph_v2_state_valid if graph_v2_state_path.exists() else None,
             }
         )  # type: ignore[return-value]
@@ -2534,7 +2737,7 @@ class SkillFoundryAPI:
             [
                 f'<form class="answer-form" method="post" action="/frontdesk/jobs/{escape(job_id)}/build">',
                 "  <button type=\"submit\">开始构建和验收</button>",
-                '  <div class="small muted" data-submit-status>将通过 graph_v2、ContextForge Goal Harness、Verifier 和 Registry 运行。</div>',
+                '  <div class="small muted" data-submit-status>将通过 ForgeUnit vNext、Verifier 和 Registry 运行。</div>',
                 "</form>",
             ]
         )
@@ -2894,6 +3097,25 @@ def _graph_v2_status_summary(state: Mapping[str, Any] | None) -> dict[str, JsonV
             ),
             "registry_skill_id": _nested_json_str(state, ("contextforge", "registry_skill_id")),
             "registry_version": _nested_json_str(state, ("contextforge", "registry_version")),
+        }
+    )  # type: ignore[return-value]
+
+
+def _forgeunit_skillfoundry_status_summary(summary: Mapping[str, Any] | None) -> dict[str, JsonValue]:
+    if not isinstance(summary, Mapping):
+        return {}
+    return ensure_json_compatible(
+        {
+            "stage": _json_str(summary.get("stage")),
+            "status": _json_str(summary.get("status")),
+            "mode": _json_str(summary.get("mode")),
+            "verification_status": _nested_json_str(summary, ("verification", "status")),
+            "verification_passed": _nested_json_bool(summary, ("verification", "passed")),
+            "registry_approved": _nested_json_bool(summary, ("registry", "approved")),
+            "registry_skill_id": _nested_json_str(summary, ("registry", "skill_id")),
+            "registry_version": _nested_json_str(summary, ("registry", "version")),
+            "command_string_included": _nested_json_bool(summary, ("trust_boundaries", "command_string_included")),
+            "raw_worker_input_included": _nested_json_bool(summary, ("trust_boundaries", "raw_worker_input_included")),
         }
     )  # type: ignore[return-value]
 

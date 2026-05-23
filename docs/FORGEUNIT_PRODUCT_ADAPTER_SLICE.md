@@ -2,7 +2,7 @@
 
 Last updated: 2026-05-23
 
-Status: first code integration slice plus offline command-bridge pilot
+Status: first code integration slice plus offline command-bridge, repair, and acceptance-coverage bridge pilots
 
 ## Goal
 
@@ -41,6 +41,8 @@ It provides:
 - `run_forgeunit_pilot_graph(runs_root, job_id, dry_run=True, command=None)`
 - `compile_forgeunit_command_bridge_pilot_graph(runs_root, registry_path=..., command=...)`
 - `run_forgeunit_command_bridge_pilot_graph(runs_root, job_id, registry_path=..., command=...)`
+- `write_forgeunit_repair_packet(workspace, state, verification_result, ...)`
+- `run_forgeunit_repair_pilot_graph(runs_root, job_id, registry_path=..., build_command=..., repair_command=...)`
 
 The adapter depends on ForgeUnit v1.2. For local development with the sibling
 checkout:
@@ -211,6 +213,44 @@ Only after that does the independent SkillFoundry verifier write
 `verifier/verification_result.json`, and only a passing verifier result can enter
 the registry gate.
 
+If a workspace contains root `acceptance_criteria.yaml`, the ForgeUnit registry
+gate now writes deterministic acceptance coverage before calling
+`LocalSkillRegistry.add_verified(...)`:
+
+```text
+qa/acceptance_coverage_plan.json
+qa/acceptance_coverage_result.json
+```
+
+This is required for frozen FrontDesk workspaces because the existing registry
+gate refuses to approve packages with acceptance criteria unless coverage
+evidence is present and passing. The coverage result is evidence, not model
+self-report.
+
+The adapter now also includes a minimal offline repair pilot:
+
+```text
+Initialized SkillFoundry JobWorkspace
+  -> first ForgeUnit codex_exec command bridge
+  -> ForgeUnit-valid package + evidence
+  -> attempts/001 SkillFoundry evidence bridge
+  -> Verifier().verify(... attempt_id="001") fails
+  -> contextforge/forgeunit_repair_packet.json
+  -> second ForgeUnit codex_exec command bridge
+  -> attempts/002 SkillFoundry evidence bridge
+  -> Verifier().verify(... attempt_id="002") passes
+  -> LocalSkillRegistry.add_verified(...)
+  -> final_report.json
+```
+
+This is deliberately a thin pilot, not a production scheduler or general repair
+framework. It uses the existing ForgeUnit command boundary twice and lets
+SkillFoundry's verifier remain the acceptance gate. The repair packet is
+refs-only: it points at archived attempt evidence such as
+`attempts/001/verification_result.json` and
+`attempts/001/forgeunit_summary.json`, but it does not inline raw prompt, raw
+transcript, raw worker input, or package body.
+
 For a manual real Codex exec probe, see:
 
 ```text
@@ -233,6 +273,8 @@ This slice does not add:
 - full replacement of `graph_v2.py`;
 - long-term memory;
 - a scheduler, queue, daemon, or worker pool.
+- a production-grade multi-attempt repair policy beyond the single deterministic
+  `001` failure -> `002` repair pilot.
 
 ## Verification
 
@@ -252,6 +294,9 @@ The tests prove:
 - the offline command-bridge pilot can run a local fake Codex command through
   ForgeUnit, bridge the result into SkillFoundry verifier evidence, and register
   only after `Verifier` passes;
+- the offline repair pilot can fail attempt `001`, write a refs-only repair
+  packet, repair through attempt `002`, and register only after the repaired
+  verifier result passes;
 - SkillFoundry graph state remains refs-only;
 - raw requirement bodies, raw prompts, raw transcripts, and package bodies are
   not inlined into state or summaries.

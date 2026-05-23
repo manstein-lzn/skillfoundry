@@ -1,8 +1,17 @@
 import json
+from pathlib import Path
+import sys
 
 from contextforge.schema import ModelResponse
 
-from skillfoundry.api import SkillFoundryAPI
+from forgeunit_skillfoundry import (
+    FORGEUNIT_SKILLFOUNDRY_GRAPH_STATE_REF,
+    FORGEUNIT_SKILLFOUNDRY_PRODUCT_STATE_REF,
+    FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF,
+    GRAPH_STATE_SCHEMA_VERSION,
+)
+from forgeunit_skillfoundry.testing import VALID_CODEX_SKILL
+from skillfoundry.api import FORGEUNIT_COMMAND_ENV, SkillFoundryAPI
 from skillfoundry import GRAPH_V2_STATE_REF, validate_v2_graph_state
 from skillfoundry.frontdesk_goal_runtime import (
     FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF,
@@ -30,6 +39,107 @@ class ScriptedModelClient:
             None,
             None,
         )
+
+
+def _write_api_configured_worker(tmp_path: Path, *, transcript_marker: str) -> Path:
+    script = tmp_path / "configured_forgeunit_worker.py"
+    script.write_text(
+        f"""
+from pathlib import Path
+import json
+import os
+import sys
+
+_ = sys.stdin.read()
+task_dir = Path(os.environ["FORGEUNIT_TASK_DIR"])
+worker_result = Path(os.environ["FORGEUNIT_WORKER_RESULT"])
+unit_id = os.environ["FORGEUNIT_UNIT"]
+
+(task_dir / "package").mkdir(exist_ok=True)
+(task_dir / "evidence").mkdir(exist_ok=True)
+(task_dir / "package" / "SKILL.md").write_text({VALID_CODEX_SKILL!r}, encoding="utf-8")
+(task_dir / "evidence" / "transcript.md").write_text({transcript_marker!r} + "\\n", encoding="utf-8")
+(task_dir / "evidence" / "manifest.json").write_text(json.dumps({{
+    "schema": "forgeunit.worker_evidence_manifest",
+    "version": "0.6",
+    "unit_id": unit_id,
+    "status": "completed",
+    "output_artifacts": [
+        {{"path": "package/SKILL.md", "kind": "codex_skill", "summary": "configured fixture skill package"}}
+    ],
+    "evidence_artifacts": [
+        {{"path": "evidence/transcript.md", "kind": "transcript", "summary": "configured fixture transcript"}}
+    ],
+    "changed_files": ["package/SKILL.md", "evidence/transcript.md", "evidence/manifest.json"],
+    "commands": [{{"command": "configured test worker", "exit_code": 0, "summary": "configured worker passed"}}],
+    "usage": None,
+    "usage_unavailable_reason": "external_worker_no_provider_telemetry"
+}}, indent=2), encoding="utf-8")
+worker_result.write_text(json.dumps({{
+    "status": "completed",
+    "output_artifacts": [
+        {{"path": "package/SKILL.md", "kind": "codex_skill", "summary": "configured fixture skill package"}}
+    ],
+    "boundary_evidence": [
+        {{"path": "evidence/transcript.md", "kind": "transcript", "summary": "configured fixture transcript"}},
+        {{"path": "evidence/manifest.json", "kind": "worker_evidence_manifest", "summary": "manifest"}}
+    ],
+    "changed_files": ["package/SKILL.md", "evidence/transcript.md", "evidence/manifest.json"],
+    "usage": None,
+    "usage_unavailable_reason": "external_worker_no_provider_telemetry"
+}}, indent=2), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+    return script
+
+
+def _write_api_failing_worker(
+    tmp_path: Path,
+    *,
+    stdout_marker: str,
+    stderr_marker: str,
+    transcript_marker: str,
+) -> Path:
+    script = tmp_path / "real_failing_forgeunit_worker.py"
+    script.write_text(
+        f"""
+from pathlib import Path
+import os
+import sys
+
+task_dir = Path(os.environ["FORGEUNIT_TASK_DIR"])
+(task_dir / "evidence").mkdir(exist_ok=True)
+(task_dir / "evidence" / "transcript.md").write_text({transcript_marker!r} + "\\n", encoding="utf-8")
+print({stdout_marker!r})
+print({stderr_marker!r}, file=sys.stderr)
+raise SystemExit(17)
+""".strip(),
+        encoding="utf-8",
+    )
+    return script
+
+
+def _create_and_approve_frontdesk_job(
+    api: SkillFoundryAPI,
+    job_id: str,
+    *,
+    message: str = "Build a governed status skill.",
+) -> None:
+    created = api.handle(
+        "POST",
+        "/frontdesk/jobs",
+        body={"job_id": job_id, "message": message},
+    ).json()
+    assert created["status"] == "await_user_plan_review"
+
+    approved = api.handle(
+        "POST",
+        f"/frontdesk/jobs/{job_id}/plan-review",
+        body={"decision": "approve", "reason": "The governed plan is ready to build."},
+    ).json()
+    assert approved["status"] == "route_to_build"
+    assert approved["state"]["readiness"] == "frozen"
 
 
 def _needs_clarification_payload():
@@ -369,11 +479,11 @@ def test_frontdesk_api_requires_consistent_frozen_route_to_build_state(tmp_path,
     assert "/build" not in html
 
 
-def test_frontdesk_api_builds_frozen_job_through_graph_v2_without_raw_leakage(tmp_path, monkeypatch):
+def test_frontdesk_api_builds_frozen_job_through_forgeunit_vnext_without_raw_leakage(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     api = SkillFoundryAPI(tmp_path / "runs")
-    marker = "RAW_API_GRAPH_V2_MARKER_SHOULD_NOT_LEAK"
-    job_id = "frontdesk-graph-v2-build"
+    marker = "RAW_API_FORGEUNIT_VNEXT_MARKER_SHOULD_NOT_LEAK"
+    job_id = "frontdesk-forgeunit-vnext-build"
 
     created = api.handle(
         "POST",
@@ -397,40 +507,52 @@ def test_frontdesk_api_builds_frozen_job_through_graph_v2_without_raw_leakage(tm
     payload = build_response.json()
     assert payload["schema_version"] == "skillfoundry.api.frontdesk_build.v1"
     assert payload["status"] == "registered"
-    assert payload["build_path"]["mode"] == "graph_v2_goal_harness"
+    assert payload["build_path"]["mode"] == "forgeunit_skillfoundry_vnext"
     assert payload["build_path"]["canonical"] is True
-    assert payload["graph_v2_state_ref"] == GRAPH_V2_STATE_REF
+    assert payload["forgeunit_skillfoundry_summary_ref"] == FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF
+    assert payload["forgeunit_skillfoundry_graph_state_ref"] == FORGEUNIT_SKILLFOUNDRY_GRAPH_STATE_REF
+    assert payload["forgeunit_skillfoundry_product_state_ref"] == FORGEUNIT_SKILLFOUNDRY_PRODUCT_STATE_REF
+    assert payload["graph_v2_state_ref"] is None
     assert payload["final_report"]["final_status"] == "registered"
-    assert payload["graph_v2_state"]["stage"] == "emit_report"
-    assert payload["graph_v2_state"]["status"] == "report_emitted"
-    assert payload["graph_v2_state"]["contextforge"]["registry_approved"] is True
-    validate_v2_graph_state(payload["graph_v2_state"])
+    assert payload["forgeunit_skillfoundry_summary"]["stage"] == "emit_report"
+    assert payload["forgeunit_skillfoundry_summary"]["status"] == "report_emitted"
+    assert payload["forgeunit_skillfoundry_summary"]["verification"]["passed"] is True
+    assert payload["forgeunit_skillfoundry_summary"]["registry"]["approved"] is True
+    assert payload["forgeunit_skillfoundry_summary"]["trust_boundaries"]["command_string_included"] is False
 
     run_root = tmp_path / "runs" / job_id
-    graph_state_path = run_root / GRAPH_V2_STATE_REF
+    graph_state_path = run_root / FORGEUNIT_SKILLFOUNDRY_GRAPH_STATE_REF
+    product_state_path = run_root / FORGEUNIT_SKILLFOUNDRY_PRODUCT_STATE_REF
+    summary_path = run_root / FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF
     assert graph_state_path.is_file()
+    assert product_state_path.is_file()
+    assert summary_path.is_file()
     persisted_state = json.loads(graph_state_path.read_text(encoding="utf-8"))
-    validate_v2_graph_state(persisted_state)
+    assert persisted_state["schema_version"] == GRAPH_STATE_SCHEMA_VERSION
+    assert persisted_state["trust_boundaries"]["command_string_included"] is False
     assert marker not in json.dumps(persisted_state, sort_keys=True)
 
     status = api.handle("GET", f"/jobs/{job_id}/contextforge").json()
-    assert status["refs"]["graph_v2_state"]["exists"] is True
-    assert status["refs"]["verified_runtime_result"]["exists"] is True
-    assert status["status"]["graph_v2"]["registry_approved"] is True
-    assert status["status"]["graph_v2"]["last_verification_status"] == "passed"
+    assert status["refs"]["forgeunit_skillfoundry_summary"]["exists"] is True
+    assert status["refs"]["forgeunit_skillfoundry_graph_state"]["exists"] is True
+    assert status["refs"]["forgeunit_skillfoundry_product_state"]["exists"] is True
+    assert status["refs"]["graph_v2_state"]["exists"] is False
+    assert status["status"]["forgeunit_skillfoundry"]["registry_approved"] is True
+    assert status["status"]["forgeunit_skillfoundry"]["verification_status"] == "passed"
+    assert status["status"]["graph"]["raw_frontdesk_conversation_forbidden"] is True
     assert status["status"]["registry"]["approved"] is True
     assert marker not in json.dumps(status, sort_keys=True)
 
     job = api.handle("GET", f"/jobs/{job_id}").json()
     assert job["status"] == "registered"
-    assert job["build_path"]["mode"] == "graph_v2_goal_harness"
+    assert job["build_path"]["mode"] == "forgeunit_skillfoundry_vnext"
     assert job["package_downloadable"] is True
 
     html_response = api.handle("GET", f"/jobs/{job_id}", headers={"Accept": "text/html"})
     html = html_response.body.decode("utf-8")
     assert html_response.status == 200
     assert html_response.content_type.startswith("text/html")
-    assert "graph_v2_goal_harness" in html
+    assert "forgeunit_skillfoundry_vnext" in html
     assert "registered" in html
     assert "Download package" in html
     assert f"/jobs/{job_id}/package.zip" in html
@@ -438,6 +560,275 @@ def test_frontdesk_api_builds_frozen_job_through_graph_v2_without_raw_leakage(tm
     assert marker not in html
     assert "raw_provider_payload" not in html
     assert "worker_transcript" not in html
+
+
+def test_frontdesk_api_uses_constructor_configured_forgeunit_command_without_leaking(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    transcript_marker = "CONFIGURED_CONSTRUCTOR_TRANSCRIPT_SHOULD_NOT_LEAK"
+    script = _write_api_configured_worker(tmp_path, transcript_marker=transcript_marker)
+    api = SkillFoundryAPI(tmp_path / "runs", forgeunit_command=f"{sys.executable} {script}")
+    job_id = "frontdesk-constructor-forgeunit-command"
+
+    api.handle(
+        "POST",
+        "/frontdesk/jobs",
+        body={"job_id": job_id, "message": "Build a governed status skill."},
+    )
+    api.handle(
+        "POST",
+        f"/frontdesk/jobs/{job_id}/plan-review",
+        body={"decision": "approve", "reason": "The governed plan is ready to build."},
+    )
+
+    build_response = api.handle("POST", f"/frontdesk/jobs/{job_id}/build", body={})
+
+    assert build_response.status == 200
+    serialized = build_response.body.decode("utf-8")
+    assert script.as_posix() not in serialized
+    assert script.name not in serialized
+    assert transcript_marker not in serialized
+    payload = build_response.json()
+    assert payload["status"] == "registered"
+    assert payload["build_path"]["mode"] == "forgeunit_skillfoundry_vnext"
+    assert payload["forgeunit_skillfoundry_summary"]["mode"] == "command_bridge"
+    assert payload["forgeunit_skillfoundry_summary"]["verification"]["passed"] is True
+    assert payload["forgeunit_skillfoundry_summary"]["trust_boundaries"]["command_string_included"] is False
+
+    status = api.handle("GET", f"/jobs/{job_id}/contextforge").json()
+    status_serialized = json.dumps(status, sort_keys=True)
+    assert status["status"]["forgeunit_skillfoundry"]["registry_approved"] is True
+    assert script.as_posix() not in status_serialized
+    assert script.name not in status_serialized
+    assert transcript_marker not in status_serialized
+
+
+def test_frontdesk_api_explicit_fake_mode_happy_uses_offline_vnext_without_leaking(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    api = SkillFoundryAPI(tmp_path / "runs")
+    job_id = "frontdesk-explicit-fake-happy"
+    _create_and_approve_frontdesk_job(api, job_id)
+
+    build_response = api.handle("POST", f"/frontdesk/jobs/{job_id}/build", body={"fake_mode": "happy"})
+
+    assert build_response.status == 200
+    serialized = build_response.body.decode("utf-8")
+    assert "fake_api_codex_exec.py" not in serialized
+    payload = build_response.json()
+    assert payload["status"] == "registered"
+    assert payload["build_path"]["mode"] == "forgeunit_skillfoundry_vnext"
+    assert payload["forgeunit_skillfoundry_summary"]["mode"] == "command_bridge"
+    assert payload["forgeunit_skillfoundry_summary"]["verification"]["passed"] is True
+    assert payload["forgeunit_skillfoundry_summary"]["registry"]["approved"] is True
+    assert payload["forgeunit_skillfoundry_summary"]["trust_boundaries"]["command_string_included"] is False
+
+
+def test_frontdesk_api_explicit_fake_mode_repair_uses_offline_vnext_without_leaking(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    api = SkillFoundryAPI(tmp_path / "runs")
+    job_id = "frontdesk-explicit-fake-repair"
+    _create_and_approve_frontdesk_job(api, job_id)
+
+    build_response = api.handle("POST", f"/frontdesk/jobs/{job_id}/build", body={"fake_mode": "repair"})
+
+    assert build_response.status == 200
+    serialized = build_response.body.decode("utf-8")
+    assert "fake_api_bad_codex_exec.py" not in serialized
+    assert "fake_api_repair_codex_exec.py" not in serialized
+    payload = build_response.json()
+    assert payload["status"] == "registered"
+    assert payload["build_path"]["mode"] == "forgeunit_skillfoundry_vnext"
+    assert payload["forgeunit_skillfoundry_summary"]["mode"] == "repair_command_bridge"
+    assert payload["forgeunit_skillfoundry_summary"]["verification"]["passed"] is True
+    assert payload["forgeunit_skillfoundry_summary"]["registry"]["approved"] is True
+    assert payload["forgeunit_skillfoundry_summary"]["trust_boundaries"]["command_string_included"] is False
+
+
+def test_frontdesk_api_redacts_forgeunit_vnext_build_failure_details(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    command_marker = "SECRET_CONFIGURED_COMMAND_SHOULD_NOT_LEAK"
+    script_name = "secret_configured_worker.py"
+    stdout_marker = "SECRET_STDOUT_SHOULD_NOT_LEAK"
+    stderr_marker = "SECRET_STDERR_SHOULD_NOT_LEAK"
+    transcript_marker = "SECRET_TRANSCRIPT_SHOULD_NOT_LEAK"
+    api = SkillFoundryAPI(
+        tmp_path / "runs",
+        forgeunit_command=f"{sys.executable} {tmp_path / script_name} --token {command_marker}",
+    )
+    job_id = "frontdesk-vnext-failure-redaction"
+    _create_and_approve_frontdesk_job(api, job_id)
+
+    import forgeunit_skillfoundry
+
+    seen: dict[str, str] = {}
+
+    def fail_build(*_args, **kwargs):
+        seen["command"] = str(kwargs.get("command"))
+        raise RuntimeError(
+            "worker failed with "
+            f"{command_marker} {script_name} {stdout_marker} {stderr_marker} {transcript_marker}"
+        )
+
+    monkeypatch.setattr(forgeunit_skillfoundry, "run_frozen_frontdesk_skill_factory", fail_build)
+
+    build_response = api.handle("POST", f"/frontdesk/jobs/{job_id}/build", body={})
+
+    assert build_response.status == 500
+    assert command_marker in seen["command"]
+    payload = build_response.json()
+    assert payload["error"]["code"] == "frontdesk_build_failed"
+    assert payload["error"]["message"] == (
+        "frontdesk ForgeUnit vNext build failed before producing a verified refs-only result"
+    )
+    serialized = build_response.body.decode("utf-8")
+    assert command_marker not in serialized
+    assert script_name not in serialized
+    assert stdout_marker not in serialized
+    assert stderr_marker not in serialized
+    assert transcript_marker not in serialized
+
+
+def test_frontdesk_api_redacts_real_failing_subprocess_command_boundary(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    command_marker = "SECRET_REAL_COMMAND_SHOULD_NOT_LEAK"
+    stdout_marker = "SECRET_REAL_STDOUT_SHOULD_NOT_LEAK"
+    stderr_marker = "SECRET_REAL_STDERR_SHOULD_NOT_LEAK"
+    transcript_marker = "SECRET_REAL_TRANSCRIPT_SHOULD_NOT_LEAK"
+    script = _write_api_failing_worker(
+        tmp_path,
+        stdout_marker=stdout_marker,
+        stderr_marker=stderr_marker,
+        transcript_marker=transcript_marker,
+    )
+    api = SkillFoundryAPI(
+        tmp_path / "runs",
+        forgeunit_command=f"{sys.executable} {script} --secret {command_marker}",
+    )
+    job_id = "frontdesk-real-failing-command"
+    _create_and_approve_frontdesk_job(api, job_id)
+
+    build_response = api.handle("POST", f"/frontdesk/jobs/{job_id}/build", body={})
+
+    assert build_response.status == 500
+    payload = build_response.json()
+    assert payload["error"]["code"] == "frontdesk_build_failed"
+    assert payload["error"]["message"] == (
+        "frontdesk ForgeUnit vNext build failed before producing a verified refs-only result"
+    )
+    serialized = build_response.body.decode("utf-8")
+    assert command_marker not in serialized
+    assert script.as_posix() not in serialized
+    assert script.name not in serialized
+    assert stdout_marker not in serialized
+    assert stderr_marker not in serialized
+    assert transcript_marker not in serialized
+
+    run_root = tmp_path / "runs" / job_id
+    transcript = run_root / "evidence" / "transcript.md"
+    assert transcript.read_text(encoding="utf-8").strip() == transcript_marker
+    command_logs = list((run_root / ".forgeunit" / "runs").glob("*/workers/*_codex*_command_result.txt"))
+    assert command_logs
+    log_text = "\n".join(path.read_text(encoding="utf-8") for path in command_logs)
+    assert stdout_marker in log_text
+    assert stderr_marker in log_text
+
+
+def test_frontdesk_api_redacts_forgeunit_vnext_missing_summary_details(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    summary_marker = "SECRET_SUMMARY_ERROR_SHOULD_NOT_LEAK"
+    api = SkillFoundryAPI(tmp_path / "runs")
+    job_id = "frontdesk-vnext-summary-redaction"
+    _create_and_approve_frontdesk_job(api, job_id)
+
+    import forgeunit_skillfoundry
+
+    def fail_summary(_workspace):
+        raise RuntimeError(f"summary reader exposed {summary_marker}")
+
+    monkeypatch.setattr(forgeunit_skillfoundry, "read_evidence_summary", fail_summary)
+
+    build_response = api.handle("POST", f"/frontdesk/jobs/{job_id}/build", body={})
+
+    assert build_response.status == 500
+    payload = build_response.json()
+    assert payload["error"]["code"] == "frontdesk_build_missing_summary"
+    assert payload["error"]["message"] == "frontdesk ForgeUnit vNext build did not write a valid refs-only summary"
+    assert summary_marker not in build_response.body.decode("utf-8")
+
+
+def test_frontdesk_api_uses_env_configured_forgeunit_command_without_leaking(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    transcript_marker = "CONFIGURED_ENV_TRANSCRIPT_SHOULD_NOT_LEAK"
+    script = _write_api_configured_worker(tmp_path, transcript_marker=transcript_marker)
+    monkeypatch.setenv(FORGEUNIT_COMMAND_ENV, f"{sys.executable} {script}")
+    api = SkillFoundryAPI(tmp_path / "runs")
+    job_id = "frontdesk-env-forgeunit-command"
+
+    api.handle(
+        "POST",
+        "/frontdesk/jobs",
+        body={"job_id": job_id, "message": "Build a governed status skill."},
+    )
+    api.handle(
+        "POST",
+        f"/frontdesk/jobs/{job_id}/plan-review",
+        body={"decision": "approve", "reason": "The governed plan is ready to build."},
+    )
+
+    build_response = api.handle("POST", f"/frontdesk/jobs/{job_id}/build", body={})
+
+    assert build_response.status == 200
+    serialized = build_response.body.decode("utf-8")
+    assert script.as_posix() not in serialized
+    assert script.name not in serialized
+    assert transcript_marker not in serialized
+    payload = build_response.json()
+    assert payload["status"] == "registered"
+    assert payload["build_path"]["mode"] == "forgeunit_skillfoundry_vnext"
+    assert payload["forgeunit_skillfoundry_summary"]["mode"] == "command_bridge"
+    assert payload["forgeunit_skillfoundry_summary"]["verification"]["passed"] is True
+    assert payload["forgeunit_skillfoundry_summary"]["trust_boundaries"]["command_string_included"] is False
+
+    status = api.handle("GET", f"/jobs/{job_id}/contextforge").json()
+    status_serialized = json.dumps(status, sort_keys=True)
+    assert status["status"]["forgeunit_skillfoundry"]["registry_approved"] is True
+    assert script.as_posix() not in status_serialized
+    assert script.name not in status_serialized
+    assert transcript_marker not in status_serialized
+
+
+def test_frontdesk_api_can_opt_into_legacy_graph_v2_build(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    api = SkillFoundryAPI(tmp_path / "runs")
+    job_id = "frontdesk-graph-v2-build"
+
+    created = api.handle(
+        "POST",
+        "/frontdesk/jobs",
+        body={"job_id": job_id, "message": "Build a governed status skill."},
+    ).json()
+    assert created["status"] == "await_user_plan_review"
+
+    approved = api.handle(
+        "POST",
+        f"/frontdesk/jobs/{job_id}/plan-review",
+        body={"decision": "approve", "reason": "The governed plan is ready to build."},
+    ).json()
+    assert approved["status"] == "route_to_build"
+
+    build_response = api.handle(
+        "POST",
+        f"/frontdesk/jobs/{job_id}/build",
+        body={"build_mode": "graph_v2"},
+    )
+
+    assert build_response.status == 200
+    payload = build_response.json()
+    assert payload["status"] == "registered"
+    assert payload["build_path"]["mode"] == "graph_v2_goal_harness"
+    assert payload["graph_v2_state_ref"] == GRAPH_V2_STATE_REF
+    assert payload["graph_v2_state"]["stage"] == "emit_report"
+    assert payload["graph_v2_state"]["status"] == "report_emitted"
+    validate_v2_graph_state(payload["graph_v2_state"])
 
 
 def test_frontdesk_retry_upgrades_legacy_low_model_call_budget(tmp_path):

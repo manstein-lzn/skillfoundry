@@ -245,6 +245,9 @@ from .forgeunit_adapter import (
     FORGEUNIT_PILOT_GRAPH_STATE_REF,
     FORGEUNIT_REGISTRY_DECISION_REF,
     FORGEUNIT_REGISTRY_ENTRY_REF,
+    FORGEUNIT_REPAIR_ATTEMPT_ID,
+    FORGEUNIT_REPAIR_GRAPH_STATE_REF,
+    FORGEUNIT_REPAIR_PACKET_REF,
     FORGEUNIT_SKILLFOUNDRY_ATTEMPT_ID,
     FORGEUNIT_SUMMARY_REF,
     FORGEUNIT_TASK_YAML_REF,
@@ -264,6 +267,8 @@ from .forgeunit_adapter import (
     run_forgeunit_codex_exec_node,
     run_forgeunit_command_bridge_pilot_graph,
     run_forgeunit_pilot_graph,
+    run_forgeunit_repair_pilot_graph,
+    write_forgeunit_repair_packet,
 )
 from .verification_bridge import (
     CONTEXTFORGE_VERIFICATION_RESULT_REF,
@@ -495,6 +500,9 @@ __all__ = [
     "FORGEUNIT_PILOT_GRAPH_STATE_REF",
     "FORGEUNIT_REGISTRY_DECISION_REF",
     "FORGEUNIT_REGISTRY_ENTRY_REF",
+    "FORGEUNIT_REPAIR_ATTEMPT_ID",
+    "FORGEUNIT_REPAIR_GRAPH_STATE_REF",
+    "FORGEUNIT_REPAIR_PACKET_REF",
     "FORGEUNIT_SKILLFOUNDRY_ATTEMPT_ID",
     "FORGEUNIT_SUMMARY_REF",
     "FORGEUNIT_TASK_YAML_REF",
@@ -689,4 +697,6 @@ __all__ = [
     "run_forgeunit_codex_exec_node",
     "run_forgeunit_command_bridge_pilot_graph",
     "run_forgeunit_pilot_graph",
+    "run_forgeunit_repair_pilot_graph",
+    "write_forgeunit_repair_packet",
 ]

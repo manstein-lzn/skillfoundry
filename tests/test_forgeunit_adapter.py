@@ -14,6 +14,9 @@ from skillfoundry.forgeunit_adapter import (
     FORGEUNIT_PILOT_GRAPH_STATE_REF,
     FORGEUNIT_REGISTRY_DECISION_REF,
     FORGEUNIT_REGISTRY_ENTRY_REF,
+    FORGEUNIT_REPAIR_ATTEMPT_ID,
+    FORGEUNIT_REPAIR_GRAPH_STATE_REF,
+    FORGEUNIT_REPAIR_PACKET_REF,
     FORGEUNIT_SUMMARY_REF,
     FORGEUNIT_TASK_YAML_REF,
     FORGEUNIT_VERIFICATION_RESULT_REF,
@@ -22,6 +25,7 @@ from skillfoundry.forgeunit_adapter import (
     run_forgeunit_codex_exec_node,
     run_forgeunit_command_bridge_pilot_graph,
     run_forgeunit_pilot_graph,
+    run_forgeunit_repair_pilot_graph,
 )
 from skillfoundry.graph_v2 import V2Stage, V2Status, validate_v2_graph_state
 from skillfoundry.registry import LocalSkillRegistry
@@ -61,8 +65,25 @@ Keep raw prompts, raw transcripts, and package bodies out of LangGraph state.
 """
 
 
-def _write_fake_codex_exec_command(workspace_root: Path) -> Path:
-    script = workspace_root / "fake_codex_exec.py"
+INVALID_FORGEUNIT_SKILL = """---
+name: forgeunit-repair-fixture
+description: Intentionally incomplete fixture.
+---
+
+# ForgeUnit Repair Fixture
+
+## Overview
+This package is ForgeUnit-boundary valid but SkillFoundry-verifier invalid.
+"""
+
+
+def _write_fake_codex_exec_command(
+    workspace_root: Path,
+    *,
+    skill_text: str = VALID_FORGEUNIT_SKILL,
+    script_name: str = "fake_codex_exec.py",
+) -> Path:
+    script = workspace_root / script_name
     script.write_text(
         f"""
 from pathlib import Path
@@ -77,7 +98,7 @@ unit_id = os.environ["FORGEUNIT_UNIT"]
 
 (task_dir / "package").mkdir(exist_ok=True)
 (task_dir / "evidence").mkdir(exist_ok=True)
-(task_dir / "package" / "SKILL.md").write_text({VALID_FORGEUNIT_SKILL!r}, encoding="utf-8")
+(task_dir / "package" / "SKILL.md").write_text({skill_text!r}, encoding="utf-8")
 (task_dir / "evidence" / "transcript.md").write_text(
     "deterministic command bridge transcript pointer\\n",
     encoding="utf-8",
@@ -287,6 +308,96 @@ def test_forgeunit_command_bridge_pilot_verifies_and_registers_offline_package(t
     assert "human_review_request" not in result["refs"]
     assert "private command bridge request body" not in serialized_state
     assert "ForgeUnit Command Bridge Skill" not in serialized_state
+    assert "deterministic command bridge transcript" not in serialized_state
+    assert "raw_prompt" not in serialized_state
+    assert "raw_transcript" not in serialized_state
+    assert "package_content" not in serialized_state
+
+
+def test_forgeunit_repair_pilot_repairs_failed_verifier_package_and_registers(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    registry_path = tmp_path / "registry.json"
+    workspace = initialize_job_workspace(
+        runs_root,
+        "forgeunit-repair-001",
+        worker_input="private repair command bridge request body must remain in file refs only",
+    )
+    bad_script = _write_fake_codex_exec_command(
+        workspace.root,
+        skill_text=INVALID_FORGEUNIT_SKILL,
+        script_name="fake_bad_codex_exec.py",
+    )
+    repair_script = _write_fake_codex_exec_command(
+        workspace.root,
+        skill_text=VALID_FORGEUNIT_SKILL,
+        script_name="fake_repair_codex_exec.py",
+    )
+
+    result = run_forgeunit_repair_pilot_graph(
+        runs_root,
+        workspace.job_id,
+        registry_path=registry_path,
+        build_command=f"{sys.executable} {bad_script.name}",
+        repair_command=f"{sys.executable} {repair_script.name}",
+        version="forgeunit-repair-pilot",
+        created_at="2026-05-23T00:00:00Z",
+    )
+    serialized_state = json.dumps(result)
+    first_verification = json.loads(
+        workspace.resolve_path("attempts/001/verification_result.json", must_exist=True).read_text()
+    )
+    second_verification = json.loads(
+        workspace.resolve_path("attempts/002/verification_result.json", must_exist=True).read_text()
+    )
+    repair_packet = json.loads(workspace.resolve_path(FORGEUNIT_REPAIR_PACKET_REF, must_exist=True).read_text())
+    registry_decision = json.loads(workspace.resolve_path(FORGEUNIT_REGISTRY_DECISION_REF, must_exist=True).read_text())
+    registry_entry_snapshot = json.loads(
+        workspace.resolve_path(FORGEUNIT_REGISTRY_ENTRY_REF, must_exist=True).read_text()
+    )
+    entry = LocalSkillRegistry(registry_path).get("forgeunit-repair-001-skill", "forgeunit-repair-pilot")
+    registry_report = LocalSkillRegistry(registry_path).verify_entry(entry)
+
+    validate_v2_graph_state(result)
+    assert result["stage"] == V2Stage.EMIT_REPORT.value
+    assert result["status"] == V2Status.REPORT_EMITTED.value
+    assert result["human_review_required"] is False
+    assert result["refs"]["forgeunit_repair_packet"] == FORGEUNIT_REPAIR_PACKET_REF
+    assert result["refs"]["forgeunit_initial_verification_result"] == "attempts/001/verification_result.json"
+    assert result["refs"]["forgeunit_repair_verification_result"] == "attempts/002/verification_result.json"
+    assert result["refs"]["forgeunit_repair_graph_state"] == FORGEUNIT_REPAIR_GRAPH_STATE_REF
+    assert result["refs"]["registry_entry"] == FORGEUNIT_REGISTRY_ENTRY_REF
+    assert result["refs"]["registry_decision"] == FORGEUNIT_REGISTRY_DECISION_REF
+    assert result["refs"]["final_report"] == FORGEUNIT_FINAL_REPORT_REF
+    assert result["contextforge"]["last_verification_status"] == "passed"
+    assert result["contextforge"]["registry_approved"] is True
+    assert result["contextforge"]["forgeunit_repair_attempt_id"] == FORGEUNIT_REPAIR_ATTEMPT_ID
+    assert result["contextforge"]["forgeunit_repair_status"] == "repaired_and_verified"
+    assert first_verification["passed"] is False
+    assert second_verification["passed"] is True
+    assert repair_packet["failed_attempt_id"] == "001"
+    assert repair_packet["repair_attempt_id"] == "002"
+    assert repair_packet["verification_result_ref"] == "attempts/001/verification_result.json"
+    assert repair_packet["failed_forgeunit_summary_ref"] == "attempts/001/forgeunit_summary.json"
+    assert repair_packet["failure_count"] >= 1
+    assert repair_packet["trust_boundaries"]["worker_self_report_is_not_acceptance"] is True
+    assert repair_packet["trust_boundaries"]["raw_prompt_included"] is False
+    assert repair_packet["trust_boundaries"]["raw_transcript_included"] is False
+    assert repair_packet["trust_boundaries"]["package_body_included"] is False
+    assert repair_packet["trust_boundaries"]["raw_worker_input_included"] is False
+    assert registry_decision["decision"] == "registered"
+    assert registry_decision["verification_result_ref"] == FORGEUNIT_VERIFICATION_RESULT_REF
+    assert registry_entry_snapshot["verification_report"]["valid"] is True
+    assert registry_report.valid is True
+    assert workspace.resolve_path("attempts/001/forgeunit_summary.json", must_exist=True).is_file()
+    assert workspace.resolve_path("attempts/002/forgeunit_summary.json", must_exist=True).is_file()
+    assert workspace.resolve_path("attempts/002/input_manifest.json", must_exist=True).is_file()
+    assert workspace.resolve_path("attempts/002/execution_report.json", must_exist=True).is_file()
+    assert workspace.resolve_path("attempts/002/worker_transcript.log", must_exist=True).is_file()
+    assert workspace.resolve_path("attempts/002/output_diff.patch", must_exist=True).is_file()
+    assert workspace.resolve_path(FORGEUNIT_REPAIR_GRAPH_STATE_REF, must_exist=True).is_file()
+    assert "private repair command bridge request body" not in serialized_state
+    assert "ForgeUnit Command Bridge Skill" not in serialized_state
+    assert "ForgeUnit Repair Fixture" not in serialized_state
     assert "deterministic command bridge transcript" not in serialized_state
     assert "raw_prompt" not in serialized_state
     assert "raw_transcript" not in serialized_state
