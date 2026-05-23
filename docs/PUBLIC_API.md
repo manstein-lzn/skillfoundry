@@ -147,3 +147,53 @@ The following support-surface names must not leak through `skillfoundry` or
 
 They remain available from `skillfoundry.feedback`, `skillfoundry.qa`, or
 `skillfoundry.ops` when compatibility fixtures or maintainers need them.
+
+## Current Phase 13J Removal Set
+
+The package root keeps `seed_goal_harness_context` because it is a small
+current ContextForge evidence helper. The rest of the direct Goal Runtime and
+graph v2 surfaces are module-scoped.
+
+Goal Runtime names that must not leak through `skillfoundry` or
+`skillfoundry.__all__`:
+
+- `GOAL_RUNTIME_LEDGER_REF`
+- `GOAL_RUNTIME_RESULT_REF`
+- `GOAL_RUNTIME_RESULT_SCHEMA_VERSION`
+- `GOAL_RUNTIME_STATE_REF`
+- `GOAL_RUNTIME_STATE_SCHEMA_VERSION`
+- `VERIFIED_GOAL_RUNTIME_RESULT_REF`
+- `VERIFIED_GOAL_RUNTIME_RESULT_SCHEMA_VERSION`
+- `build_goal_harness_state`
+- `build_repair_goal_harness_state`
+- `run_offline_goal_harness`
+- `run_repair_goal_harness`
+- `run_verified_repair_goal_harness`
+- `run_verified_offline_goal_harness`
+
+Graph v2 names that must not leak through `skillfoundry` or
+`skillfoundry.__all__`:
+
+- `GRAPH_V2_STATE_REF`
+- `MAX_V2_INLINE_STRING_BYTES`
+- `SkillFoundryV2State`
+- `V2Route`
+- `V2Stage`
+- `V2StateValidationError`
+- `V2Status`
+- `build_offline_goal_harness_node`
+- `build_human_review_node`
+- `build_repair_goal_harness_node`
+- `build_skillfoundry_v2_graph`
+- `build_verified_goal_harness_node`
+- `build_verified_repair_verification_node`
+- `build_verified_registry_gate_node`
+- `compile_skillfoundry_v2_graph`
+- `route_after_repair`
+- `route_after_verification`
+- `run_verified_skillfoundry_v2_graph`
+- `validate_v2_graph_state`
+
+They remain available from `skillfoundry.goal_runtime` or
+`skillfoundry.graph_v2` for compatibility graph tests, ForgeUnit bridge
+maintenance, and explicit runtime inspection.

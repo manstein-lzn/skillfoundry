@@ -195,6 +195,8 @@ make test
 
 ### Phase 13J: Graph v2 and Goal Runtime Export Audit
 
+Status: implemented.
+
 Goal:
 
 Keep current runtime compatibility while reducing package-root noise from graph
@@ -218,6 +220,17 @@ Acceptance:
 - Top-level graph/runtime exports are deliberate.
 - Current ForgeUnit adapter and FrontDesk build tests pass.
 - No current path imports final report helpers from `offline.py`.
+
+Implemented result:
+
+- `seed_goal_harness_context` remains a package-root helper because it is part
+  of the current ContextForge refs-only evidence path.
+- Direct Goal Runtime runner/state helpers are module-scoped under
+  `skillfoundry.goal_runtime`.
+- Graph v2 state types, routes, node builders, graph compilers, and validators
+  are module-scoped under `skillfoundry.graph_v2`.
+- Focused tests and API tests import graph/runtime internals from their modules
+  instead of treating them as package-root API.
 
 Suggested focused tests:
 

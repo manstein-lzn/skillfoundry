@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from skillfoundry import (
+from skillfoundry.graph_v2 import (
     V2Route,
     V2Stage,
     V2StateValidationError,

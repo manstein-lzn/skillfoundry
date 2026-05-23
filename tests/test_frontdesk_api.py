@@ -12,12 +12,12 @@ from forgeunit_skillfoundry import (
 )
 from forgeunit_skillfoundry.testing import VALID_CODEX_SKILL
 from skillfoundry.api import FORGEUNIT_COMMAND_ENV, SkillFoundryAPI
-from skillfoundry import GRAPH_V2_STATE_REF, validate_v2_graph_state
 from skillfoundry.frontdesk_goal_runtime import (
     FRONTDESK_CORE_NEED_RUNTIME_RESULT_REF,
     FRONTDESK_SOLUTION_PLAN_RUNTIME_RESULT_REF,
     FRONTDESK_SPEC_AUDIT_RUNTIME_RESULT_REF,
 )
+from skillfoundry.graph_v2 import GRAPH_V2_STATE_REF, validate_v2_graph_state
 from skillfoundry.frontdesk_schema import FrontDeskState
 from skillfoundry.frontdesk_schema import FrontDeskConfig
 

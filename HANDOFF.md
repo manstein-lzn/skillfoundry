@@ -71,6 +71,13 @@ FrontDesk
     的适配层。
 - `src/skillfoundry/graph_v2.py`
   - 旧 v2 compatibility graph，仍可显式调用，但不再是 FrontDesk build 默认路由。
+  - graph v2 state/routes/node builders/compiler/validators 不再从顶层
+    `skillfoundry` 导出；维护时从 `skillfoundry.graph_v2` 显式导入。
+- `src/skillfoundry/goal_runtime.py`
+  - direct Goal Runtime runners/state helpers/result refs 保留为 module-scoped
+    runtime/compatibility surface。
+  - 顶层 `skillfoundry` 只保留 `seed_goal_harness_context` 作为当前
+    ContextForge refs-only evidence helper。
 - `src/skillfoundry/final_report.py`
   - 当前 `final_report.json` evidence envelope 的读写和构建逻辑。
   - 已从 legacy `offline.py` 拆出，避免当前 v2/runtime 路径依赖旧离线 builder。
@@ -139,7 +146,9 @@ Codex，不应依赖本机 sibling `../ForgeUnit`。
    legacy worker/offline internals 已在 Phase 13F 从顶层 public API 移除，
    legacy context adapter internals 已在 Phase 13G 从顶层 public API 移除，
    Phase 13H 已新增 public API 合同并移除明显内部 fake-worker/result/factory 顶层导出，
-   Phase 13I 已把 feedback/QA/ops support surfaces 收口为 module-scoped。
+   Phase 13I 已把 feedback/QA/ops support surfaces 收口为 module-scoped，
+   Phase 13J 已把 direct Goal Runtime 和 graph v2 compatibility helpers 收口为
+   module-scoped。
 3. 完善 API/UI 对 registry outcome、repair decision、human review 和 refs-only
    evidence 的展示。
 4. 用 3-5 个真实 Skill 需求做 opt-in live Codex semantic eval，记录失败分类和修复策略。

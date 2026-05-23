@@ -17,7 +17,6 @@ from contextforge import (
 
 import skillfoundry
 from skillfoundry import (
-    GOAL_RUNTIME_LEDGER_REF,
     OWNED_LLM_WORKER_OUTPUT_SCHEMA_VERSION,
     WORKERS_V2_VERSION,
     CodexThreadSkillBuilderWorker,
@@ -27,6 +26,7 @@ from skillfoundry import (
     seed_goal_harness_context,
     write_contextforge_contract_artifacts,
 )
+from skillfoundry.goal_runtime import GOAL_RUNTIME_LEDGER_REF
 from skillfoundry.workspace import JobWorkspace, initialize_job_workspace
 
 

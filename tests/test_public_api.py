@@ -2,6 +2,7 @@ import skillfoundry
 import skillfoundry.feedback as feedback
 import skillfoundry.frontdesk_goal_runtime as frontdesk_goal_runtime
 import skillfoundry.goal_runtime as goal_runtime
+import skillfoundry.graph_v2 as graph_v2
 import skillfoundry.ops as ops
 import skillfoundry.qa as qa
 
@@ -41,6 +42,38 @@ PACKAGE_ROOT_INTERNAL_DENYLIST = {
     "OPS_OBSERVABILITY_REPORT_VERSION",
     "OPS_VERSION",
     "SkillFoundryOps",
+    "GOAL_RUNTIME_LEDGER_REF",
+    "GOAL_RUNTIME_RESULT_REF",
+    "GOAL_RUNTIME_RESULT_SCHEMA_VERSION",
+    "GOAL_RUNTIME_STATE_REF",
+    "GOAL_RUNTIME_STATE_SCHEMA_VERSION",
+    "VERIFIED_GOAL_RUNTIME_RESULT_REF",
+    "VERIFIED_GOAL_RUNTIME_RESULT_SCHEMA_VERSION",
+    "build_goal_harness_state",
+    "build_repair_goal_harness_state",
+    "run_offline_goal_harness",
+    "run_repair_goal_harness",
+    "run_verified_repair_goal_harness",
+    "run_verified_offline_goal_harness",
+    "GRAPH_V2_STATE_REF",
+    "MAX_V2_INLINE_STRING_BYTES",
+    "SkillFoundryV2State",
+    "V2Route",
+    "V2Stage",
+    "V2StateValidationError",
+    "V2Status",
+    "build_offline_goal_harness_node",
+    "build_human_review_node",
+    "build_repair_goal_harness_node",
+    "build_skillfoundry_v2_graph",
+    "build_verified_goal_harness_node",
+    "build_verified_repair_verification_node",
+    "build_verified_registry_gate_node",
+    "compile_skillfoundry_v2_graph",
+    "route_after_repair",
+    "route_after_verification",
+    "run_verified_skillfoundry_v2_graph",
+    "validate_v2_graph_state",
 }
 
 
@@ -136,3 +169,49 @@ def test_support_surfaces_remain_module_scoped_for_maintenance():
         "SkillFoundryOps",
     ]:
         assert hasattr(ops, name), name
+
+
+def test_graph_and_goal_runtime_surfaces_remain_module_scoped_for_maintenance():
+    for name in [
+        "GOAL_RUNTIME_LEDGER_REF",
+        "GOAL_RUNTIME_RESULT_REF",
+        "GOAL_RUNTIME_RESULT_SCHEMA_VERSION",
+        "GOAL_RUNTIME_STATE_REF",
+        "GOAL_RUNTIME_STATE_SCHEMA_VERSION",
+        "VERIFIED_GOAL_RUNTIME_RESULT_REF",
+        "VERIFIED_GOAL_RUNTIME_RESULT_SCHEMA_VERSION",
+        "build_goal_harness_state",
+        "build_repair_goal_harness_state",
+        "run_offline_goal_harness",
+        "run_repair_goal_harness",
+        "run_verified_repair_goal_harness",
+        "run_verified_offline_goal_harness",
+    ]:
+        assert hasattr(goal_runtime, name), name
+
+    assert hasattr(goal_runtime, "seed_goal_harness_context")
+    assert hasattr(skillfoundry, "seed_goal_harness_context")
+    assert "seed_goal_harness_context" in skillfoundry.__all__
+
+    for name in [
+        "GRAPH_V2_STATE_REF",
+        "MAX_V2_INLINE_STRING_BYTES",
+        "SkillFoundryV2State",
+        "V2Route",
+        "V2Stage",
+        "V2StateValidationError",
+        "V2Status",
+        "build_offline_goal_harness_node",
+        "build_human_review_node",
+        "build_repair_goal_harness_node",
+        "build_skillfoundry_v2_graph",
+        "build_verified_goal_harness_node",
+        "build_verified_repair_verification_node",
+        "build_verified_registry_gate_node",
+        "compile_skillfoundry_v2_graph",
+        "route_after_repair",
+        "route_after_verification",
+        "run_verified_skillfoundry_v2_graph",
+        "validate_v2_graph_state",
+    ]:
+        assert hasattr(graph_v2, name), name

@@ -6,18 +6,20 @@ from pathlib import Path
 from contextforge import ContextLedger, ModelResponse
 import pytest
 
-import skillfoundry
 from skillfoundry import (
     AcceptanceCriteriaSet,
     AcceptanceCriterion,
     APPROVAL_APPROVED,
     CONTEXTFORGE_VERIFICATION_RESULT_REF,
-    GOAL_RUNTIME_RESULT_REF,
-    GOAL_RUNTIME_STATE_REF,
     LocalSkillRegistry,
     OWNED_LLM_WORKER_OUTPUT_SCHEMA_VERSION,
     OwnedLLMSkillBuilderWorker,
     SkillFoundryAPI,
+)
+import skillfoundry.goal_runtime as goal_runtime_module
+from skillfoundry.goal_runtime import (
+    GOAL_RUNTIME_RESULT_REF,
+    GOAL_RUNTIME_STATE_REF,
     VERIFIED_GOAL_RUNTIME_RESULT_REF,
     run_offline_goal_harness,
     run_repair_goal_harness,
@@ -377,6 +379,6 @@ def test_verified_offline_goal_harness_fails_closed_before_runtime_without_accep
     assert not (workspace.root / VERIFIED_GOAL_RUNTIME_RESULT_REF).exists()
 
 
-def test_verified_goal_harness_runtime_symbols_are_exported() -> None:
-    assert skillfoundry.run_verified_offline_goal_harness is run_verified_offline_goal_harness
-    assert skillfoundry.VERIFIED_GOAL_RUNTIME_RESULT_REF == VERIFIED_GOAL_RUNTIME_RESULT_REF
+def test_verified_goal_harness_runtime_symbols_are_module_scoped() -> None:
+    assert goal_runtime_module.run_verified_offline_goal_harness is run_verified_offline_goal_harness
+    assert goal_runtime_module.VERIFIED_GOAL_RUNTIME_RESULT_REF == VERIFIED_GOAL_RUNTIME_RESULT_REF

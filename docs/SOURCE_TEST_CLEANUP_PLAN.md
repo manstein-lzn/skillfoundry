@@ -328,6 +328,8 @@ These modules need a separate audit before deletion or shrinking:
     fake-worker/result/factory exports.
   - Phase 13I removed feedback/QA/ops support-only exports from the package
     root.
+  - Phase 13J removed direct Goal Runtime and graph v2 compatibility helper
+    exports from the package root, while keeping `seed_goal_harness_context`.
   - Continue shrinking after each legacy module is retired.
 
 ## Phase 13I
@@ -362,6 +364,44 @@ Rationale:
   current package-root product construction path.
 - Keeping them module-scoped reduces new-user confusion while preserving all
   tested behavior.
+
+## Phase 13J
+
+Status: implemented in this cleanup slice.
+
+Classified:
+
+- `src/skillfoundry/goal_runtime.py` remains the explicit module for direct
+  Goal Runtime runners, state helpers, result refs, and compatibility helper
+  functions.
+- `src/skillfoundry/graph_v2.py` remains the explicit module for the legacy v2
+  LangGraph compatibility spine, state shape, routes, node builders, compilers,
+  and validators.
+- `seed_goal_harness_context` remains top-level because it is a small current
+  ContextForge evidence helper used by worker/context tests and belongs to the
+  refs-only evidence path.
+
+Narrowed:
+
+- Top-level `skillfoundry` no longer exports direct Goal Runtime runner/state
+  helper names.
+- Top-level `skillfoundry` no longer exports graph v2 state, route, node,
+  compiler, or validator names.
+
+Kept:
+
+- Module-level imports from `skillfoundry.goal_runtime` and
+  `skillfoundry.graph_v2` remain available for ForgeUnit bridge maintenance,
+  compatibility graph tests, and explicit runtime inspection.
+- Current ForgeUnit and FrontDesk build behavior remains unchanged.
+
+Rationale:
+
+- Direct Goal Runtime runners and graph v2 helpers are powerful compatibility
+  surfaces, but they are not the package-root entrypoint a new user should
+  build against.
+- Keeping these APIs module-scoped reduces package-root noise without hiding or
+  deleting working runtime code.
 
 ## Test Ownership
 
