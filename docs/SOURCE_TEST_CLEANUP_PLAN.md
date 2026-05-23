@@ -56,6 +56,30 @@ Dependency fix:
   helpers, state validator, state type, stage enum, or graph-specific
   validation error.
 
+## Phase 13B
+
+Status: implemented in this cleanup slice.
+
+Retired:
+
+- `src/skillfoundry/llm_builder.py`
+- `tests/test_llm_builder.py`
+
+Rationale:
+
+- `src/skillfoundry/llm_builder.py` was the old WP17 owned-LLM builder pilot
+  built on the legacy `WorkerAdapter` path and hand-written prompt assembly.
+- The current owned LLM worker surface is
+  `src/skillfoundry/workers_v2.py::OwnedLLMSkillBuilderWorker`.
+- Current graph v2 and API tests use `workers_v2.OwnedLLMSkillBuilderWorker`,
+  not the retired `LLMSkillBuilderWorker`.
+
+Dependency fix:
+
+- The public package no longer exports the retired `LLMSkillBuilderWorker` or
+  `LLM_SKILL_BUILDER_*` constants.
+- `workers_v2.OwnedLLMSkillBuilderWorker` remains exported and tested.
+
 ## Current Keep List
 
 Keep as current mainline or current dependency:
@@ -94,9 +118,6 @@ These modules need a separate audit before deletion or shrinking:
 - `src/skillfoundry/context.py`
   - Old owned-call/context adapter.
   - Still referenced by FrontDesk and older LLM builder paths.
-- `src/skillfoundry/llm_builder.py`
-  - Old owned LLM builder pilot.
-  - Candidate for deletion after confirming no current product path needs it.
 - `src/skillfoundry/feedback.py`, `src/skillfoundry/ops.py`, `src/skillfoundry/qa.py`
   - Product support surfaces from v0/WP phases.
   - Need per-module dependency checks.
@@ -122,7 +143,6 @@ Legacy/compatibility tests to audit next:
 - `tests/test_offline.py`
 - `tests/test_worker.py`
 - `tests/test_codex_worker.py`
-- `tests/test_llm_builder.py`
 - `tests/test_context.py`
 - `tests/test_feedback.py`
 - `tests/test_ops.py`

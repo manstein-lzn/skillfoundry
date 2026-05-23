@@ -106,8 +106,9 @@ Codex，不应依赖本机 sibling `../ForgeUnit`。
 ## Next Useful Work
 
 1. 继续把产品主路径收敛到 `src/forgeunit_skillfoundry/`。
-2. 继续隔离或退役 legacy `worker.py`、`context.py`、`llm_builder.py`、`offline.py`
-   等旧路径；`src/skillfoundry/graph.py` 已在 Phase 13A 删除。
+2. 继续隔离或退役 legacy `worker.py`、`context.py`、`offline.py`
+   等旧路径；`src/skillfoundry/graph.py` 已在 Phase 13A 删除，
+   `src/skillfoundry/llm_builder.py` 已在 Phase 13B 删除。
 3. 完善 API/UI 对 registry outcome、repair decision、human review 和 refs-only
    evidence 的展示。
 4. 用 3-5 个真实 Skill 需求做 opt-in live Codex semantic eval，记录失败分类和修复策略。

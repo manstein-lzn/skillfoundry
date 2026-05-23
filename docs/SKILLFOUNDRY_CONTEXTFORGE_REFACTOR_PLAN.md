@@ -58,7 +58,7 @@ Front Desk approved/frozen job
 1. WP2：补齐 API/UI evidence productization，让新用户能看懂 build、repair、human-review、registry 的证据摘要，且不泄漏 raw prompt / raw payload / transcript / package content。
 2. WP4：硬化 worker configuration 和边界，尤其是 owned LLM、Codex thread boundary、external worker 的 evidence refs、write scope 和 usage unavailable reason。
 3. WP5：把 PromptCachePlan telemetry 做成可观测成本控制器，能比较 stable prefix churn、cache epoch reason、expected cacheable tokens 和 provider telemetry。
-4. WP6：继续隔离或退役 legacy `graph.py`、`context.py`、`worker.py`、`llm_builder.py` 路径，避免新功能漂回 v0 骨架。
+4. WP6：继续隔离或退役 legacy `context.py`、`worker.py`、`offline.py` 路径，避免新功能漂回 v0 骨架。`graph.py` 已在 Phase 13A 删除，旧 `llm_builder.py` 已在 Phase 13B 删除。
 5. WP7：在离线主路径、evidence UI、人审闭环更稳之后，再做真实 provider / Codex SDK thread opt-in pilot。
 
 ### 0.2 最小首产品闭环
@@ -267,12 +267,13 @@ verified offline build path 已经存在。
 - `src/skillfoundry/worker.py`
   - 旧 WorkerAdapter 协议仍有价值，但不应继续决定 v2 worker 边界。
 
-- `src/skillfoundry/llm_builder.py`
-  - 旧 prompt 拼接方式应被 ContextView / PromptCachePlan 替代。
+- 旧 `src/skillfoundry/llm_builder.py`
+  - 已在 Phase 13B 删除。
+  - v2 owned LLM worker 走 `src/skillfoundry/workers_v2.py`。
 
-- `src/skillfoundry/graph.py`
-  - 旧 graph 是历史骨架。
-  - v2 产品路径应以 `graph_v2.py` 为主。
+- 旧 `src/skillfoundry/graph.py`
+  - 已在 Phase 13A 删除。
+  - v2 产品路径以 `graph_v2.py` 和 `src/forgeunit_skillfoundry/graph.py` 为主。
 
 - API/UI
   - 已有部分 ContextForge observability。
@@ -938,7 +939,7 @@ ContextForge can optimize Codex SDK thread internal cache chain.
 - `src/skillfoundry/context.py`
 - `src/skillfoundry/worker.py`
 - `src/skillfoundry/llm_builder.py`
-- `src/skillfoundry/graph.py`
+- retired `src/skillfoundry/graph.py`
 - legacy prompt assembly paths
 - old WP-oriented docs as execution source
 
@@ -1480,7 +1481,7 @@ ContextForge 当前不能被 SkillFoundry 宣称已经具备的能力：
 
 - `graph_v2.py` 还没有成为唯一产品 build / verify / repair / registry 路由。
 - 旧 `POST /jobs` 离线 builder 兼容路线仍存在；它已经默认 opt-in 隔离，并在 status 中标记为 `legacy_offline_compatibility`，避免新用户误用为产品主入口。
-- 旧 `graph.py`、`context.py`、`worker.py`、`llm_builder.py` 仍存在，需要隔离或退役。
+- 旧 `context.py`、`worker.py`、`offline.py` 仍存在，需要隔离或退役；旧 `graph.py` 和 `llm_builder.py` 已删除。
 - API/UI 对 repair、human-review、registry evidence 的体验还不完整；`GET /jobs/{job_id}/contextforge` 已有 refs-only 摘要，`GET /jobs/{job_id}` 也已有最小 refs-only HTML evidence 页面，但完整 operator workbench 仍需产品化。
 - human-review 已从纯 route/status 前进到 request / decision artifacts 和 API decision endpoint；它还不是完整运营工作台或自动重新调度系统。
 - live provider / real Codex SDK thread 仍是 opt-in future pilot。
@@ -1975,14 +1976,14 @@ PromptCachePlan proves provider cache hit.
 新 contributor 不需要理解旧 WP0-WP17 内部实现，就能修改当前 v2 产品路径。
 ```
 
-WP6 不是单纯清理文档。它和 WP1 共同保证产品主路径不会继续漂回旧 `context.py`、`worker.py`、`llm_builder.py` 或 `graph.py`：新功能进入 v2 modules，旧模块只能保留兼容入口、历史 fixture 或被归档/删除。
+WP6 不是单纯清理文档。它和 WP1 共同保证产品主路径不会继续漂回旧 `context.py`、`worker.py` 或 `offline.py`：新功能进入 v2 modules，旧模块只能保留兼容入口、历史 fixture 或被归档/删除。
 
 写范围：
 
 - `src/skillfoundry/graph.py`
 - `src/skillfoundry/context.py`
 - `src/skillfoundry/worker.py`
-- `src/skillfoundry/llm_builder.py`
+- retired `src/skillfoundry/llm_builder.py`
 - `src/skillfoundry/offline.py`
 - legacy `POST /jobs` compatibility entry
 - docs references
