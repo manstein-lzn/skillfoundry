@@ -289,6 +289,8 @@ git diff --check
 
 ### Phase 13L: Test Ownership Map
 
+Status: implemented.
+
 Goal:
 
 Make the test suite readable by ownership without disrupting working coverage.
@@ -308,6 +310,15 @@ Acceptance:
 - A new developer can identify which tests protect current product behavior.
 - Compatibility tests are not mistaken for current architecture guidance.
 - `make test` remains the default complete deterministic gate.
+
+Implemented result:
+
+- `tests/README.md` classifies tests as current mainline, compatibility, legacy
+  fixture, script smoke, and live opt-in support.
+- The map states that `make test` is deterministic/offline and does not call
+  live Codex.
+- `docs/README.md` and `HANDOFF.md` link the ownership map from the current
+  reading path.
 
 Suggested validators:
 

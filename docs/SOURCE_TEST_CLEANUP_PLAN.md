@@ -435,6 +435,34 @@ Rationale:
 - New users need one page that distinguishes current mainline, allowed
   maintenance/fixture uses, and forbidden new-product uses.
 
+## Phase 13L
+
+Status: implemented in this cleanup slice.
+
+Added:
+
+- `tests/README.md`, the test ownership map.
+
+Classified:
+
+- Current mainline tests.
+- Compatibility tests.
+- Legacy fixture tests.
+- Script smoke tests.
+- Live opt-in support.
+
+Linked:
+
+- `docs/README.md`
+- `HANDOFF.md`
+
+Rationale:
+
+- The test suite intentionally keeps deterministic compatibility coverage, but
+  those tests should not be mistaken for current architecture guidance.
+- `make test` remains the full deterministic/offline gate and does not call live
+  Codex.
+
 ## Test Ownership
 
 Current mainline tests:

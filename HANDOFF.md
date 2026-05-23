@@ -30,6 +30,8 @@ FrontDesk
 - `docs/FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md`：当前 clean composition layer。
 - `docs/DEVELOPMENT_WORKFLOW.md`：本地开发和验证命令。
 - `docs/LEGACY_COMPATIBILITY.md`：仍保留的 compatibility islands 和禁止作为新主线的边界。
+- `tests/README.md`：测试 ownership map，区分 current mainline、compatibility、
+  legacy fixture、script smoke 和 live opt-in support。
 
 历史 whitepaper、WP 文档、roadmap、pilot、operations notes 和 agent briefs 已归档到
 `docs/archive/`。它们解释历史，不定义当前实现合同。
@@ -85,6 +87,9 @@ FrontDesk
 - `docs/LEGACY_COMPATIBILITY.md`
   - 剩余 compatibility islands 的统一索引。
   - 新用户先看这里判断哪些旧模块只能用于 fixture、maintenance 或 history。
+- `tests/README.md`
+  - 当前测试套件 ownership map。
+  - 说明 `make test` 是 deterministic/offline 全量 gate，不等同于 live Codex 产品验证。
 - `scripts/run_forgeunit_skill_factory.py`
   - 本地 vNext CLI smoke，支持 deterministic fake 和显式 command。
 - `scripts/run_frontdesk_forgeunit_command_pilot.py`
@@ -153,7 +158,8 @@ Codex，不应依赖本机 sibling `../ForgeUnit`。
    Phase 13I 已把 feedback/QA/ops support surfaces 收口为 module-scoped，
    Phase 13J 已把 direct Goal Runtime 和 graph v2 compatibility helpers 收口为
    module-scoped，
-   Phase 13K 已新增 legacy compatibility index。
+   Phase 13K 已新增 legacy compatibility index，
+   Phase 13L 已新增 tests ownership map。
 3. 完善 API/UI 对 registry outcome、repair decision、human review 和 refs-only
    evidence 的展示。
 4. 用 3-5 个真实 Skill 需求做 opt-in live Codex semantic eval，记录失败分类和修复策略。
