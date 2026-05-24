@@ -21,7 +21,8 @@
 
 - Phase 0 文档基线已完成；
 - Phase 1 Adaptive Schema MVP 已完成；
-- Phase 2 及之后未完成；
+- Phase 2 Adaptive Workspace Artifacts 已完成；
+- Phase 3 及之后未完成；
 - 本阶段仍不修改 ContextForge / ForgeUnit / LangGraph 的核心公共 API；
 - 复杂真实产品验证仍放在后续 pilot，不在默认测试中调用 live Codex。
 
@@ -30,6 +31,8 @@
 ```text
 src/skillfoundry/adaptive.py
 tests/test_adaptive_schema.py
+src/skillfoundry/adaptive_workspace.py
+tests/test_adaptive_workspace.py
 ```
 
 已完成 schema：
@@ -47,6 +50,7 @@ DecisionLedger
 
 ```bash
 .venv/bin/python -m pytest tests/test_adaptive_schema.py -q
+.venv/bin/python -m pytest tests/test_adaptive_schema.py tests/test_adaptive_workspace.py -q
 .venv/bin/python -m pytest -q
 git diff --check
 ```
@@ -800,4 +804,3 @@ Fallback: 如果仍失败，下一步是什么？
 - `git diff --check` 通过；
 - 所有阶段 commit 清晰；
 - docs index 指向最新执行计划和 extraction plan。
-
