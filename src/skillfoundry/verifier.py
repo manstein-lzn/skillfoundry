@@ -12,6 +12,7 @@ import yaml
 
 from contextforge import ContextLedger
 
+from .bundle_verifier import BUNDLE_VERIFICATION_RESULT_REF, BundleVerifier
 from .schema import (
     ArtifactManifest,
     ExecutionReport,
@@ -120,6 +121,7 @@ class Verifier:
         static_evidence = self._check_static_package(workspace, checks)
         self._check_package_paths(workspace, checks, package_errors)
         self._check_declared_reference_paths(workspace, checks, static_evidence.skill_text)
+        self._check_bundle_manifest(workspace, checks)
         self._check_contextforge_raw_frontdesk_exclusion(workspace, checks)
         self._check_package_hash(checks, package_hash)
         self._check_sandbox_smoke(workspace, checks)
@@ -145,6 +147,7 @@ class Verifier:
                 package_ref,
                 static_report_ref,
                 sandbox_log_ref,
+                BUNDLE_VERIFICATION_RESULT_REF,
                 report_evidence.ref,
                 llm_ref,
                 *[str(check.evidence_ref) for check in checks if check.evidence_ref],
@@ -192,6 +195,19 @@ class Verifier:
         (verifier_dir / "sandbox.log").write_text(_sandbox_log_text(checks), encoding="utf-8")
         result.write_json_file(verifier_dir / "verification_result.json")
         return result
+
+    def _check_bundle_manifest(self, workspace: JobWorkspace, checks: list[VerifierCheck]) -> None:
+        bundle_result = BundleVerifier().verify(workspace)
+        for check in bundle_result.checks:
+            checks.append(
+                _check(
+                    str(check.get("name", "bundle_manifest_check")),
+                    bool(check.get("passed")),
+                    str(check.get("message", "")),
+                    str(check.get("evidence_ref", BUNDLE_VERIFICATION_RESULT_REF)),
+                    severity=str(check.get("severity", "error")),
+                )
+            )
 
     def _read_manifest(self, workspace: JobWorkspace, checks: list[VerifierCheck]) -> ArtifactManifest | None:
         try:
@@ -910,8 +926,15 @@ def _hash_package(workspace: JobWorkspace) -> tuple[str, list[str]]:
     return sha256_json(entries), failures
 
 
-def _check(name: str, passed: bool, message: str, evidence_ref: str) -> VerifierCheck:
-    return VerifierCheck(name=name, passed=passed, severity="error", message=message, evidence_ref=evidence_ref)
+def _check(
+    name: str,
+    passed: bool,
+    message: str,
+    evidence_ref: str,
+    *,
+    severity: str = "error",
+) -> VerifierCheck:
+    return VerifierCheck(name=name, passed=passed, severity=severity, message=message, evidence_ref=evidence_ref)
 
 
 def _execution_report_ref(workspace: JobWorkspace, attempt_id: str | None) -> str | None:
