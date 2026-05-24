@@ -1,6 +1,17 @@
 """Clean SkillFoundry-on-ForgeUnit composition layer."""
 
 from .config import ForgeUnitSkillFoundryError, SkillFactoryConfig, SkillFactoryMode
+from .adaptive_graph import (
+    ADAPTIVE_GRAPH_SCHEMA_VERSION,
+    DEFAULT_ADAPTIVE_MAX_ITERATIONS,
+    DEFAULT_REPEATED_FAILURE_THRESHOLD,
+    AdaptiveGraphConfig,
+    AdaptiveGraphResult,
+    AdaptiveWorkUnitResult,
+    compile_adaptive_graph,
+    default_adaptive_worker,
+    run_adaptive_graph,
+)
 from .engine import ForgeUnitSkillFactoryEngine, ForgeUnitSkillFactoryEngineResult
 from .graph import (
     FORGEUNIT_SKILLFOUNDRY_GRAPH_STATE_REF,
@@ -36,6 +47,9 @@ from .adapters import (
 
 __all__ = [
     "FRONTDESK_STATE_REF",
+    "ADAPTIVE_GRAPH_SCHEMA_VERSION",
+    "DEFAULT_ADAPTIVE_MAX_ITERATIONS",
+    "DEFAULT_REPEATED_FAILURE_THRESHOLD",
     "FORGEUNIT_SKILLFOUNDRY_GRAPH_STATE_REF",
     "FORGEUNIT_SKILLFOUNDRY_PRODUCT_STATE_REF",
     "FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF",
@@ -43,6 +57,9 @@ __all__ = [
     "GRAPH_STATE_SCHEMA_VERSION",
     "PRODUCT_STATE_SCHEMA_VERSION",
     "PRODUCT_TRUST_BOUNDARIES",
+    "AdaptiveGraphConfig",
+    "AdaptiveGraphResult",
+    "AdaptiveWorkUnitResult",
     "ForgeUnitSkillFactoryEngine",
     "ForgeUnitSkillFactoryEngineResult",
     "ForgeUnitSkillFoundryError",
@@ -52,9 +69,12 @@ __all__ = [
     "SkillFactoryMode",
     "build_evidence_summary",
     "build_product_state_payload",
+    "compile_adaptive_graph",
     "compile_skill_factory_graph",
+    "default_adaptive_worker",
     "prepare_skill_factory_workspace",
     "read_evidence_summary",
+    "run_adaptive_graph",
     "run_codex_skill_factory",
     "run_existing_workspace_skill_factory",
     "run_frozen_frontdesk_skill_factory",
