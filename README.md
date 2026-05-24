@@ -107,6 +107,7 @@ Current mainline docs:
 - [Legacy Compatibility](docs/LEGACY_COMPATIBILITY.md)
 - [Test Ownership](tests/README.md)
 - [FrontDesk Live Semantic Eval](docs/FRONTDESK_LIVE_SEMANTIC_EVAL.md)
+- [Product Validation PV001: Codexarium Clean-Room Rebuild](docs/PRODUCT_VALIDATION_CODEXARIUM_REBUILD_PLAN.md)
 - [SkillFoundry v2 Baseline](docs/SKILLFOUNDRY_V2_BASELINE.md)
 - [SkillFoundry ContextForge Refactor Plan](docs/SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md)
 - [ForgeUnit SkillFoundry Composition](docs/FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md)

@@ -97,6 +97,8 @@ def test_writes_contextforge_contracts_for_frontdesk_nodes_without_raw_conversat
         visible_values = {selector.value for selector in node.visible_context}
         forbidden_values = {selector.value for selector in node.forbidden_context}
         assert node.node_id == node_id
+        assert node.budgets["prompt_budget_tokens"] == 24000
+        assert node.budgets["context_budget_tokens"] == 24000
         assert "frontdesk/conversation.jsonl" not in visible_values
         assert "frontdesk/conversation.jsonl" in forbidden_values
         assert node.metadata["raw_conversation_included"] is False

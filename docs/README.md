@@ -51,6 +51,7 @@ Manual runbooks:
 
 - [FrontDesk ForgeUnit Command Pilot Runbook](FRONTDESK_FORGEUNIT_COMMAND_PILOT_RUNBOOK.md)
 - [FrontDesk Live Semantic Eval](FRONTDESK_LIVE_SEMANTIC_EVAL.md)
+- [Product Validation PV001: Codexarium Clean-Room Rebuild](PRODUCT_VALIDATION_CODEXARIUM_REBUILD_PLAN.md)
 
 Live Codex evaluation is manual and opt-in. It is not part of default cleanup
 validation.

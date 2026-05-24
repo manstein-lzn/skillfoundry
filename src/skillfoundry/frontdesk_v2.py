@@ -47,6 +47,7 @@ FRONTDESK_V2_NODE_IDS = (
 
 _CONTRACT_VERSION = "0.1"
 _SOLUTION_PLAN_REF = "frontdesk/solution_plan.json"
+_DEFAULT_FRONTDESK_PROMPT_BUDGET_TOKENS = 24_000
 
 
 @dataclass(frozen=True)
@@ -451,7 +452,10 @@ def _checkpoint_policy() -> dict[str, JsonValue]:
 
 def _frontdesk_budget_payload(frontdesk: FrontDeskWorkspace) -> dict[str, JsonValue]:
     config = _read_frontdesk_config(frontdesk)
+    prompt_budget_tokens = min(config.max_total_tokens, _DEFAULT_FRONTDESK_PROMPT_BUDGET_TOKENS)
     return {
+        "prompt_budget_tokens": prompt_budget_tokens,
+        "context_budget_tokens": prompt_budget_tokens,
         "max_frontdesk_model_calls": config.max_frontdesk_model_calls,
         "max_total_tokens": config.max_total_tokens,
         "max_provider_cost_usd": config.max_provider_cost_usd,

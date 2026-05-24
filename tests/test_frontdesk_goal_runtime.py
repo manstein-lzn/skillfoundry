@@ -310,6 +310,75 @@ def test_frontdesk_spec_auditor_runs_after_approved_plan_without_raw_conversatio
     assert "conversation.jsonl" not in result_text
 
 
+def test_frontdesk_spec_auditor_handles_pv001_sized_frontdesk_artifacts(tmp_path) -> None:
+    workspace = initialize_job_workspace(tmp_path / "runs", "frontdesk-pv001-runtime")
+    frontdesk = initialize_frontdesk_workspace(workspace)
+    frontdesk.append_conversation_turn(
+        ConversationTurn(
+            turn_id="turn-001",
+            role="user",
+            content=(
+                "Build a Codex skill called codexarium for maintaining a structured personal LLM wiki "
+                "from local Codex collaboration history."
+            ),
+        )
+    )
+    pv001_request = (
+        "Build a Codex skill called codexarium for maintaining a structured personal LLM wiki from local "
+        "Codex collaboration history. It must act as a knowledge curator and personal research secretary, "
+        "preserving durable ideas, decisions, principles, experiments, failures, open questions, project goals, "
+        "and recurring work patterns. It must reject raw log mirroring, activity diaries, secret collection, "
+        "and paraphrased chat dumps. It should write Obsidian-friendly Markdown with compact evidence references "
+        "and may use small local helper tools for health checks and evidence bundle scanning."
+    )
+    write_frontdesk_artifact(
+        frontdesk,
+        "clarification_summary.md",
+        "\n".join(
+            [
+                "# Clarification Summary",
+                "",
+                "## Current User Request",
+                pv001_request,
+                "",
+                "## Privacy Boundary",
+                "- Raw conversation is provenance only.",
+            ]
+        ),
+    )
+    write_frontdesk_artifact(
+        frontdesk,
+        "risk_report.json",
+        {
+            "schema_version": "skillfoundry.frontdesk_risk_report.v1",
+            "risk_flags": [],
+            "redaction_status": "complete",
+            "provider_usage": {
+                "usage_available": False,
+                "usage_unavailable_reason": "Offline Front Desk fixture does not call a provider.",
+            },
+        },
+    )
+
+    run_frontdesk_core_need_goal_harness(frontdesk, created_at=CREATED_AT)
+    run_frontdesk_solution_planner_goal_harness(frontdesk, created_at=CREATED_AT)
+    _approved_solution_plan(frontdesk)
+
+    result = run_frontdesk_spec_auditor_goal_harness(frontdesk, created_at=CREATED_AT)
+
+    assert result.harness_result.worker_run.status == "completed"
+    assert workspace.resolve_path(FRONTDESK_SPEC_AUDIT_REPORT_REF, must_exist=True).is_file()
+    ledger = ContextLedger.connect(workspace.resolve_path(FRONTDESK_GOAL_RUNTIME_LEDGER_REF, must_exist=True))
+    try:
+        prompt_view, _blocks = ledger.get_prompt_view(result.harness_result.compiled_context.prompt_view.id)
+        assert prompt_view.budget.budget_tokens == 24000
+        assert f"{workspace.job_id}:{SPEC_AUDITOR_NODE_ID}:frontdesk_acceptance_criteria" in set(
+            prompt_view.source_item_ids
+        )
+    finally:
+        ledger.close()
+
+
 def test_frontdesk_spec_auditor_writes_audit_refs_after_user_review_gate(tmp_path) -> None:
     workspace, frontdesk = _frontdesk_workspace(tmp_path, seed_solution_plan=False)
     run_frontdesk_core_need_goal_harness(frontdesk, created_at=CREATED_AT)
