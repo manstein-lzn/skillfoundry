@@ -10,6 +10,8 @@
 
 本文不声称当前代码已经完整实现所有能力。当前实现状态仍以 `README.md`、`docs/SYSTEM_MAP.md`、`docs/FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md` 和测试结果为准。
 
+本文只定义 SkillFoundry 这个组合应用的产品宪法。更底层的 ForgeUnit + ContextForge + LangGraph 通用 agent work substrate 愿景，见 `docs/AGENT_WORK_SUBSTRATE_VISION.md`。
+
 本文回答一个更根本的问题：
 
 ```text
@@ -77,6 +79,72 @@ ForgeUnit 负责受控 work-unit harness。
 Codex exec / strong worker 负责实际构建。
 Verifier 负责真伪。
 Registry 负责沉淀和复用。
+```
+
+## SkillFoundry 是组合应用，不是底座
+
+SkillFoundry 是 ForgeUnit + ContextForge + LangGraph 的第一个产品化组合应用。
+
+它验证的是一套更通用的 agent work substrate：
+
+```text
+LangGraph = orchestration topology
+ForgeUnit = bounded work-unit harness
+ContextForge = governed state / context / evidence substrate
+Verifier = truth gate
+Reviewer = quality and strategy gate
+Codex / strong model = worker intelligence
+Adaptive Steering = complex-task control loop
+```
+
+SkillFoundry 的领域目标是：
+
+```text
+把任意需求铸造成 verified AI-native Capability Bundle。
+```
+
+因此，本文中的部分概念分为两类。
+
+SkillFoundry 专属领域语义：
+
+- Capability Bundle；
+- Bundle Manifest；
+- Package Profile；
+- Capability Surface；
+- Agent Interface；
+- Runtime Interface；
+- Distribution Policy；
+- Skill Registry；
+- skill-specific verifier profiles。
+
+应当保持通用、未来下沉到底座的 primitives：
+
+- StateEstimate；
+- NextStepContract；
+- ObservationReport；
+- StateCorrection；
+- DecisionLedger；
+- Adaptive Steering Loop；
+- Reviewer Gate；
+- Verifier Gate；
+- Repair Loop；
+- refs-only state；
+- checkpoint；
+- replay。
+
+工程节奏应当是：
+
+```text
+先在 SkillFoundry 中以领域形态验证。
+再把稳定 primitives 下沉到 ContextForge / ForgeUnit。
+LangGraph 保持薄编排层。
+```
+
+一句话：
+
+```text
+SkillFoundry owns capability-bundle domain semantics.
+The substrate owns adaptive steering primitives.
 ```
 
 ## 不是 Prompt 工厂
@@ -425,18 +493,27 @@ full_runtime_bundle
 
 ## SkillFoundry 生产线
 
-Capability Bundle 的生产线应当保持清晰：
+Capability Bundle 的生产线应当保持清晰，但不能被误解为一次性 waterfall 计划。
+
+复杂 bundle 的实现路径通常无法提前完整预知。EdaSkill 的主要工作可能是文档解析、corpus 清洗和 runtime KB 构建；Codexarium 的主要工作可能是 Rust 内核、CLI、测试和调试；MCP bundle 的主要工作可能是工具 schema、server 生命周期和权限边界。
+
+因此，SkillFoundry 的生产线应当是：
 
 ```text
 FrontDesk
-  -> Capability Design
+  -> Initial Capability Hypothesis / Capability Design
   -> Frozen Spec / Acceptance Criteria / Verification Spec
   -> ContextForge Boundary
-  -> ForgeUnit Work Unit
-  -> Codex exec / strong worker
-  -> Runtime Bundle Candidate
-  -> Verifier
-  -> Repair Loop
+  -> Adaptive Build Loop
+       -> Capability State Estimate
+       -> Next-Step Contract
+       -> ForgeUnit Work Unit
+       -> Codex exec / strong worker
+       -> Observation / Work Evidence
+       -> Steering Correction
+       -> continue / repair / redesign / spec revision / closure
+  -> Bundle Closure
+  -> Final Verifier
   -> Final Report
   -> Registry
 ```
@@ -481,6 +558,281 @@ Capability Design 负责选择 bundle profile 和能力面。
 - 是否需要 oracle 和 fixtures；
 - 哪些 runtime assets 需要 hash 和 provenance。
 
+Capability Design 不是死计划。
+
+它应当冻结的是当前最可信的能力假设，而不是预言所有实现步骤。它可以明确：
+
+- 当前判断的 bundle profile；
+- 预期 Agent Interface；
+- 预期 Runtime Interface；
+- 核心 runtime substrate；
+- 已知未知；
+- 高影响决策；
+- 初始验证原则；
+- 分发红线。
+
+具体生产工艺应当在后续 Adaptive Build Loop 中滚动形成。
+
+### Spec 与 Steering 的分工
+
+Frozen Spec 负责定义“这次能力包最终要成为什么”。
+
+Steering Loop 负责决定“下一步怎么走”。
+
+Verifier 负责判断“这一步和最终结果是否真的成立”。
+
+这三者不能混在一起。
+
+Spec 应该冻结：
+
+- 用户真正要解决的问题；
+- 目标用户；
+- 成功标准；
+- 非目标；
+- 安全、隐私和分发边界；
+- forbidden context；
+- 关键 acceptance criteria；
+- 关键 verification principles；
+- 必要的人类或专家确认门。
+
+Spec 不应该冻结：
+
+- 必须使用哪个 parser；
+- 必须使用哪个 SQLite schema；
+- 必须一次性转换全部资料；
+- 必须用哪种 chunk strategy；
+- 必须以固定步骤完成所有实现。
+
+如果后续发现目标、红线或验收原则本身不成立，不能在实现层偷偷改。必须进入 `spec_revision_required`，回到 FrontDesk 或用户确认。
+
+### 卡尔曼式自适应 Steering
+
+SkillFoundry 对复杂任务应采用卡尔曼式自适应 steering。
+
+它不是 waterfall：
+
+```text
+一次性规划完整路径 -> 执行到底
+```
+
+也不是 random walk：
+
+```text
+agent 随便走一步看一步
+```
+
+它是：
+
+```text
+基于当前最可信状态预测下一步。
+执行 bounded work unit。
+用真实 artifact / test / reviewer evidence 修正状态。
+根据修正后的状态决定下一步。
+直到 bundle closure 和 final verification。
+```
+
+类比关系：
+
+```text
+Kalman Filter                    SkillFoundry
+----------------------------------------------------------------
+State estimate                   Capability State Estimate
+Prediction model                 Frozen Spec + capability hypothesis
+Control input                    Steering Contract
+Measurement                      Artifacts / tests / logs / verifier evidence
+Measurement noise                worker self-report noise / flaky evidence
+Process noise                    未知复杂度 / 工具失败 / 环境变化
+Kalman gain                      对不同证据来源的信任权重
+Correction                       Steering Review / adaptive decision
+Updated state                    State Summary / Decision Ledger
+Next prediction                  Next-Step Contract
+```
+
+这不是数学实现要求，而是工程哲学。
+
+核心原则：
+
+```text
+Constitution 固定。
+Frozen Spec 固定目标和红线。
+Plan 不固定。
+每轮 contract 固定下一步。
+每轮 evidence 修正状态。
+最终 closure 汇总完整历史。
+```
+
+### Capability State Estimate
+
+复杂任务需要维护当前最可信的任务状态估计。
+
+它不是聊天记录，也不是完整历史，而是当前系统对能力包真实状态的压缩判断。
+
+示例：
+
+```yaml
+capability_state:
+  objective_confidence: high
+  runtime_substrate_status: partial
+  agent_interface_status: not_started
+  verification_status: weak
+  distribution_policy_status: unresolved
+
+known_good:
+  - sample PDF conversion preserves headings
+  - SQLite FTS5 can search API names
+  - query script can return JSON
+
+known_bad:
+  - parser A loses code signatures
+  - table extraction quality is below threshold
+
+known_unknowns:
+  - full corpus scale performance
+  - source redistribution status
+  - whether MCP is necessary
+
+current_risks:
+  - query quality may be insufficient for task-level retrieval
+  - runtime package may depend on absolute build paths
+
+next_best_step:
+  compare parser B on table-heavy pages
+```
+
+这个状态估计决定下一步应该降低哪个不确定性，而不是让 agent 凭惯性继续执行。
+
+### Next-Step Contract
+
+每轮工作不需要知道后面所有步骤，但必须知道下一步。
+
+Next-Step Contract 应当说明：
+
+- 当前状态引用；
+- 下一步目标；
+- 为什么现在做这一步；
+- 允许写入范围；
+- 预期产物；
+- 退出标准；
+- 停止条件；
+- 预计后续方向；
+- 如果这一步太大或太小的风险。
+
+示例：
+
+```json
+{
+  "schema_version": "skillfoundry.steering_contract.v1",
+  "iteration": 3,
+  "current_state_ref": "adaptive/state_summary_003.md",
+  "next_objective": "Evaluate PDF parsing tools on a representative 5-page sample.",
+  "why_now": "The runtime KB quality depends on preserving headings, tables, and API signatures.",
+  "allowed_scope": [
+    "attempts/003",
+    "package/prototypes/parser_spike"
+  ],
+  "expected_outputs": [
+    "attempts/003/parser_tool_comparison.md",
+    "attempts/003/sample_outputs/"
+  ],
+  "exit_criteria": [
+    "At least two tools compared on the same pages.",
+    "Each output assessed for headings, tables, code/API signatures.",
+    "Recommendation recorded with fallback."
+  ],
+  "stop_conditions": [
+    "No tool can process the sample.",
+    "Network/source access is blocked.",
+    "Source distribution status changes."
+  ]
+}
+```
+
+### 步长与轮数控制
+
+一步走多少，不能由执行 agent 独自决定，也不能在任务开始时固定死。
+
+正确模式：
+
+```text
+Agent proposes.
+Steering approves.
+Evidence validates.
+```
+
+中文：
+
+```text
+agent 提议步长。
+steering 决定步长和方向。
+evidence 证明这一步是否成立。
+```
+
+默认规则：
+
+```text
+每一步最多解决一个主要未知，或交付一个可验证资产。
+```
+
+如果一步同时包含选择 parser、全量转换、设计数据库、写 query、写 SKILL.md 和最终 verifier，步子太大。
+
+如果一步只修改无关格式，而没有降低风险或产生可验证资产，步子太小。
+
+高 process noise 的任务要小步推进。EdaSkill 这类 reference-heavy 任务应该偏小步：
+
+```text
+source inventory -> parser spike -> sample corpus -> query eval -> full corpus
+```
+
+低 process noise 的任务可以更大步。Codexarium 这类 code-runtime 任务可以通过编译器、测试和 lint 获得更强观测：
+
+```text
+CLI contract -> Rust core prototype -> fixture tests -> integration
+```
+
+总步数不应预先固定。每轮只严格锁定下一步，粗略预测后面两到三步。
+
+### Agent Difficulty Support
+
+强 agent 的执行能力已经足够强，但创造能力、主观能动性和困难中的取舍能力并不稳定。
+
+SkillFoundry 不能只编排 agent 做事，还必须编排 agent 在困难中做正确的事。
+
+当出现以下情况时，应进入 adaptive diagnosis，而不是继续蛮干：
+
+- 原计划不可行；
+- 依赖缺失或工具不可用；
+- 连续测试失败；
+- 数据解析质量差；
+- 需求发现新的歧义；
+- 出现多个高影响路线选择；
+- 产物能跑但质量明显弱；
+- 自动验证无法覆盖关键质量；
+- 需要联网调研或引入新工具；
+- 当前方案影响分发、安全、版权或环境依赖。
+
+困难处理协议应回答：
+
+```text
+Observation: 发生了什么？
+Diagnosis: 为什么原计划不够？
+Options: 至少有哪些可选路线？
+Tradeoff: 每条路线的成本、风险、质量影响是什么？
+Decision: 选择哪条，为什么？
+Evidence: 用什么验证这个选择？
+Fallback: 如果失败，下一步怎么办？
+```
+
+必要支架：
+
+- Quality Bar；
+- High-Impact Decision Map；
+- Bounded Research / Spike；
+- Decision Ledger；
+- Independent Reviewer；
+- Technical Closure Review。
+
+高质量不是“模型更会自夸”，而是系统更难被低质量结果糊弄过去。
+
 ### ContextForge
 
 ContextForge 是 agent 工作外骨骼。
@@ -495,6 +847,11 @@ ContextForge 是 agent 工作外骨骼。
 - PromptCachePlan；
 - checkpoint；
 - ledger；
+- capability state estimate；
+- next-step contract；
+- observation report；
+- state correction；
+- decision ledger；
 - worker attempt evidence；
 - replay；
 - verification evidence；
@@ -838,8 +1195,14 @@ SkillFoundry 的目标是把一次复杂工作沉淀为可复用能力：
 - capability surface；
 - runtime asset manifest；
 - profile-specific verification；
-- knowledge build plan；
+- capability state estimate；
+- next-step steering contract；
+- observation report；
+- state correction；
+- decision ledger；
+- knowledge build evidence；
 - MCP / service runtime contract；
+- independent reviewer gate；
 - professional technical closure checklist。
 
 因此，近期目标不是重写系统，而是把这些抽象逐步落为小而硬的 contract。
@@ -908,16 +1271,98 @@ registry only after verifier pass
 
 然后通过真实产品打磨。
 
+### 原则八：固定宪法，滚动计划
+
+SkillFoundry 不应该提前把未知复杂任务拆死。
+
+固定的是：
+
+- 产品宪法；
+- frozen spec；
+- 安全和分发红线；
+- verifier 权威；
+- refs-only 边界；
+- registry 只收 verifier-passed bundle。
+
+滚动的是：
+
+- 实现路径；
+- 工具选择；
+- corpus schema；
+- 代码架构；
+- MCP / service 是否必要；
+- 下一步 work unit；
+- repair / redesign 策略。
+
+复杂任务应当通过 evidence-driven steering loop 找到路。
+
+### 原则九：Agent 提议，Steering 裁决，Evidence 证明
+
+执行 agent 可以提议下一步怎么走，但不能独自决定步长、方向和完成状态。
+
+Steering 层可以是：
+
+- human；
+- independent reviewer agent；
+- deterministic policy；
+- 三者组合。
+
+Steering 可以返回：
+
+```text
+approve
+shrink
+expand
+split
+merge
+redirect
+pause_for_user
+require_reviewer
+```
+
+Verifier / Reviewer 决定这一步是否真的成立。
+
+### 原则十：卡尔曼式修正，而不是自我说服
+
+每轮 work unit 后必须用 artifact、tests、logs、verifier evidence 或 reviewer evidence 修正 state estimate。
+
+worker self-report 是低可信观测，不能直接推动 closure。
+
+当观测可靠时，系统应大幅修正路线；当观测噪声大时，系统应要求更多证据。
+
+示例：
+
+```text
+cargo test fail -> 必须 repair
+manifest hash mismatch -> 必须 repair
+sample query weak -> 需要 query eval 或 schema redesign
+worker says done -> 不能 closure
+domain reviewer blocks -> 不能 registry
+```
+
+复杂任务的主观能动性不是靠 prompt 祈祷出来的，而是靠持续观测、修正和决策账本 scaffold 出来的。
+
 ## 下一步最小落点
 
-为了让本愿景进入代码，推荐下一步只做四个小落点：
+为了让本愿景进入代码，推荐下一步先做小而硬的 contract，不做大型平台。
+
+第一组落点用于把 SkillFoundry 从 Skill package 工厂升级为 Capability Bundle 工厂：
 
 1. 新增 `package/skillfoundry.bundle.json` 作为可选但优先的 bundle manifest。
 2. 在 frozen spec / worker input 中加入 `package_profile`。
 3. 在 VerificationSpec 中支持 `profile_specific_commands` 或等价结构。
 4. 在 verifier 中增加最小 bundle manifest 校验和 profile artifact 校验。
 
-这四步足以让 SkillFoundry 从“Codex Skill 工厂”升级为“Capability Bundle 工厂”的第一版。
+第二组落点用于把复杂任务从 plan-and-execute 升级为 adaptive steering：
+
+1. 新增 `capability_state_estimate` artifact。
+2. 新增 `next_step_contract` artifact。
+3. 新增 `observation_report` / `work_report` artifact。
+4. 新增 `state_correction` / `decision_ledger` artifact。
+5. 在 ForgeUnit / SkillFoundry composition 中支持一轮 work unit 后回到 steering review。
+6. 在 final report 中保留 refs-only 的 state / decision / verification 摘要。
+
+这两组落点足以让 SkillFoundry 从“Codex Skill 工厂”升级为“卡尔曼式 Capability Bundle 工厂”的第一版。
 
 不需要立刻实现完整 MCP 平台、服务部署平台或知识库构建平台。
 

@@ -7,6 +7,7 @@ design assets.
 
 Read these first, in order:
 
+- [Agent Work Substrate Vision](AGENT_WORK_SUBSTRATE_VISION.md): cross-application substrate vision for LangGraph + ForgeUnit + ContextForge adaptive agent work.
 - [SkillFoundry Capability Bundle Vision](SKILLFOUNDRY_CAPABILITY_BUNDLE_VISION.md): product constitution for the AI-native capability bundle direction.
 - [System Map](SYSTEM_MAP.md): current architecture and 10-minute reading path.
 - [ForgeUnit SkillFoundry Composition](FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md): current product composition layer.
@@ -32,6 +33,8 @@ FrontDesk
 
 Implementation docs:
 
+- [Codex Goal Adaptive Steering Execution Plan](CODEX_GOAL_ADAPTIVE_STEERING_EXECUTION_PLAN.md)
+- [Adaptive Steering Implementation Plan](ADAPTIVE_STEERING_IMPLEMENTATION_PLAN.md)
 - [System Map](SYSTEM_MAP.md)
 - [ForgeUnit SkillFoundry Composition](FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md)
 - [ForgeUnit Product Adapter Slice](FORGEUNIT_PRODUCT_ADAPTER_SLICE.md)
@@ -42,6 +45,7 @@ Implementation docs:
 
 Architecture and product direction:
 
+- [Agent Work Substrate Vision](AGENT_WORK_SUBSTRATE_VISION.md)
 - [SkillFoundry Capability Bundle Vision](SKILLFOUNDRY_CAPABILITY_BUNDLE_VISION.md)
 - [SkillFoundry v2 Baseline](SKILLFOUNDRY_V2_BASELINE.md)
 - [SkillFoundry ContextForge Refactor Plan](SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md)

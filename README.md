@@ -166,6 +166,7 @@ Start from [docs/README.md](docs/README.md) and
 
 Current mainline docs:
 
+- [Agent Work Substrate Vision](docs/AGENT_WORK_SUBSTRATE_VISION.md)
 - [SkillFoundry Capability Bundle Vision](docs/SKILLFOUNDRY_CAPABILITY_BUNDLE_VISION.md)
 - [System Map](docs/SYSTEM_MAP.md)
 - [Development Workflow](docs/DEVELOPMENT_WORKFLOW.md)
