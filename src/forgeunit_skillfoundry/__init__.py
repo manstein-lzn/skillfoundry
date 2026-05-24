@@ -3,11 +3,13 @@
 from .config import ForgeUnitSkillFoundryError, SkillFactoryConfig, SkillFactoryMode
 from .adaptive_graph import (
     ADAPTIVE_GRAPH_SCHEMA_VERSION,
+    ADAPTIVE_WORK_UNIT_RESULT_SCHEMA_VERSION,
     DEFAULT_ADAPTIVE_MAX_ITERATIONS,
     DEFAULT_REPEATED_FAILURE_THRESHOLD,
     AdaptiveGraphConfig,
     AdaptiveGraphResult,
     AdaptiveWorkUnitResult,
+    adaptive_work_unit_result_ref,
     compile_adaptive_graph,
     default_adaptive_worker,
     run_adaptive_graph,
@@ -48,6 +50,7 @@ from .adapters import (
 __all__ = [
     "FRONTDESK_STATE_REF",
     "ADAPTIVE_GRAPH_SCHEMA_VERSION",
+    "ADAPTIVE_WORK_UNIT_RESULT_SCHEMA_VERSION",
     "DEFAULT_ADAPTIVE_MAX_ITERATIONS",
     "DEFAULT_REPEATED_FAILURE_THRESHOLD",
     "FORGEUNIT_SKILLFOUNDRY_GRAPH_STATE_REF",
@@ -60,6 +63,7 @@ __all__ = [
     "AdaptiveGraphConfig",
     "AdaptiveGraphResult",
     "AdaptiveWorkUnitResult",
+    "adaptive_work_unit_result_ref",
     "ForgeUnitSkillFactoryEngine",
     "ForgeUnitSkillFactoryEngineResult",
     "ForgeUnitSkillFoundryError",

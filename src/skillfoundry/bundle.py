@@ -28,6 +28,22 @@ BUNDLE_TYPES = frozenset(
         "full_runtime_bundle",
     }
 )
+FORBIDDEN_BUNDLE_FIELDS = frozenset(
+    {
+        "conversation",
+        "conversation_turns",
+        "messages",
+        "prompt",
+        "prompts",
+        "raw_prompt",
+        "model_output",
+        "model_outputs",
+        "raw_model_output",
+        "raw_model_outputs",
+        "transcript",
+        "raw_transcript",
+    }
+)
 
 
 def _require_bundle_type(value: Any, field_name: str) -> None:
@@ -52,6 +68,22 @@ def _require_package_ref_list(value: Any, field_name: str) -> None:
         raise SchemaValidationError(f"{field_name} must be a list of package-relative refs")
     for index, item in enumerate(value):
         _require_package_ref(item, f"{field_name}[{index}]")
+
+
+def _reject_forbidden_keys(value: Any, field_name: str) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in FORBIDDEN_BUNDLE_FIELDS:
+                raise SchemaValidationError(f"{field_name} contains forbidden raw field: {key}")
+            _reject_forbidden_keys(item, f"{field_name}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_forbidden_keys(item, f"{field_name}[{index}]")
+
+
+def _require_safe_json_mapping(value: Any, field_name: str) -> None:
+    _require_json_mapping(value, field_name)
+    _reject_forbidden_keys(value, field_name)
 
 
 @dataclass
@@ -83,7 +115,7 @@ class CapabilityBundleManifest(SchemaModel):
             "verification",
             "distribution",
         ):
-            _require_json_mapping(getattr(self, name), name)
+            _require_safe_json_mapping(getattr(self, name), name)
 
 
 def declared_package_refs(manifest: CapabilityBundleManifest) -> list[str]:

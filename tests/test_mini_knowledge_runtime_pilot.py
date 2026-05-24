@@ -6,10 +6,12 @@ import sys
 from pathlib import Path
 
 from forgeunit_skillfoundry import AdaptiveGraphConfig, AdaptiveWorkUnitResult, run_adaptive_graph
+from skillfoundry import LocalSkillRegistry, Verifier, emit_final_report
 from skillfoundry.adaptive_workspace import read_decision_ledger, read_observation_report
 from skillfoundry.bundle import BUNDLE_MANIFEST_REF
 from skillfoundry.bundle_verifier import BundleVerifier
 from skillfoundry.schema import sha256_file
+from skillfoundry.worker import WorkerAdapter, WorkerExecutionOutcome, WorkerRunContext
 from skillfoundry.workspace import JobWorkspace
 
 
@@ -49,6 +51,29 @@ This skill queries a tiny synthetic JSONL knowledge runtime.
 
 - The fixture uses only synthetic local records.
 """
+
+
+class KnowledgeRuntimePilotBoundaryWorker:
+    @property
+    def worker_type(self) -> str:
+        return "test:knowledge-runtime-pilot-boundary"
+
+    def run(self, context: WorkerRunContext) -> WorkerExecutionOutcome:
+        return WorkerExecutionOutcome(
+            status="completed",
+            exit_status="success",
+            summary="Recorded synthetic knowledge runtime pilot package boundary evidence.",
+            artifacts=[
+                "package/SKILL.md",
+                BUNDLE_MANIFEST_REF,
+                "package/data/runtime_kb.jsonl",
+                "package/data/runtime_kb.manifest.json",
+                "package/scripts/query_runtime_kb.py",
+                "package/references/workflow.md",
+            ],
+            transcript_lines=["package was materialized by the adaptive graph before boundary recording"],
+            usage_unavailable_reason="deterministic pilot does not call model providers",
+        )
 
 
 def knowledge_runtime_worker(workspace: JobWorkspace, contract) -> AdaptiveWorkUnitResult:
@@ -158,6 +183,7 @@ def test_mini_knowledge_runtime_pilot_builds_queryable_bundle(tmp_path: Path) ->
 
     bundle_result = BundleVerifier().verify(workspace)
     assert bundle_result.passed is True
+    assert bundle_result.manifest_status == "valid"
     kb_manifest = json.loads(
         workspace.resolve_path("package/data/runtime_kb.manifest.json", must_exist=True).read_text(encoding="utf-8")
     )
@@ -175,6 +201,29 @@ def test_mini_knowledge_runtime_pilot_builds_queryable_bundle(tmp_path: Path) ->
     )
     matches = json.loads(completed.stdout)["matches"]
     assert matches[0]["id"] == "layout-rule"
+
+    WorkerAdapter(KnowledgeRuntimePilotBoundaryWorker()).invoke(workspace, "001")
+    verification = Verifier().verify(workspace)
+    registry_path = tmp_path / "registry.json"
+    registry = LocalSkillRegistry(registry_path)
+    entry = registry.add_verified(workspace, skill_id="mini-knowledge-runtime", version="0.1.0")
+    report = emit_final_report(
+        workspace.root,
+        final_status="registered",
+        registry_path=registry_path,
+        registry_entry=entry,
+    )
+
+    assert verification.passed is True
+    assert registry.verify("mini-knowledge-runtime", "0.1.0").valid is True
+    assert report["final_status"] == "registered"
+    assert report["refs"]["verifier_result"]["passed"] is True
+    assert report["refs"]["registry_entry"]["approval_status"] == "approved"
+    serialized_report = json.dumps(report, sort_keys=True)
+    assert "Synthetic Layout Rule" not in serialized_report
+    assert "Metal spacing must be checked" not in serialized_report
+    assert "raw_prompt" not in serialized_report
+    assert "raw_transcript" not in serialized_report
     assert "Metal spacing must be checked" not in serialized_state
     assert "raw_prompt" not in serialized_state
     assert "raw_transcript" not in serialized_state

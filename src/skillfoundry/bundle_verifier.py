@@ -12,6 +12,7 @@ from .schema import (
     SchemaValidationError,
     _require_bool,
     _require_json_mapping,
+    _require_non_empty_str,
     _require_str_list,
     sha256_file,
     sha256_json,
@@ -23,6 +24,7 @@ from .workspace import JobWorkspace
 
 BUNDLE_VERIFIER_VERSION = "skillfoundry.bundle_verifier.v1"
 BUNDLE_VERIFICATION_RESULT_REF = "verifier/bundle_verification_result.json"
+BUNDLE_MANIFEST_STATUSES = frozenset({"missing", "invalid", "valid"})
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,7 @@ class BundleVerificationResult(SchemaModel):
     failures: list[str]
     evidence_refs: list[str]
     package_hash: str
+    manifest_status: str = "missing"
     verifier_version: str = BUNDLE_VERIFIER_VERSION
     created_at: str = ""
     schema_version: str = "skillfoundry.bundle_verification_result.v1"
@@ -61,6 +64,10 @@ class BundleVerificationResult(SchemaModel):
         if not self.created_at:
             self.created_at = utc_now()
         _require_bool(self.manifest_present, "manifest_present")
+        _require_non_empty_str(self.manifest_status, "manifest_status")
+        if self.manifest_status not in BUNDLE_MANIFEST_STATUSES:
+            allowed = ", ".join(sorted(BUNDLE_MANIFEST_STATUSES))
+            raise SchemaValidationError(f"manifest_status must be one of: {allowed}")
         _require_bool(self.passed, "passed")
         _require_str_list(self.failures, "failures")
         _require_str_list(self.evidence_refs, "evidence_refs")
@@ -79,7 +86,10 @@ class BundleVerifier:
         verifier_dir = workspace.resolve_path("verifier")
         verifier_dir.mkdir(parents=True, exist_ok=True)
         checks: list[BundleVerifierCheck] = []
+        manifest_path = workspace.resolve_path(BUNDLE_MANIFEST_REF)
+        manifest_present = manifest_path.exists()
         manifest = self._load_manifest(workspace, checks)
+        manifest_status = "missing" if not manifest_present else "valid" if manifest is not None else "invalid"
         package_hash = hash_package_tree(workspace)
 
         if manifest is not None:
@@ -90,12 +100,13 @@ class BundleVerifier:
         failures = [f"{check.name}: {check.message}" for check in failed]
         result = BundleVerificationResult(
             job_id=workspace.job_id,
-            manifest_present=manifest is not None,
+            manifest_present=manifest_present,
             passed=not failed,
             checks=[check.to_dict() for check in checks],
             failures=failures,
-            evidence_refs=_dedupe_refs([BUNDLE_MANIFEST_REF if manifest is not None else None, *[check.evidence_ref for check in checks]]),
+            evidence_refs=_dedupe_refs([BUNDLE_MANIFEST_REF if manifest_present else None, *[check.evidence_ref for check in checks]]),
             package_hash=package_hash,
+            manifest_status=manifest_status,
             verifier_version=self.verifier_version,
             created_at=utc_now(),
         )

@@ -6,9 +6,11 @@ import sys
 from pathlib import Path
 
 from forgeunit_skillfoundry import AdaptiveGraphConfig, AdaptiveWorkUnitResult, run_adaptive_graph
+from skillfoundry import LocalSkillRegistry, Verifier, emit_final_report
 from skillfoundry.adaptive_workspace import read_decision_ledger, read_observation_report
 from skillfoundry.bundle import BUNDLE_MANIFEST_REF
 from skillfoundry.bundle_verifier import BundleVerifier
+from skillfoundry.worker import WorkerAdapter, WorkerExecutionOutcome, WorkerRunContext
 from skillfoundry.workspace import JobWorkspace
 
 
@@ -48,6 +50,27 @@ This clean-room skill wraps a tiny local Python runtime.
 
 - The runtime is local, deterministic, and does not use network access.
 """
+
+
+class CodeRuntimePilotBoundaryWorker:
+    @property
+    def worker_type(self) -> str:
+        return "test:code-runtime-pilot-boundary"
+
+    def run(self, context: WorkerRunContext) -> WorkerExecutionOutcome:
+        return WorkerExecutionOutcome(
+            status="completed",
+            exit_status="success",
+            summary="Recorded code runtime pilot package boundary evidence.",
+            artifacts=[
+                "package/SKILL.md",
+                BUNDLE_MANIFEST_REF,
+                "package/runtime/mini_runtime.py",
+                "package/tests/test_mini_runtime.py",
+            ],
+            transcript_lines=["package was materialized by the adaptive graph before boundary recording"],
+            usage_unavailable_reason="deterministic pilot does not call model providers",
+        )
 
 
 def code_runtime_worker(workspace: JobWorkspace, contract) -> AdaptiveWorkUnitResult:
@@ -133,6 +156,7 @@ def test_code_runtime_pilot_builds_verified_clean_room_bundle(tmp_path: Path) ->
 
     bundle_result = BundleVerifier().verify(workspace)
     assert bundle_result.passed is True
+    assert bundle_result.manifest_status == "valid"
     manifest = json.loads(workspace.resolve_path(BUNDLE_MANIFEST_REF, must_exist=True).read_text(encoding="utf-8"))
     assert manifest["bundle_type"] == "code_runtime"
     assert manifest["runtime_assets"] == ["runtime/mini_runtime.py", "tests/test_mini_runtime.py"]
@@ -144,6 +168,28 @@ def test_code_runtime_pilot_builds_verified_clean_room_bundle(tmp_path: Path) ->
         text=True,
     )
     assert json.loads(completed.stdout) == {"input": "smoke", "ok": True, "runtime": "mini-code-runtime"}
+
+    WorkerAdapter(CodeRuntimePilotBoundaryWorker()).invoke(workspace, "001")
+    verification = Verifier().verify(workspace)
+    registry_path = tmp_path / "registry.json"
+    registry = LocalSkillRegistry(registry_path)
+    entry = registry.add_verified(workspace, skill_id="mini-code-runtime", version="0.1.0")
+    report = emit_final_report(
+        workspace.root,
+        final_status="registered",
+        registry_path=registry_path,
+        registry_entry=entry,
+    )
+
+    assert verification.passed is True
+    assert registry.verify("mini-code-runtime", "0.1.0").valid is True
+    assert report["final_status"] == "registered"
+    assert report["refs"]["verifier_result"]["passed"] is True
+    assert report["refs"]["registry_entry"]["approval_status"] == "approved"
+    serialized_report = json.dumps(report, sort_keys=True)
+    assert "import json, sys" not in serialized_report
+    assert "raw_prompt" not in serialized_report
+    assert "raw_transcript" not in serialized_report
     assert "Codexarium" not in serialized_state
     assert "raw_prompt" not in serialized_state
     assert "raw_transcript" not in serialized_state

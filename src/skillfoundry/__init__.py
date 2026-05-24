@@ -61,9 +61,11 @@ from .bundle import (
     BUNDLE_SCHEMA_VERSION,
     BUNDLE_TYPES,
     CapabilityBundleManifest,
+    FORBIDDEN_BUNDLE_FIELDS,
     declared_package_refs,
 )
 from .bundle_verifier import (
+    BUNDLE_MANIFEST_STATUSES,
     BUNDLE_VERIFICATION_RESULT_REF,
     BUNDLE_VERIFIER_VERSION,
     BundleVerificationResult,
@@ -324,6 +326,7 @@ __all__ = [
     "AdaptiveWorkspace",
     "BUILD_NODE_CONTRACT_REF",
     "BUNDLE_MANIFEST_REF",
+    "BUNDLE_MANIFEST_STATUSES",
     "BUNDLE_SCHEMA_VERSION",
     "BUNDLE_TYPES",
     "BUNDLE_VERIFICATION_RESULT_REF",
@@ -428,6 +431,7 @@ __all__ = [
     "FORGEUNIT_TASK_YAML_REF",
     "FORGEUNIT_VERIFICATION_RESULT_REF",
     "FORBIDDEN_ADAPTIVE_FIELDS",
+    "FORBIDDEN_BUNDLE_FIELDS",
     "ForgeUnitBridgeResult",
     "ForgeUnitIntegrationError",
     "ForgeUnitNodeResult",

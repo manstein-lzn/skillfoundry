@@ -5,6 +5,7 @@ from skillfoundry.bundle import (
     BUNDLE_SCHEMA_VERSION,
     BUNDLE_TYPES,
     CapabilityBundleManifest,
+    FORBIDDEN_BUNDLE_FIELDS,
     declared_package_refs,
 )
 from skillfoundry.schema import SchemaValidationError
@@ -83,6 +84,22 @@ def test_bundle_manifest_rejects_non_json_structured_fields():
 
     with pytest.raises(SchemaValidationError):
         manifest.to_dict()
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["capability_surface", "environment", "permissions", "verification", "distribution"],
+)
+def test_bundle_manifest_rejects_forbidden_raw_fields(field_name):
+    payload = sample_manifest().to_dict()
+    payload[field_name] = {"nested": {"raw_prompt": "do not persist raw prompt bodies"}}
+
+    with pytest.raises(SchemaValidationError):
+        CapabilityBundleManifest.from_dict(payload)
+
+
+def test_forbidden_bundle_fields_cover_raw_context_boundaries():
+    assert {"messages", "raw_prompt", "raw_transcript", "raw_model_output"}.issubset(FORBIDDEN_BUNDLE_FIELDS)
 
 
 def test_declared_package_refs_are_deduped_in_order():

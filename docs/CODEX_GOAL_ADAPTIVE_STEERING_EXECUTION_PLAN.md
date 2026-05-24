@@ -28,7 +28,9 @@
 - Phase 6 Bundle Verifier MVP 已完成；
 - Phase 7 Code Runtime Pilot 已完成；
 - Phase 8 Mini Knowledge Runtime Pilot 已完成；
-- Phase 9 未完成；
+- Phase 9 Substrate Extraction Assessment 已完成；
+- reviewer repair batch 已完成：worker self-report 不再能触发 closure，graph state 不再保存 worker 原始字符串，bundle verifier 能区分 missing / invalid / valid；
+- full pytest、git diff check、MetaLoop verification 和 independent review gate 均已通过。
 - 本阶段仍不修改 ContextForge / ForgeUnit / LangGraph 的核心公共 API；
 - 复杂真实产品验证仍放在后续 pilot，不在默认测试中调用 live Codex。
 
@@ -50,6 +52,7 @@ tests/test_bundle_manifest.py
 tests/test_bundle_verifier.py
 tests/test_code_runtime_pilot.py
 tests/test_mini_knowledge_runtime_pilot.py
+docs/ADAPTIVE_STEERING_SUBSTRATE_EXTRACTION_PLAN.md
 ```
 
 已完成 schema：
@@ -74,6 +77,7 @@ DecisionLedger
 .venv/bin/python -m pytest tests/test_bundle_verifier.py tests/test_goal_harness_slice.py tests/test_bundle_manifest.py -q
 .venv/bin/python -m pytest tests/test_code_runtime_pilot.py tests/test_mini_knowledge_runtime_pilot.py -q
 .venv/bin/python -m pytest tests/test_mini_knowledge_runtime_pilot.py tests/test_adaptive_graph.py tests/test_bundle_verifier.py -q
+.venv/bin/python -m pytest tests/test_bundle_manifest.py tests/test_bundle_verifier.py tests/test_adaptive_graph.py tests/test_code_runtime_pilot.py tests/test_mini_knowledge_runtime_pilot.py -q
 .venv/bin/python -m pytest -q
 git diff --check
 ```
@@ -194,17 +198,39 @@ closure 必须依赖：
 - 更新本文或 implementation plan 的当前状态；
 - 能独立 commit。
 
+## Reviewer Repair Batch
+
+独立 reviewer 指出的阻塞项已经纳入计划门：
+
+```text
+1. Adaptive graph closure 不能依赖 worker 自报 passed。
+2. Graph state 不能保存 worker claim / command / failure 等原始字符串列表。
+3. Bundle manifest 必须递归拒绝 raw prompt / messages / transcript 类字段。
+4. Code-runtime 与 knowledge-runtime pilots 必须跑主 Verifier、registry gate 和 final report。
+5. BundleVerifier 必须区分 manifest missing / invalid / valid。
+```
+
+对应修复要求：
+
+- `execute_work_unit` 只把完整 worker output 写入 `adaptive/attempts/{iteration}/work_unit_result.json`；
+- `contextforge` state 只保留 work-unit result ref、worker reported status、bundle verifier result ref 和 verifier 状态；
+- `collect_observation` 每轮运行 `BundleVerifier()`，并把 `verifier/bundle_verification_result.json` 加入 observation evidence；
+- closure 只在 `package/SKILL.md` 存在、`package/skillfoundry.bundle.json` 存在、manifest status 为 `valid` 且 bundle verifier passed 时发生；
+- worker 自报 `passed` 只能作为低信任 observation，不是 acceptance；
+- pilots 必须跑 `Verifier().verify(...)`、`LocalSkillRegistry.add_verified(...)`、`emit_final_report(...)`；
+- final report 只允许 refs、哈希、摘要和 registry provenance，不允许 runtime source body / raw source body。
+
 ## 建议 /goal 启动提示
 
 可以直接复制下面这段作为 Codex `/goal` 输入：
 
 ```text
 /goal
-在 /home/mansteinl/skillfoundry 中继续实现 SkillFoundry adaptive steering MVP。
+在 /home/mansteinl/skillfoundry 中验收并完成 SkillFoundry adaptive steering MVP。
 
 请严格遵循 docs/CODEX_GOAL_ADAPTIVE_STEERING_EXECUTION_PLAN.md、docs/ADAPTIVE_STEERING_IMPLEMENTATION_PLAN.md、docs/AGENT_WORK_SUBSTRATE_VISION.md 和 docs/SKILLFOUNDRY_CAPABILITY_BUNDLE_VISION.md。
 
-当前 Phase 0 docs baseline 和 Phase 1 Adaptive Schema MVP 已完成。请从 Phase 2 开始，按阶段推进：
+当前 Phase 0-9 的实现与文档已经存在，且 reviewer repair batch 已落地。请先检查 git 状态、现有 commits、测试结果和 MetaLoop review 状态；不要无理由重做已完成的 phase。以下阶段是必须保留并最终验收的完整范围：
 
 1. Adaptive Workspace Artifacts
 2. Refs-only Product State Integration
@@ -224,6 +250,13 @@ closure 必须依赖：
 - 运行该阶段目标测试、git diff --check，并在关键阶段运行 full pytest；
 - 更新 docs/CODEX_GOAL_ADAPTIVE_STEERING_EXECUTION_PLAN.md 的进度；
 - 每个阶段完成后提交一个清晰 commit。
+
+额外必须复核 reviewer repair gates：
+- closure 必须由独立 BundleVerifier evidence 决定，不能由 worker 自报 passed 决定；
+- graph state 只能保存 refs 和摘要状态，不能保存 worker claim/command/failure body；
+- bundle manifest 的 structured fields 必须拒绝 raw prompt/messages/transcript；
+- code-runtime 与 knowledge-runtime pilots 必须走主 Verifier、registry gate、final report；
+- BundleVerifier 必须明确区分 missing / invalid / valid manifest。
 
 如果某阶段出现连续失败，不要蛮干。请记录 observation、diagnosis、options、decision、fallback，然后缩小范围或重设下一步 contract。
 

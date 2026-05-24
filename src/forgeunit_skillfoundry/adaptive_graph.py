@@ -32,14 +32,17 @@ from skillfoundry.adaptive_workspace import (
     write_observation_report,
     write_state_correction,
 )
+from skillfoundry.bundle import BUNDLE_MANIFEST_REF
+from skillfoundry.bundle_verifier import BUNDLE_VERIFICATION_RESULT_REF, BundleVerifier
 from skillfoundry.graph_v2 import SkillFoundryV2State, V2Route, V2Stage, V2Status, validate_v2_graph_state
-from skillfoundry.security import validate_relative_path
+from skillfoundry.security import PathSecurityError, assert_under_root, validate_relative_path
 from skillfoundry.workspace import JobWorkspace, initialize_job_workspace
 
 from .config import ForgeUnitSkillFoundryError, validate_job_id
 
 
 ADAPTIVE_GRAPH_SCHEMA_VERSION = "forgeunit_skillfoundry.adaptive_graph.v1"
+ADAPTIVE_WORK_UNIT_RESULT_SCHEMA_VERSION = "forgeunit_skillfoundry.adaptive_work_unit_result.v1"
 DEFAULT_ADAPTIVE_MAX_ITERATIONS = 4
 DEFAULT_REPEATED_FAILURE_THRESHOLD = 2
 
@@ -202,7 +205,7 @@ def default_adaptive_worker(workspace: JobWorkspace, contract: NextStepContract)
             produced.append(ref)
             claims.append("Wrote package/skillfoundry.bundle.json.")
         elif ref.startswith("adaptive/"):
-            path = workspace.resolve_path(ref)
+            path = _writable_workspace_path(workspace, ref)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("deterministic adaptive evidence\n", encoding="utf-8")
             produced.append(ref)
@@ -306,23 +309,20 @@ def _execute_work_unit_node(config: AdaptiveGraphConfig, worker: AdaptiveWorkUni
         contract = read_next_step_contract(workspace, iteration)
         result = worker(workspace, contract)
         result.validate()
+        work_unit_result_ref = adaptive_work_unit_result_ref(iteration)
+        _write_work_unit_result(workspace, iteration=iteration, result=result)
+        refs = dict(state.get("refs", {}))
+        refs["latest_work_unit_result"] = work_unit_result_ref
         contextforge = dict(state.get("contextforge", {}))
         contextforge.update(
             {
-                "adaptive_last_produced_artifacts": list(result.produced_artifacts),
-                "adaptive_last_changed_refs": list(result.changed_refs),
-                "adaptive_last_commands_run": list(result.commands_run),
-                "adaptive_last_tests_run": list(result.tests_run),
-                "adaptive_last_failures": list(result.failures),
-                "adaptive_last_worker_claims": list(result.worker_claims),
-                "adaptive_last_verifier_evidence": list(result.verifier_evidence),
-                "adaptive_last_new_unknowns": list(result.new_unknowns),
-                "adaptive_last_recommended_next_steps": list(result.recommended_next_steps),
-                "adaptive_latest_verification_status": result.verification_status,
+                "adaptive_current_work_unit_result_ref": work_unit_result_ref,
+                "adaptive_latest_worker_reported_status": result.verification_status,
+                "adaptive_latest_verification_status": "not_run",
             }
         )
         next_state: SkillFoundryV2State = dict(state)
-        next_state["contextforge"] = contextforge
+        next_state.update({"refs": refs, "contextforge": contextforge})
         validate_v2_graph_state(next_state)
         return next_state
 
@@ -335,24 +335,44 @@ def _collect_observation_node(config: AdaptiveGraphConfig) -> Any:
         workspace = JobWorkspace(root=config.runs_root / config.job_id, job_id=config.job_id)
         contextforge = dict(state.get("contextforge", {}))
         iteration = _latest_iteration(state)
+        work_unit_result = _read_work_unit_result(workspace, iteration)
+        bundle_result = BundleVerifier().verify(workspace)
+        verifier_evidence = _dedupe_refs([*work_unit_result.verifier_evidence, BUNDLE_VERIFICATION_RESULT_REF])
+        failures = list(work_unit_result.failures)
+        if work_unit_result.verification_status in {"failed", "review_required"} and not failures:
+            failures.append(f"worker_reported_status: {work_unit_result.verification_status}")
+        if bundle_result.manifest_status != "missing" and not bundle_result.passed:
+            failures.extend(bundle_result.failures)
+        verification_status = (
+            "passed"
+            if bundle_result.manifest_status == "valid" and bundle_result.passed
+            else "failed"
+            if bundle_result.manifest_status != "missing" and not bundle_result.passed
+            else "not_run"
+        )
         observation = ObservationReport(
             job_id=config.job_id,
             iteration=iteration,
             contract_ref=adaptive_contract_ref(iteration),
-            produced_artifacts=_string_list(contextforge.get("adaptive_last_produced_artifacts")),
-            changed_refs=_string_list(contextforge.get("adaptive_last_changed_refs")),
-            commands_run=_string_list(contextforge.get("adaptive_last_commands_run")),
-            tests_run=_string_list(contextforge.get("adaptive_last_tests_run")),
-            failures=_string_list(contextforge.get("adaptive_last_failures")),
-            worker_claims=_string_list(contextforge.get("adaptive_last_worker_claims")),
-            verifier_evidence=_string_list(contextforge.get("adaptive_last_verifier_evidence")),
-            new_unknowns=_string_list(contextforge.get("adaptive_last_new_unknowns")),
-            recommended_next_steps=_string_list(contextforge.get("adaptive_last_recommended_next_steps")),
+            produced_artifacts=list(work_unit_result.produced_artifacts),
+            changed_refs=list(work_unit_result.changed_refs),
+            commands_run=list(work_unit_result.commands_run),
+            tests_run=list(work_unit_result.tests_run),
+            failures=failures,
+            worker_claims=list(work_unit_result.worker_claims),
+            verifier_evidence=verifier_evidence,
+            new_unknowns=list(work_unit_result.new_unknowns),
+            recommended_next_steps=list(work_unit_result.recommended_next_steps),
         )
         write_observation_report(workspace, observation)
         refs = dict(state.get("refs", {}))
         refs["latest_observation_report"] = adaptive_observation_ref(iteration)
+        refs["bundle_verification_result"] = BUNDLE_VERIFICATION_RESULT_REF
         contextforge["adaptive_current_observation_ref"] = adaptive_observation_ref(iteration)
+        contextforge["adaptive_bundle_verification_result_ref"] = BUNDLE_VERIFICATION_RESULT_REF
+        contextforge["adaptive_bundle_verification_passed"] = bundle_result.passed
+        contextforge["adaptive_bundle_manifest_status"] = bundle_result.manifest_status
+        contextforge["adaptive_latest_verification_status"] = verification_status
         next_state: SkillFoundryV2State = dict(state)
         next_state.update({"refs": refs, "contextforge": contextforge})
         validate_v2_graph_state(next_state)
@@ -485,6 +505,87 @@ def _latest_iteration(state: SkillFoundryV2State) -> int:
     return iteration
 
 
+def adaptive_work_unit_result_ref(iteration: int) -> str:
+    if not isinstance(iteration, int) or isinstance(iteration, bool) or iteration <= 0:
+        raise ForgeUnitSkillFoundryError("work-unit iteration must be a positive integer")
+    return f"adaptive/attempts/{iteration:03d}/work_unit_result.json"
+
+
+def _write_work_unit_result(workspace: JobWorkspace, *, iteration: int, result: AdaptiveWorkUnitResult) -> None:
+    result.validate()
+    ref = adaptive_work_unit_result_ref(iteration)
+    payload = {
+        "schema_version": ADAPTIVE_WORK_UNIT_RESULT_SCHEMA_VERSION,
+        "job_id": workspace.job_id,
+        "iteration": iteration,
+        "contract_ref": adaptive_contract_ref(iteration),
+        "produced_artifacts": list(result.produced_artifacts),
+        "changed_refs": list(result.changed_refs),
+        "commands_run": list(result.commands_run),
+        "tests_run": list(result.tests_run),
+        "failures": list(result.failures),
+        "worker_claims": list(result.worker_claims),
+        "verifier_evidence": list(result.verifier_evidence),
+        "new_unknowns": list(result.new_unknowns),
+        "recommended_next_steps": list(result.recommended_next_steps),
+        "worker_verification_status": result.verification_status,
+    }
+    path = _writable_workspace_path(workspace, ref)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _writable_workspace_path(workspace: JobWorkspace, ref: str) -> Path:
+    safe = validate_relative_path(ref)
+    root = workspace.root.resolve(strict=True)
+    current = root
+    for part in safe.parts[:-1]:
+        current = current / part
+        if current.exists():
+            if current.is_symlink() or not current.is_dir():
+                raise ForgeUnitSkillFoundryError(f"unsafe adaptive artifact parent: {ref}")
+            assert_under_root(root, current)
+        else:
+            current.mkdir()
+    path = current / safe.parts[-1]
+    if path.exists() and path.is_symlink():
+        raise ForgeUnitSkillFoundryError(f"unsafe adaptive artifact target: {ref}")
+    try:
+        return assert_under_root(root, path)
+    except PathSecurityError as exc:
+        raise ForgeUnitSkillFoundryError(f"adaptive artifact path escapes workspace: {ref}") from exc
+
+
+def _read_work_unit_result(workspace: JobWorkspace, iteration: int) -> AdaptiveWorkUnitResult:
+    ref = adaptive_work_unit_result_ref(iteration)
+    try:
+        payload = json.loads(workspace.resolve_path(ref, must_exist=True).read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ForgeUnitSkillFoundryError(f"adaptive work-unit result is missing or invalid: {ref}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ForgeUnitSkillFoundryError(f"adaptive work-unit result must be a JSON object: {ref}")
+    if payload.get("schema_version") != ADAPTIVE_WORK_UNIT_RESULT_SCHEMA_VERSION:
+        raise ForgeUnitSkillFoundryError(f"adaptive work-unit result has unsupported schema_version: {ref}")
+    if payload.get("job_id") != workspace.job_id:
+        raise ForgeUnitSkillFoundryError(f"adaptive work-unit result job_id mismatch: {ref}")
+    if payload.get("iteration") != iteration:
+        raise ForgeUnitSkillFoundryError(f"adaptive work-unit result iteration mismatch: {ref}")
+    result = AdaptiveWorkUnitResult(
+        produced_artifacts=_string_list(payload.get("produced_artifacts")),
+        changed_refs=_string_list(payload.get("changed_refs")),
+        commands_run=_string_list(payload.get("commands_run")),
+        tests_run=_string_list(payload.get("tests_run")),
+        failures=_string_list(payload.get("failures")),
+        worker_claims=_string_list(payload.get("worker_claims")),
+        verifier_evidence=_string_list(payload.get("verifier_evidence")),
+        new_unknowns=_string_list(payload.get("new_unknowns")),
+        recommended_next_steps=_string_list(payload.get("recommended_next_steps")),
+        verification_status=str(payload.get("worker_verification_status", "not_run")),
+    )
+    result.validate()
+    return result
+
+
 def _build_next_step_contract(
     workspace: JobWorkspace,
     *,
@@ -548,10 +649,20 @@ def _decide_after_observation(
 
     failure_count = 0
     has_skill = workspace.resolve_path("package/SKILL.md").exists()
-    has_manifest = workspace.resolve_path("package/skillfoundry.bundle.json").exists()
-    if has_skill and has_manifest and verification_status == "passed":
+    has_manifest = workspace.resolve_path(BUNDLE_MANIFEST_REF).exists()
+    bundle_verification_passed = contextforge.get("adaptive_bundle_verification_passed") is True
+    manifest_status = contextforge.get("adaptive_bundle_manifest_status")
+    if has_skill and has_manifest and manifest_status == "valid" and bundle_verification_passed:
         return "closure", "close", failure_count, V2Status.REPORT_EMITTED.value
     return "continue", "continue", failure_count, V2Status.RUNNING.value
+
+
+def _dedupe_refs(refs: list[str]) -> list[str]:
+    result: list[str] = []
+    for ref in refs:
+        if ref and ref not in result:
+            result.append(ref)
+    return result
 
 
 def _string_list(value: Any) -> list[str]:
@@ -567,7 +678,7 @@ def _known_good(workspace: JobWorkspace, route: str) -> list[str]:
     if workspace.resolve_path("package/skillfoundry.bundle.json").exists():
         result.append("package/skillfoundry.bundle.json exists.")
     if route == "closure":
-        result.append("Adaptive closure criteria are satisfied for the MVP policy.")
+        result.append("Independent bundle verification passed.")
     return result
 
 
@@ -605,7 +716,7 @@ def _confidence(route: str) -> float:
 
 def _decision_rationale(route: str) -> str:
     if route == "closure":
-        return "Required package entrypoint and bundle manifest exist with passing deterministic observation."
+        return "Required package entrypoint and bundle manifest exist with passing independent BundleVerifier evidence."
     if route == "review_required":
         return "Repeated work-unit failures exceeded the adaptive failure threshold."
     if route == "repair":

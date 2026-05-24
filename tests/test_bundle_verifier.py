@@ -4,6 +4,7 @@ from pathlib import Path
 from skillfoundry import Verifier
 from skillfoundry.bundle import BUNDLE_MANIFEST_REF, CapabilityBundleManifest
 from skillfoundry.bundle_verifier import (
+    BUNDLE_MANIFEST_STATUSES,
     BUNDLE_VERIFICATION_RESULT_REF,
     BUNDLE_VERIFIER_VERSION,
     BundleVerificationResult,
@@ -69,7 +70,9 @@ def test_bundle_verifier_missing_manifest_is_compatible_by_default(tmp_path: Pat
     result = BundleVerifier().verify(workspace)
 
     assert result.verifier_version == BUNDLE_VERIFIER_VERSION
+    assert "missing" in BUNDLE_MANIFEST_STATUSES
     assert result.manifest_present is False
+    assert result.manifest_status == "missing"
     assert result.passed is True
     assert check_by_name(result, "bundle_manifest_present")[0]["severity"] == "warning"
     assert workspace.resolve_path(BUNDLE_VERIFICATION_RESULT_REF, must_exist=True).is_file()
@@ -81,6 +84,8 @@ def test_bundle_verifier_can_require_manifest(tmp_path: Path):
     result = BundleVerifier(require_manifest=True).verify(workspace)
 
     assert result.passed is False
+    assert result.manifest_present is False
+    assert result.manifest_status == "missing"
     assert result.failures == ["bundle_manifest_present: bundle manifest is required but not present"]
 
 
@@ -98,6 +103,7 @@ def test_bundle_verifier_valid_prompt_only_manifest_passes(tmp_path: Path):
     result = BundleVerifier().verify(workspace)
 
     assert result.manifest_present is True
+    assert result.manifest_status == "valid"
     assert result.passed is True
     assert check_by_name(result, "bundle_manifest_valid")[0]["passed"] is True
     assert check_by_name(result, "bundle_entrypoint_exists")[0]["passed"] is True
@@ -122,8 +128,32 @@ def test_bundle_verifier_invalid_manifest_fails(tmp_path: Path):
     result = BundleVerifier().verify(workspace)
 
     assert result.passed is False
-    assert result.manifest_present is False
+    assert result.manifest_present is True
+    assert result.manifest_status == "invalid"
     assert any("bundle_manifest_valid" in failure for failure in result.failures)
+
+
+def test_bundle_verifier_forbidden_raw_manifest_field_fails(tmp_path: Path):
+    workspace = make_workspace(tmp_path)
+    workspace.resolve_path(BUNDLE_MANIFEST_REF).write_text(
+        json.dumps(
+            {
+                "schema_version": "skillfoundry.bundle.v1",
+                "bundle_id": "bad",
+                "bundle_type": "prompt_only",
+                "entrypoint": "SKILL.md",
+                "verification": {"nested": {"raw_prompt": "secret prompt body"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = BundleVerifier().verify(workspace)
+
+    assert result.passed is False
+    assert result.manifest_present is True
+    assert result.manifest_status == "invalid"
+    assert any("raw_prompt" in failure for failure in result.failures)
 
 
 def test_bundle_verifier_missing_declared_refs_fail(tmp_path: Path):

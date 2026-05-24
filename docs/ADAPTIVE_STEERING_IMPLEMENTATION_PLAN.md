@@ -19,7 +19,9 @@
 - Phase 6 Bundle Verifier MVP 已落地；
 - Phase 7 Code Runtime Pilot 已落地；
 - Phase 8 Mini Knowledge Runtime Pilot 已落地；
-- Phase 9 仍未实现。
+- Phase 9 Substrate Extraction Assessment 已落地；
+- reviewer repair batch 已落地：closure 由 BundleVerifier evidence gate 驱动，graph state 不保存 worker 原始字符串，pilots 覆盖主 Verifier / registry / final report；
+- full pytest、git diff check、MetaLoop verification 和 independent review gate 均已通过。
 
 已实现的 Phase 1 代码入口：
 
@@ -39,6 +41,7 @@ tests/test_bundle_manifest.py
 tests/test_bundle_verifier.py
 tests/test_code_runtime_pilot.py
 tests/test_mini_knowledge_runtime_pilot.py
+docs/ADAPTIVE_STEERING_SUBSTRATE_EXTRACTION_PLAN.md
 ```
 
 当前已通过验证：
@@ -52,6 +55,7 @@ tests/test_mini_knowledge_runtime_pilot.py
 .venv/bin/python -m pytest tests/test_bundle_verifier.py tests/test_goal_harness_slice.py tests/test_bundle_manifest.py -q
 .venv/bin/python -m pytest tests/test_code_runtime_pilot.py tests/test_mini_knowledge_runtime_pilot.py -q
 .venv/bin/python -m pytest tests/test_mini_knowledge_runtime_pilot.py tests/test_adaptive_graph.py tests/test_bundle_verifier.py -q
+.venv/bin/python -m pytest tests/test_bundle_manifest.py tests/test_bundle_verifier.py tests/test_adaptive_graph.py tests/test_code_runtime_pilot.py tests/test_mini_knowledge_runtime_pilot.py -q
 .venv/bin/python -m pytest -q
 git diff --check
 ```
@@ -440,7 +444,8 @@ Policy MVP：
 - package 缺 bundle manifest -> next step 要求生成 manifest；
 - verifier failed -> next step 生成 repair contract；
 - repeated failure -> review_required；
-- verifier passed -> final closure。
+- independent BundleVerifier passed with valid manifest -> final closure；
+- worker self-report never counts as acceptance。
 
 建议测试：
 
@@ -460,6 +465,8 @@ git diff --check
 - happy path 能完成；
 - verifier fail 能生成 repair next-step；
 - repeated failure 能进入 review_required；
+- invalid manifest cannot close even when worker reports passed；
+- graph state stores worker result refs, not raw worker strings；
 - state correction refs 写入；
 - graph state 保持 refs-only。
 
@@ -546,7 +553,7 @@ MVP checks：
 - entrypoint 存在；
 - declared runtime assets 存在；
 - refs 不允许绝对路径或 parent traversal；
-- `prompt_only` profile 检查 `package/SKILL.md` frontmatter；
+- `prompt_only` profile 检查 `package/SKILL.md` 存在；
 - `code_runtime` profile 支持声明 verification commands，但第一版可先记录为 required/manual evidence，避免开放任意 shell。
 
 验收：
@@ -560,6 +567,7 @@ git diff --check
 
 - manifest 缺失时按当前兼容策略处理；
 - manifest 存在但无效时 verifier fail；
+- verifier result 区分 manifest `missing` / `invalid` / `valid`；
 - package hash 仍覆盖整个 package tree；
 - worker self-report 仍不是验收。
 

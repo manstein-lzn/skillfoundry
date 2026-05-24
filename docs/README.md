@@ -35,6 +35,7 @@ Implementation docs:
 
 - [Codex Goal Adaptive Steering Execution Plan](CODEX_GOAL_ADAPTIVE_STEERING_EXECUTION_PLAN.md)
 - [Adaptive Steering Implementation Plan](ADAPTIVE_STEERING_IMPLEMENTATION_PLAN.md)
+- [Adaptive Steering Substrate Extraction Plan](ADAPTIVE_STEERING_SUBSTRATE_EXTRACTION_PLAN.md)
 - [System Map](SYSTEM_MAP.md)
 - [ForgeUnit SkillFoundry Composition](FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md)
 - [ForgeUnit Product Adapter Slice](FORGEUNIT_PRODUCT_ADAPTER_SLICE.md)
@@ -47,6 +48,7 @@ Architecture and product direction:
 
 - [Agent Work Substrate Vision](AGENT_WORK_SUBSTRATE_VISION.md)
 - [SkillFoundry Capability Bundle Vision](SKILLFOUNDRY_CAPABILITY_BUNDLE_VISION.md)
+- [Adaptive Steering Substrate Extraction Plan](ADAPTIVE_STEERING_SUBSTRATE_EXTRACTION_PLAN.md)
 - [SkillFoundry v2 Baseline](SKILLFOUNDRY_V2_BASELINE.md)
 - [SkillFoundry ContextForge Refactor Plan](SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md)
 - [SkillFoundry on ForgeUnit Product Direction](SKILLFOUNDRY_ON_FORGEUNIT_PRODUCT_DIRECTION.md)
