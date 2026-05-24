@@ -13,7 +13,8 @@
 - Phase 0 文档基线已落地；
 - Phase 1 Adaptive Schema MVP 已落地；
 - Phase 2 Adaptive Workspace Artifacts 已落地；
-- Phase 3 及之后仍未实现。
+- Phase 3 Refs-only Product State Integration 已落地；
+- Phase 4 及之后仍未实现。
 
 已实现的 Phase 1 代码入口：
 
@@ -22,6 +23,9 @@ src/skillfoundry/adaptive.py
 tests/test_adaptive_schema.py
 src/skillfoundry/adaptive_workspace.py
 tests/test_adaptive_workspace.py
+src/forgeunit_skillfoundry/state.py
+src/forgeunit_skillfoundry/report.py
+tests/test_forgeunit_skillfoundry_composition.py
 ```
 
 当前已通过验证：
@@ -29,6 +33,7 @@ tests/test_adaptive_workspace.py
 ```bash
 .venv/bin/python -m pytest tests/test_adaptive_schema.py -q
 .venv/bin/python -m pytest tests/test_adaptive_schema.py tests/test_adaptive_workspace.py -q
+.venv/bin/python -m pytest tests/test_forgeunit_skillfoundry_composition.py -q
 .venv/bin/python -m pytest -q
 git diff --check
 ```

@@ -17,11 +17,27 @@ FORGEUNIT_SKILLFOUNDRY_PRODUCT_STATE_REF = "contextforge/forgeunit_skillfoundry_
 PRODUCT_STATE_SCHEMA_VERSION = "forgeunit_skillfoundry.product_state.v1"
 PRODUCT_TRUST_BOUNDARIES: dict[str, bool] = {
     "worker_self_report_is_not_acceptance": True,
+    "adaptive_artifact_bodies_included": False,
     "raw_prompt_included": False,
     "raw_transcript_included": False,
     "raw_worker_input_included": False,
     "package_body_included": False,
     "live_codex_required": False,
+}
+ADAPTIVE_PRODUCT_REF_KEYS = frozenset(
+    {
+        "adaptive_state",
+        "latest_next_step_contract",
+        "latest_observation_report",
+        "latest_state_correction",
+        "decision_ledger",
+    }
+)
+ADAPTIVE_CONTEXT_SUMMARY_KEYS = {
+    "adaptive_latest_iteration": "latest_iteration",
+    "adaptive_latest_route": "latest_route",
+    "adaptive_latest_decision": "latest_decision",
+    "adaptive_latest_verification_status": "latest_verification_status",
 }
 
 
@@ -85,6 +101,7 @@ def build_product_state_payload(
         "stage": str(state.get("stage", "")),
         "status": str(state.get("status", "")),
         "refs": _selected_refs(state.get("refs", {})),
+        "adaptive_summary": build_adaptive_summary(state.get("contextforge", {})),
         "contextforge": _selected_contextforge(state.get("contextforge", {})),
         "trust_boundaries": dict(PRODUCT_TRUST_BOUNDARIES),
     }
@@ -107,8 +124,26 @@ def _selected_refs(refs: Mapping[str, str]) -> dict[str, str]:
         "registry_entry",
         "skillfoundry_verification_result",
         "verification_result",
-    }
+    } | ADAPTIVE_PRODUCT_REF_KEYS
     return {key: value for key, value in refs.items() if key in allowed and isinstance(value, str)}
+
+
+def build_adaptive_summary(contextforge: Mapping[str, Any]) -> dict[str, JsonValue]:
+    """Return the product-facing adaptive steering summary without artifact bodies."""
+
+    result: dict[str, JsonValue] = {
+        "latest_iteration": None,
+        "latest_route": None,
+        "latest_decision": None,
+        "latest_verification_status": None,
+    }
+    if not isinstance(contextforge, Mapping):
+        return result
+    for source_key, output_key in ADAPTIVE_CONTEXT_SUMMARY_KEYS.items():
+        value = contextforge.get(source_key)
+        if isinstance(value, (str, int, bool)) or value is None:
+            result[output_key] = value
+    return result
 
 
 def _selected_contextforge(contextforge: Mapping[str, Any]) -> dict[str, JsonValue]:

@@ -11,7 +11,12 @@ from skillfoundry.schema import JsonValue, ensure_json_compatible, sha256_file, 
 from skillfoundry.workspace import JobWorkspace
 
 from .config import ForgeUnitSkillFoundryError, SkillFactoryMode
-from .state import FORGEUNIT_SKILLFOUNDRY_PRODUCT_STATE_REF, PRODUCT_TRUST_BOUNDARIES
+from .state import (
+    ADAPTIVE_PRODUCT_REF_KEYS,
+    FORGEUNIT_SKILLFOUNDRY_PRODUCT_STATE_REF,
+    PRODUCT_TRUST_BOUNDARIES,
+    build_adaptive_summary,
+)
 
 
 FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF = "contextforge/forgeunit_skillfoundry_summary.json"
@@ -55,6 +60,7 @@ def build_evidence_summary(
             "decision_ref": _optional_ref(refs, "registry_decision"),
             "entry_ref": _optional_ref(refs, "registry_entry"),
         },
+        "adaptive_summary": build_adaptive_summary(contextforge),
         "attempts": _attempt_summaries(workspace),
         "refs": _summary_refs(refs),
         "trust_boundaries": {
@@ -127,7 +133,7 @@ def _summary_refs(refs: dict[str, Any]) -> dict[str, str]:
         "registry_entry",
         "skillfoundry_verification_result",
         "verification_result",
-    }
+    } | ADAPTIVE_PRODUCT_REF_KEYS
     selected = {key: value for key, value in refs.items() if key in allowed and isinstance(value, str)}
     selected["forgeunit_skillfoundry_product_state"] = selected.get(
         "forgeunit_skillfoundry_product_state",

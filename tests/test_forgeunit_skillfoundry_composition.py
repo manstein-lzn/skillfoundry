@@ -90,12 +90,21 @@ def test_product_state_payload_is_refs_only_and_selective(tmp_path: Path) -> Non
             "attempt_count": 2,
             "attempt_limit": 2,
             "refs": {
+                "adaptive_state": "adaptive/capability_state.json",
+                "decision_ledger": "adaptive/decision_ledger.json",
                 "final_report": "final_report.json",
+                "latest_next_step_contract": "adaptive/next_step_contract_001.json",
+                "latest_observation_report": "adaptive/observation_report_001.json",
+                "latest_state_correction": "adaptive/state_correction_001.json",
                 "registry_entry": "registry/entry.json",
                 "ignored_internal_ref": "contextforge/internal.json",
             },
             "hashes": {},
             "contextforge": {
+                "adaptive_latest_decision": "continue",
+                "adaptive_latest_iteration": 1,
+                "adaptive_latest_route": "final_verify",
+                "adaptive_latest_verification_status": "passed",
                 "last_verification_status": "passed",
                 "registry_approved": True,
                 "ignored_internal_status": "small-but-not-product-facing",
@@ -111,14 +120,26 @@ def test_product_state_payload_is_refs_only_and_selective(tmp_path: Path) -> Non
 
     assert payload["schema_version"] == PRODUCT_STATE_SCHEMA_VERSION
     assert payload["refs"] == {
+        "adaptive_state": "adaptive/capability_state.json",
+        "decision_ledger": "adaptive/decision_ledger.json",
         "final_report": "final_report.json",
+        "latest_next_step_contract": "adaptive/next_step_contract_001.json",
+        "latest_observation_report": "adaptive/observation_report_001.json",
+        "latest_state_correction": "adaptive/state_correction_001.json",
         "registry_entry": "registry/entry.json",
+    }
+    assert payload["adaptive_summary"] == {
+        "latest_decision": "continue",
+        "latest_iteration": 1,
+        "latest_route": "final_verify",
+        "latest_verification_status": "passed",
     }
     assert payload["contextforge"] == {
         "last_verification_status": "passed",
         "registry_approved": True,
     }
     assert payload["trust_boundaries"]["worker_self_report_is_not_acceptance"] is True
+    assert payload["trust_boundaries"]["adaptive_artifact_bodies_included"] is False
     assert payload["trust_boundaries"]["raw_prompt_included"] is False
     assert "ignored_internal_ref" not in serialized
     assert "ignored_internal_status" not in serialized
@@ -142,7 +163,12 @@ def test_evidence_summary_payload_is_refs_only_and_attempt_aware(tmp_path: Path)
             "attempt_count": 1,
             "attempt_limit": 2,
             "refs": {
+                "adaptive_state": "adaptive/capability_state.json",
+                "decision_ledger": "adaptive/decision_ledger.json",
                 "final_report": "final_report.json",
+                "latest_next_step_contract": "adaptive/next_step_contract_001.json",
+                "latest_observation_report": "adaptive/observation_report_001.json",
+                "latest_state_correction": "adaptive/state_correction_001.json",
                 "registry_decision": "registry/decision.json",
                 "registry_entry": "registry/entry.json",
                 "skillfoundry_verification_result": "verifier/verification_result.json",
@@ -150,6 +176,10 @@ def test_evidence_summary_payload_is_refs_only_and_attempt_aware(tmp_path: Path)
             },
             "hashes": {},
             "contextforge": {
+                "adaptive_latest_decision": "continue",
+                "adaptive_latest_iteration": 2,
+                "adaptive_latest_route": "closure",
+                "adaptive_latest_verification_status": "passed",
                 "last_verification_status": "passed",
                 "registry_approved": True,
                 "registry_skill_id": "summary-demo-001-skill",
@@ -168,8 +198,19 @@ def test_evidence_summary_payload_is_refs_only_and_attempt_aware(tmp_path: Path)
     assert payload["schema_version"] == EVIDENCE_SUMMARY_SCHEMA_VERSION
     assert payload["verification"]["status"] == "passed"
     assert payload["verification"]["passed"] is True
+    assert payload["adaptive_summary"] == {
+        "latest_decision": "continue",
+        "latest_iteration": 2,
+        "latest_route": "closure",
+        "latest_verification_status": "passed",
+    }
     assert payload["registry"]["approved"] is True
     assert payload["registry"]["skill_id"] == "summary-demo-001-skill"
+    assert payload["refs"]["adaptive_state"] == "adaptive/capability_state.json"
+    assert payload["refs"]["latest_next_step_contract"] == "adaptive/next_step_contract_001.json"
+    assert payload["refs"]["latest_observation_report"] == "adaptive/observation_report_001.json"
+    assert payload["refs"]["latest_state_correction"] == "adaptive/state_correction_001.json"
+    assert payload["refs"]["decision_ledger"] == "adaptive/decision_ledger.json"
     assert payload["refs"]["forgeunit_skillfoundry_summary"] == FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF
     assert payload["attempts"] == [
         {
