@@ -371,7 +371,7 @@ def test_frontdesk_spec_auditor_handles_pv001_sized_frontdesk_artifacts(tmp_path
     ledger = ContextLedger.connect(workspace.resolve_path(FRONTDESK_GOAL_RUNTIME_LEDGER_REF, must_exist=True))
     try:
         prompt_view, _blocks = ledger.get_prompt_view(result.harness_result.compiled_context.prompt_view.id)
-        assert prompt_view.budget.budget_tokens == 24000
+        assert prompt_view.budget.budget_tokens == 1_000_000_000
         assert f"{workspace.job_id}:{SPEC_AUDITOR_NODE_ID}:frontdesk_acceptance_criteria" in set(
             prompt_view.source_item_ids
         )

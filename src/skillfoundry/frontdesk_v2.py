@@ -17,6 +17,10 @@ from contextforge import (
     with_computed_hash,
 )
 
+from .budgets import (
+    effective_token_budget,
+    token_budget_mode,
+)
 from .frontdesk_schema import FrontDeskConfig
 from .frontdesk_workspace import (
     FRONTDESK_BUDGET_REF,
@@ -47,7 +51,6 @@ FRONTDESK_V2_NODE_IDS = (
 
 _CONTRACT_VERSION = "0.1"
 _SOLUTION_PLAN_REF = "frontdesk/solution_plan.json"
-_DEFAULT_FRONTDESK_PROMPT_BUDGET_TOKENS = 24_000
 
 
 @dataclass(frozen=True)
@@ -452,10 +455,11 @@ def _checkpoint_policy() -> dict[str, JsonValue]:
 
 def _frontdesk_budget_payload(frontdesk: FrontDeskWorkspace) -> dict[str, JsonValue]:
     config = _read_frontdesk_config(frontdesk)
-    prompt_budget_tokens = min(config.max_total_tokens, _DEFAULT_FRONTDESK_PROMPT_BUDGET_TOKENS)
+    prompt_budget_tokens = effective_token_budget(config.max_total_tokens)
     return {
         "prompt_budget_tokens": prompt_budget_tokens,
         "context_budget_tokens": prompt_budget_tokens,
+        "token_budget_mode": token_budget_mode(config.max_total_tokens),
         "max_frontdesk_model_calls": config.max_frontdesk_model_calls,
         "max_total_tokens": config.max_total_tokens,
         "max_provider_cost_usd": config.max_provider_cost_usd,
@@ -496,7 +500,7 @@ def _provider_usage_blockers(provider_usage: Mapping[str, Any], budget: FrontDes
         return blockers
     if model_call_count is not None and model_call_count > budget.max_frontdesk_model_calls:
         blockers.append(_reason("frontdesk_model_call_budget_exceeded", str(model_call_count)))
-    if total_tokens is not None and total_tokens > budget.max_total_tokens:
+    if budget.max_total_tokens is not None and total_tokens is not None and total_tokens > budget.max_total_tokens:
         blockers.append(_reason("frontdesk_token_budget_exceeded", str(total_tokens)))
     if cost_usd is not None and cost_usd > budget.max_provider_cost_usd:
         blockers.append(_reason("frontdesk_cost_budget_exceeded", str(cost_usd)))

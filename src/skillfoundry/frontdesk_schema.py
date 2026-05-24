@@ -762,7 +762,7 @@ class FrontDeskConfig(SchemaModel):
     max_parse_repair_attempts: int = 2
     provider_timeout_seconds: int = 60
     max_output_tokens_per_call: int = 4096
-    max_total_tokens: int = 200_000
+    max_total_tokens: int | None = None
     max_provider_cost_usd: float = 5.0
     risk_policy_ref: str | None = None
     schema_version: str = "skillfoundry.frontdesk_config.v1"
@@ -781,9 +781,10 @@ class FrontDeskConfig(SchemaModel):
             "max_parse_repair_attempts",
             "provider_timeout_seconds",
             "max_output_tokens_per_call",
-            "max_total_tokens",
         ):
             _require_positive_int(getattr(self, field_name), field_name)
+        if self.max_total_tokens is not None:
+            _require_positive_int(self.max_total_tokens, "max_total_tokens")
         _require_score(self.min_clarity_score, "min_clarity_score")
         _require_score(self.min_feasibility_score, "min_feasibility_score")
         _require_score(self.min_testability_score, "min_testability_score")

@@ -20,6 +20,10 @@ from contextforge import (
     with_computed_hash,
 )
 
+from .budgets import (
+    TOKEN_BUDGET_MODE_UNLIMITED_DEFAULT,
+    UNLIMITED_TOKEN_BUDGET_SENTINEL,
+)
 from .schema import (
     ArtifactManifest,
     BuildContract,
@@ -47,8 +51,6 @@ _CONTRACT_VERSION = "0.1"
 _BUILD_NODE_ID = "build_skill"
 _BUILD_NODE_ROLE = "skill_builder"
 _DEFAULT_WORKER_VERSION = "skillfoundry.v2.phase1"
-_DEFAULT_PROMPT_BUDGET_TOKENS = 16_000
-_DEFAULT_CONTEXT_BUDGET_TOKENS = 12_000
 _DEFAULT_MAX_WORKER_RUNS = 1
 _DEFAULT_FORBIDDEN_PATHS = [".env", ".secrets", "secrets", "secrets.json"]
 _DEFAULT_FORBIDDEN_WRITE_PATHS = [
@@ -354,8 +356,9 @@ def build_agent_node_contract(
             },
         },
         "budgets": {
-            "prompt_budget_tokens": _DEFAULT_PROMPT_BUDGET_TOKENS,
-            "context_budget_tokens": _DEFAULT_CONTEXT_BUDGET_TOKENS,
+            "prompt_budget_tokens": UNLIMITED_TOKEN_BUDGET_SENTINEL,
+            "context_budget_tokens": UNLIMITED_TOKEN_BUDGET_SENTINEL,
+            "token_budget_mode": TOKEN_BUDGET_MODE_UNLIMITED_DEFAULT,
             "timeout_seconds": records.build_contract.timeout_seconds,
             "attempt_limit": records.build_contract.attempt_limit,
             "max_worker_runs": _DEFAULT_MAX_WORKER_RUNS,

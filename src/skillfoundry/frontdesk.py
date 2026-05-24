@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 import yaml
 
+from .budgets import effective_token_budget
 from .context import OwnedLLMCallResult, SkillFoundryContextAdapter
 from .contracts import (
     BUILD_NODE_CONTRACT_REF,
@@ -381,7 +382,7 @@ class RequirementsElicitor:
                     output_contract=OUTPUT_CONTRACT,
                     context_needs=["constraints"],
                     required_types=["user_message"],
-                    budget_tokens=loaded_config.max_total_tokens,
+                    budget_tokens=effective_token_budget(loaded_config.max_total_tokens),
                     provider=provider,
                     model=model,
                     model_params=_model_params(loaded_config, model_params),
@@ -534,7 +535,7 @@ class SpecAuditor:
                     output_contract=SPEC_AUDITOR_OUTPUT_CONTRACT,
                     context_needs=["constraints"],
                     required_types=["user_message"],
-                    budget_tokens=loaded_config.max_total_tokens,
+                    budget_tokens=effective_token_budget(loaded_config.max_total_tokens),
                     provider=provider,
                     model=model,
                     model_params=_model_params(loaded_config, model_params),
@@ -2271,7 +2272,7 @@ def _evaluate_provider_usage_budget(
 
     total_tokens = provider_usage.get("total_tokens")
     if isinstance(total_tokens, int) and not isinstance(total_tokens, bool):
-        if total_tokens > config.max_total_tokens:
+        if config.max_total_tokens is not None and total_tokens > config.max_total_tokens:
             _add_blocker(
                 blocking_reasons,
                 "frontdesk_token_budget_exceeded",

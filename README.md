@@ -1,7 +1,11 @@
 # SkillFoundry
 
 SkillFoundry 是一个基于 **LangGraph + ContextForge + ForgeUnit + 外部
-Codex/worker 边界 + 独立 Verifier** 的 Codex Skill 工厂实验系统。
+Codex/worker 边界 + 独立 Verifier** 的 AI-native Capability Bundle 工厂实验系统。
+
+它的长期产品宪法是：Codex 是通用 AI 工作台，Skill 是领域能力入口，
+SkillFoundry 把任意需求铸造成可安装、可运行、可验证、可复用的能力包。
+详见 [SkillFoundry Capability Bundle Vision](docs/SKILLFOUNDRY_CAPABILITY_BUNDLE_VISION.md)。
 
 当前主线不是旧 WP0-WP17 原型，而是：
 
@@ -12,6 +16,67 @@ FrontDesk
   -> Codex exec / deterministic fake command boundary
   -> SkillFoundry Verifier
   -> Registry
+```
+
+```mermaid
+flowchart LR
+    %% 节点定义
+    U(["🧑‍💻 业务方 / 用户<br/>模糊 Skill 需求"])
+    D[["📦 最终交付物<br/>可下载 Skill 包<br/>Final Report<br/>Refs-only Status"]]
+
+    subgraph SF ["✨ SkillFoundry 当前闭环 ✨"]
+        direction LR
+
+        FD("🛠️ FrontDesk<br/>澄清需求 | 评审计划 | 冻结规格")
+        CF("🛡️ ContextForge Boundary<br/>管理上下文视界<br/>禁止原始对话进入构建<br/>保留 refs-only 证据")
+        FU("⚙️ ForgeUnit Factory<br/>下发受控构建任务<br/>记录尝试证据<br/>维持命令边界")
+        W{{"🤖 External Worker<br/>Codex exec 或 deterministic fake<br/>生成候选 Skill"}}
+        V("✅ Verifier<br/>独立验收<br/>质量 / 安全 / 证据")
+        R[("🗄️ Local Registry<br/>只注册 verifier-passed<br/>Skill 资产")]
+
+        SPEC["📄 冻结规格 (SkillSpec)<br/>Acceptance Criteria<br/>Verification Spec"]
+        RULES["📜 证据规则<br/>raw conversation/prompt/transcript<br/>不进入构建状态或公开摘要"]
+    end
+
+    %% 主流程 (恢复标准箭头，保持排版紧凑)
+    U -->|输入需求| FD
+    FD -->|初始化| CF
+    CF -->|传递受控上下文| FU
+    FU -->|分派任务| W
+    W -->|提交候选| V
+    V -->|通过验收| R
+    R -->|打包导出| D
+
+    %% 回退流
+    V -.->|❌ 未通过：回到构建层修复| FU
+
+    %% 数据与约束流 (调整连线逻辑，避免引擎画大弧线)
+    FD -.->|产出| SPEC
+    SPEC -.->|约束| CF
+    CF -.->|输出| RULES
+    RULES -.->|校验基准| V
+
+    %% 样式定义
+    classDef user fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a;
+    classDef frontdesk fill:#cffafe,stroke:#0891b2,stroke-width:2px,color:#0f172a;
+    classDef context fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#0f172a;
+    classDef factory fill:#ffedd5,stroke:#f97316,stroke-width:2px,color:#0f172a;
+    classDef worker fill:#f1f5f9,stroke:#475569,stroke-width:2px,color:#0f172a;
+    classDef verify fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a;
+    classDef registry fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a;
+    classDef artifact fill:#ffffff,stroke:#94a3b8,stroke-width:2px,stroke-dasharray: 5 5,color:#0f172a;
+
+    class U user;
+    class FD frontdesk;
+    class CF context;
+    class FU factory;
+    class W worker;
+    class V verify;
+    class R registry;
+    class D,SPEC,RULES artifact;
+
+    %% 关键修复：子图背景改为 fill:none，完美适配深色/浅色模式
+    style SF fill:none,stroke:#64748b,stroke-width:2px,stroke-dasharray: 5 5,rx:10,ry:10
 ```
 
 ## Current Mainline
@@ -101,6 +166,7 @@ Start from [docs/README.md](docs/README.md) and
 
 Current mainline docs:
 
+- [SkillFoundry Capability Bundle Vision](docs/SKILLFOUNDRY_CAPABILITY_BUNDLE_VISION.md)
 - [System Map](docs/SYSTEM_MAP.md)
 - [Development Workflow](docs/DEVELOPMENT_WORKFLOW.md)
 - [Fresh Clone Gate](docs/FRESH_CLONE_GATE.md)

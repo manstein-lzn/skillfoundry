@@ -91,14 +91,18 @@ def test_writes_contextforge_contracts_for_frontdesk_nodes_without_raw_conversat
     assert set(artifacts.node_contract_refs) == set(FRONTDESK_V2_NODE_IDS)
     goal = GoalContract.from_dict(read_json(workspace, FRONTDESK_V2_GOAL_CONTRACT_REF))
     assert goal.metadata["raw_conversation_included"] is False
+    assert goal.budgets["token_budget_mode"] == "unlimited_default"
+    assert goal.budgets["max_total_tokens"] is None
 
     for node_id, ref in artifacts.node_contract_refs.items():
         node = AgentNodeContract.from_dict(read_json(workspace, ref))
         visible_values = {selector.value for selector in node.visible_context}
         forbidden_values = {selector.value for selector in node.forbidden_context}
         assert node.node_id == node_id
-        assert node.budgets["prompt_budget_tokens"] == 24000
-        assert node.budgets["context_budget_tokens"] == 24000
+        assert node.budgets["prompt_budget_tokens"] == 1_000_000_000
+        assert node.budgets["context_budget_tokens"] == 1_000_000_000
+        assert node.budgets["token_budget_mode"] == "unlimited_default"
+        assert node.budgets["max_total_tokens"] is None
         assert "frontdesk/conversation.jsonl" not in visible_values
         assert "frontdesk/conversation.jsonl" in forbidden_values
         assert node.metadata["raw_conversation_included"] is False
@@ -132,6 +136,22 @@ def test_frontdesk_v2_contracts_cover_expected_nodes(tmp_path) -> None:
     assert spec_visible["plan_review"] is False
     assert spec_visible["frontdesk/draft_skill_spec.yaml"] is True
     assert spec_visible["frontdesk/acceptance_criteria.yaml"] is True
+
+
+def test_frontdesk_v2_contracts_use_explicit_token_budget_when_configured(tmp_path) -> None:
+    workspace, frontdesk = make_frontdesk(tmp_path)
+    write_frontdesk_artifact(frontdesk, "budget.json", {"max_total_tokens": 12345})
+
+    artifacts = write_frontdesk_v2_contract_artifacts(frontdesk, created_at=CREATED_AT)
+
+    goal = GoalContract.from_dict(read_json(workspace, FRONTDESK_V2_GOAL_CONTRACT_REF))
+    assert goal.budgets["token_budget_mode"] == "explicit"
+    assert goal.budgets["max_total_tokens"] == 12345
+    for ref in artifacts.node_contract_refs.values():
+        node = AgentNodeContract.from_dict(read_json(workspace, ref))
+        assert node.budgets["prompt_budget_tokens"] == 12345
+        assert node.budgets["context_budget_tokens"] == 12345
+        assert node.budgets["token_budget_mode"] == "explicit"
 
 
 def test_governance_blocks_when_redaction_is_incomplete(tmp_path) -> None:
@@ -170,8 +190,27 @@ def test_governance_blocks_when_frontdesk_budget_is_exceeded(tmp_path) -> None:
 
     assert report["status"] == "blocked"
     assert "frontdesk_model_call_budget_exceeded" in reason_codes(report)
-    assert "frontdesk_token_budget_exceeded" in reason_codes(report)
+    assert "frontdesk_token_budget_exceeded" not in reason_codes(report)
     assert "frontdesk_cost_budget_exceeded" in reason_codes(report)
+
+
+def test_governance_blocks_when_explicit_frontdesk_token_budget_is_exceeded(tmp_path) -> None:
+    _workspace, frontdesk = make_frontdesk(tmp_path)
+    write_frontdesk_artifact(frontdesk, "budget.json", {"max_total_tokens": 100})
+    write_risk_report(
+        frontdesk,
+        provider_usage={
+            "usage_available": True,
+            "model_call_count": 1,
+            "total_tokens": 101,
+            "cost_usd": 0.0,
+        },
+    )
+
+    report = evaluate_frontdesk_v2_governance(frontdesk, created_at=CREATED_AT)
+
+    assert report["status"] == "blocked"
+    assert "frontdesk_token_budget_exceeded" in reason_codes(report)
 
 
 def test_governance_records_provider_usage_unavailable_reason(tmp_path) -> None:

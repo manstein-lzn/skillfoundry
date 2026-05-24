@@ -236,6 +236,7 @@ def test_frontdesk_schema_invalid_enum_values_fail(obj):
         SpecAuditReport(clarity_score=math.inf),
         SpecAuditReport(testability_score=-0.01),
         FrontDeskConfig(min_clarity_score=1.01),
+        FrontDeskConfig(max_total_tokens=0),
     ],
 )
 def test_frontdesk_schema_invalid_score_values_fail(obj):

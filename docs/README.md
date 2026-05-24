@@ -7,6 +7,7 @@ design assets.
 
 Read these first, in order:
 
+- [SkillFoundry Capability Bundle Vision](SKILLFOUNDRY_CAPABILITY_BUNDLE_VISION.md): product constitution for the AI-native capability bundle direction.
 - [System Map](SYSTEM_MAP.md): current architecture and 10-minute reading path.
 - [ForgeUnit SkillFoundry Composition](FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md): current product composition layer.
 - [SkillFoundry Public API](PUBLIC_API.md): package-root API contract during cleanup.
@@ -41,6 +42,7 @@ Implementation docs:
 
 Architecture and product direction:
 
+- [SkillFoundry Capability Bundle Vision](SKILLFOUNDRY_CAPABILITY_BUNDLE_VISION.md)
 - [SkillFoundry v2 Baseline](SKILLFOUNDRY_V2_BASELINE.md)
 - [SkillFoundry ContextForge Refactor Plan](SKILLFOUNDRY_CONTEXTFORGE_REFACTOR_PLAN.md)
 - [SkillFoundry on ForgeUnit Product Direction](SKILLFOUNDRY_ON_FORGEUNIT_PRODUCT_DIRECTION.md)

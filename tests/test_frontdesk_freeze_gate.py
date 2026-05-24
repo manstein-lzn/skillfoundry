@@ -469,8 +469,34 @@ def test_freeze_gate_blocks_when_frontdesk_budget_evidence_is_exceeded(tmp_path)
     assert result.decision == FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED
     codes = reason_codes(result)
     assert "frontdesk_model_call_budget_exceeded" in codes
-    assert "frontdesk_token_budget_exceeded" in codes
+    assert "frontdesk_token_budget_exceeded" not in codes
     assert "frontdesk_cost_budget_exceeded" in codes
+    assert not workspace.resolve_path("frontdesk/freeze_manifest.json").exists()
+
+
+def test_freeze_gate_blocks_when_explicit_frontdesk_token_budget_is_exceeded(tmp_path):
+    workspace, frontdesk = make_freezable_frontdesk_workspace(
+        tmp_path,
+        risk_report={
+            "schema_version": "skillfoundry.frontdesk_risk_report.v1",
+            "risk_flags": [],
+            "redaction_status": "complete",
+            "data_sensitivity": "internal",
+            "provider_usage": {
+                "usage_available": True,
+                "model_call_count": 1,
+                "total_tokens": 101,
+                "cost_usd": 0.0,
+            },
+        },
+    )
+    write_frontdesk_artifact(frontdesk, "budget.json", {"max_total_tokens": 100})
+
+    result = FrontDeskFreezeGate().evaluate_and_freeze(frontdesk, round_index=1)
+
+    assert result.decision == FREEZE_GATE_DECISION_HUMAN_REVIEW_REQUIRED
+    codes = reason_codes(result)
+    assert "frontdesk_token_budget_exceeded" in codes
     assert not workspace.resolve_path("frontdesk/freeze_manifest.json").exists()
 
 
