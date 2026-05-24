@@ -17,7 +17,9 @@
 - Phase 4 Adaptive Graph Loop MVP 已落地；
 - Phase 5 Bundle Manifest MVP 已落地；
 - Phase 6 Bundle Verifier MVP 已落地；
-- Phase 7 及之后仍未实现。
+- Phase 7 Code Runtime Pilot 已落地；
+- Phase 8 Mini Knowledge Runtime Pilot 已落地；
+- Phase 9 仍未实现。
 
 已实现的 Phase 1 代码入口：
 
@@ -35,6 +37,8 @@ src/skillfoundry/bundle.py
 src/skillfoundry/bundle_verifier.py
 tests/test_bundle_manifest.py
 tests/test_bundle_verifier.py
+tests/test_code_runtime_pilot.py
+tests/test_mini_knowledge_runtime_pilot.py
 ```
 
 当前已通过验证：
@@ -46,6 +50,8 @@ tests/test_bundle_verifier.py
 .venv/bin/python -m pytest tests/test_adaptive_graph.py tests/test_forgeunit_skillfoundry_composition.py -q
 .venv/bin/python -m pytest tests/test_bundle_manifest.py tests/test_bundle_verifier.py -q
 .venv/bin/python -m pytest tests/test_bundle_verifier.py tests/test_goal_harness_slice.py tests/test_bundle_manifest.py -q
+.venv/bin/python -m pytest tests/test_code_runtime_pilot.py tests/test_mini_knowledge_runtime_pilot.py -q
+.venv/bin/python -m pytest tests/test_mini_knowledge_runtime_pilot.py tests/test_adaptive_graph.py tests/test_bundle_verifier.py -q
 .venv/bin/python -m pytest -q
 git diff --check
 ```

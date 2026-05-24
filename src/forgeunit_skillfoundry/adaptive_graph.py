@@ -180,10 +180,18 @@ def default_adaptive_worker(workspace: JobWorkspace, contract: NextStepContract)
             path.write_text(
                 json.dumps(
                     {
-                        "schema_version": "skillfoundry.bundle.placeholder.v0",
+                        "schema_version": "skillfoundry.bundle.v1",
                         "bundle_id": workspace.job_id,
                         "bundle_type": "prompt_only",
                         "entrypoint": "SKILL.md",
+                        "capability_surface": {},
+                        "runtime_assets": [],
+                        "data_assets": [],
+                        "references": [],
+                        "environment": {},
+                        "permissions": {},
+                        "verification": {},
+                        "distribution": {},
                     },
                     indent=2,
                     sort_keys=True,
