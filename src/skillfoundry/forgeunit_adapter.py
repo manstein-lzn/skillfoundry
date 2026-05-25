@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from contextforge import ContextKernel, ContextLedger
+from contextforge import ContextKernel, ContextLedger, VerificationGate, with_computed_hash
 
 from .acceptance import (
     ACCEPTANCE_COVERAGE_PLAN_REF,
@@ -54,6 +54,7 @@ from .schema import (
     utc_now,
 )
 from .verifier import Verifier
+from .verification_bridge import CONTEXTFORGE_VERIFICATION_RESULT_REF, bridge_skillfoundry_verification_result
 from .workspace import JOB_ID_RE, JobWorkspace
 
 
@@ -645,6 +646,30 @@ def build_forgeunit_registry_gate_node(
         job_id = _job_id(state)
         workspace = JobWorkspace(root=runs_path / job_id, job_id=job_id)
         state = _maybe_write_acceptance_coverage(workspace, state)
+        timestamp = created_at or utc_now()
+        try:
+            verification_gate = VerificationGate.from_dict(
+                json.loads(workspace.resolve_path(VERIFICATION_GATE_REF, must_exist=True).read_text(encoding="utf-8"))
+            )
+        except Exception:
+            verification_gate = write_contextforge_contract_artifacts(workspace, created_at=timestamp).verification_gate
+        acceptance_coverage_required = _workspace_has_acceptance_criteria(workspace)
+        if not acceptance_coverage_required:
+            verification_gate = _verification_gate_without_acceptance_coverage(verification_gate)
+            _write_json(workspace.resolve_path(VERIFICATION_GATE_REF), verification_gate.to_dict())
+        contextforge_verification_result = bridge_skillfoundry_verification_result(
+            workspace,
+            verification_gate,
+            goal_run_id=f"forgeunit-command-bridge-{job_id}",
+            worker_id="forgeunit-command-bridge",
+            expected_gate_hash=verification_gate.gate_hash,
+            require_acceptance_coverage=acceptance_coverage_required,
+            created_at=timestamp,
+        )
+        if contextforge_verification_result.status != "passed":
+            raise ForgeUnitIntegrationError(
+                "ForgeUnit registry gate requires passed ContextForge verification bridge"
+            )
         contextforge = dict(state.get("contextforge", {}))
         if contextforge.get("last_verification_status") != "passed":
             raise ForgeUnitIntegrationError("ForgeUnit registry gate requires passed SkillFoundry verification")
@@ -656,7 +681,7 @@ def build_forgeunit_registry_gate_node(
             workspace,
             version=version,
             review_status="forgeunit_command_bridge_verified",
-            require_contextforge_verification=False,
+            require_contextforge_verification=True,
         )
         verification_report = LocalSkillRegistry(registry_file).verify_entry(entry)
         if not verification_report.valid:
@@ -673,7 +698,6 @@ def build_forgeunit_registry_gate_node(
             registry_entry=entry,
         )
 
-        timestamp = created_at or utc_now()
         entry_hash = sha256_json(entry.to_dict())
         entry_payload = {
             "schema_version": "skillfoundry.forgeunit.registry_entry_snapshot.v1",
@@ -695,6 +719,7 @@ def build_forgeunit_registry_gate_node(
             "entry_ref": FORGEUNIT_REGISTRY_ENTRY_REF,
             "entry_hash": entry_hash,
             "verification_result_ref": FORGEUNIT_VERIFICATION_RESULT_REF,
+            "contextforge_verification_result_ref": CONTEXTFORGE_VERIFICATION_RESULT_REF,
             "final_report_ref": FORGEUNIT_FINAL_REPORT_REF,
             "created_at": timestamp,
         }
@@ -706,6 +731,7 @@ def build_forgeunit_registry_gate_node(
         refs.update(
             {
                 "final_report": FORGEUNIT_FINAL_REPORT_REF,
+                "contextforge_verification_result": CONTEXTFORGE_VERIFICATION_RESULT_REF,
                 "registry_decision": FORGEUNIT_REGISTRY_DECISION_REF,
                 "registry_entry": FORGEUNIT_REGISTRY_ENTRY_REF,
             }
@@ -714,6 +740,9 @@ def build_forgeunit_registry_gate_node(
         hashes.update(
             {
                 "final_report": sha256_file(workspace.resolve_path(FORGEUNIT_FINAL_REPORT_REF, must_exist=True)),
+                "contextforge_verification_result": sha256_file(
+                    workspace.resolve_path(CONTEXTFORGE_VERIFICATION_RESULT_REF, must_exist=True)
+                ),
                 "registry_decision": sha256_file(
                     workspace.resolve_path(FORGEUNIT_REGISTRY_DECISION_REF, must_exist=True)
                 ),
@@ -726,6 +755,8 @@ def build_forgeunit_registry_gate_node(
                 "registry_skill_id": entry.skill_id,
                 "registry_version": entry.version,
                 "registry_verification_report_valid": True,
+                "contextforge_verification_result_id": contextforge_verification_result.verification_result_id,
+                "contextforge_verification_status": contextforge_verification_result.status,
                 "final_report_status": str(final_report.get("final_status") or final_report.get("status") or ""),
             }
         )
@@ -745,6 +776,32 @@ def build_forgeunit_registry_gate_node(
         return next_state
 
     return _node
+
+
+def _workspace_has_acceptance_criteria(workspace: JobWorkspace) -> bool:
+    try:
+        workspace.resolve_path(ACCEPTANCE_CRITERIA_REF, must_exist=True)
+    except Exception:
+        return False
+    return True
+
+
+def _verification_gate_without_acceptance_coverage(gate: VerificationGate) -> VerificationGate:
+    payload = gate.to_dict()
+    payload["required_evidence"] = [
+        ref for ref in payload.get("required_evidence", []) if ref != ACCEPTANCE_COVERAGE_RESULT_REF
+    ]
+    payload["validators"] = [
+        validator
+        for validator in payload.get("validators", [])
+        if not (
+            isinstance(validator, Mapping)
+            and isinstance(validator.get("params"), Mapping)
+            and validator["params"].get("path") == ACCEPTANCE_COVERAGE_RESULT_REF
+        )
+    ]
+    payload["gate_hash"] = ""
+    return VerificationGate.from_dict(with_computed_hash(payload, "gate_hash"))
 
 
 def _maybe_write_acceptance_coverage(
