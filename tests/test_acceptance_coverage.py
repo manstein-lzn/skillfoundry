@@ -1140,6 +1140,60 @@ Validation statuses include ok, conflict, and error.
     assert result.must_passed == 9
 
 
+def test_scope_exclusion_accepts_whole_disk_scan_wording(tmp_path):
+    criteria_texts = [
+        (
+            "SKILL.md clearly states Codexarium is not a chat backup tool, "
+            "automatic scanner, background collector, network sync tool, or "
+            "database service."
+        ),
+    ]
+    skill_md = """---
+name: codexarium
+description: "Clean-room local wiki skill with explicit safety boundaries."
+---
+
+# Codexarium
+
+## Overview
+Codexarium works only from user-provided compact evidence.
+
+## When Not To Use
+Codexarium is not a chat backup tool, automatic computer scanner,
+background collector, network sync tool, or database service.
+Do not automatically scan the home directory, the whole disk, browser data,
+application data, repositories, or arbitrary folders.
+
+## Safety
+Do not run whole-disk scans, background collection, file watchers, network sync,
+remote indexing, or database service behavior.
+"""
+    workspace = make_workspace(
+        tmp_path,
+        job_id="acceptance-codexarium-whole-disk-wording",
+        skill_md=skill_md,
+        criteria=[
+            criterion(
+                "AC-001",
+                verifier_check_id=None,
+                description=criteria_texts[0],
+                pass_condition=criteria_texts[0],
+                required_evidence=[criteria_texts[0]],
+                evidence_kind="verifier_check",
+            )
+        ],
+    )
+    write_fake_codexarium_verification_result(workspace)
+
+    plan, result = plan_and_evaluate(workspace)
+
+    assert {item.criterion_id: item.verifier_check_id for item in plan.items} == {
+        "AC-001": "skill_scope_exclusion_boundary",
+    }
+    assert result.passed is True
+    assert result.must_passed == 1
+
+
 def test_planner_maps_codexarium_dialog_015_granular_criteria(tmp_path):
     criteria_texts = [
         "The generated package is a local Codex Skill package named codexarium and includes SKILL.md.",

@@ -118,6 +118,35 @@ _SYNTHETIC_VERIFIER_CHECK_IDS = frozenset(
     }
 )
 _ZERO_HASH = "0" * 64
+_FULL_DISK_SCAN_EXCLUSION_TERMS = (
+    "full-disk",
+    "full disk",
+    "full-disk scanning",
+    "full-disk scan",
+    "full disk scanning",
+    "full disk scan",
+    "whole-disk",
+    "whole disk",
+    "whole-disk scanning",
+    "whole-disk scan",
+    "whole-disk scans",
+    "whole disk scanning",
+    "whole disk scan",
+    "whole disk scans",
+    "scan the disk",
+    "scan disk",
+    "entire disk scan",
+    "filesystem scan",
+    "filesystem scanning",
+    "file system scan",
+    "file system scanning",
+    "scan the filesystem",
+    "scan the file system",
+    "recursive filesystem scan",
+    "recursive file system scan",
+    "home-directory scan",
+    "home directory scan",
+)
 
 
 @dataclass
@@ -825,7 +854,7 @@ def _evaluate_synthetic_verifier_check(
                     ("automatic collection", "background ingestion", "background collector", "background collection"),
                 ),
                 ("network sync excluded", ("network sync", "cloud publishing", "cloud sync")),
-                ("full-disk scan excluded", ("full-disk", "full disk", "full-disk scanning", "full-disk scan")),
+                ("full-disk scan excluded", _FULL_DISK_SCAN_EXCLUSION_TERMS),
                 ("database service excluded", ("database service", "databases")),
             ],
         )
@@ -842,7 +871,7 @@ def _evaluate_synthetic_verifier_check(
                 ("terminal output exclusion", ("terminal output", "terminal-output", "stdout", "stderr", "command output")),
                 (
                     "arbitrary scan exclusion",
-                    ("arbitrary files", "whole-disk", "full-disk", "full disk", "automatic filesystem scan", "automatic collection"),
+                    ("arbitrary files", "automatic filesystem scan", "automatic collection", *_FULL_DISK_SCAN_EXCLUSION_TERMS),
                 ),
                 (
                     "network/database/background exclusion",
@@ -1465,7 +1494,7 @@ def _evaluate_synthetic_verifier_check(
                     "do not require automatic",
                     "automatic filesystem scan",
                     "automatic full-disk",
-                    "full-disk scan",
+                    *_FULL_DISK_SCAN_EXCLUSION_TERMS,
                 ),
             )
         )
@@ -1899,7 +1928,7 @@ def _infer_synthetic_verifier_check_id(criterion: AcceptanceCriterion) -> str | 
         return "codexarium_explicit_wiki_root_contract"
     if (
         ("chat backup" in text or "chat-history" in text or "chat history" in text or "chat logs" in text)
-        and ("automatic scanner" in text or "automatic scanning" in text or "full-disk" in text or "full disk" in text)
+        and _text_has_any(text, ("automatic scanner", "automatic scanning", *_FULL_DISK_SCAN_EXCLUSION_TERMS))
         and ("network sync" in text or "database service" in text or "background collector" in text)
     ):
         return "skill_scope_exclusion_boundary"
@@ -1995,7 +2024,7 @@ def _infer_synthetic_verifier_check_id(criterion: AcceptanceCriterion) -> str | 
         return "skill_instruction_content"
     if (
         ("raw chat" in text or "terminal-output" in text or "terminal output" in text or "stdout/stderr" in text)
-        and ("arbitrary file" in text or "whole-disk" in text or "full-disk" in text or "automatic collection" in text)
+        and _text_has_any(text, ("arbitrary file", "automatic collection", *_FULL_DISK_SCAN_EXCLUSION_TERMS))
     ):
         return "skill_privacy_boundary"
     if (
@@ -2061,7 +2090,12 @@ def _infer_synthetic_verifier_check_id(criterion: AcceptanceCriterion) -> str | 
         and ("confirmation" in text or "confirm" in text or "before any conflicting write" in text)
     ):
         return "write_conflict_policy_contract"
-    if "no mcp" in text or "cloud sync" in text or "database service" in text or "full-disk scan" in text:
+    if (
+        "no mcp" in text
+        or "cloud sync" in text
+        or "database service" in text
+        or _text_has_any(text, _FULL_DISK_SCAN_EXCLUSION_TERMS)
+    ):
         return "no_external_runtime_dependency"
     if ("skill 包包含" in text and "skill.md" in text) or "触发条件" in text:
         return "skill_package_instruction_contract"
