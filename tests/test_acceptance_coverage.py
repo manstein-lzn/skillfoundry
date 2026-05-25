@@ -10,8 +10,12 @@ from skillfoundry import (
     ACCEPTANCE_COVERAGE_RESULT_REF,
     AcceptanceCriteriaPlanner,
     AcceptanceCoverageEvaluator,
+    AcceptanceCoverageResultItem,
     AcceptanceCriteriaSet,
     AcceptanceCriterion,
+    EVIDENCE_MODE_ACCEPTANCE_SYNTHETIC_STATIC_CHECK,
+    EVIDENCE_MODE_QA_REPORT_CHECK,
+    EVIDENCE_MODE_VERIFIER_RESULT_CHECK,
     LocalSkillRegistry,
     RegistryGateError,
     SkillSpec,
@@ -1321,6 +1325,92 @@ def test_good_skill_with_qa_and_verifier_evidence_passes_must_criteria(tmp_path)
     assert payload["must_total"] == 2
     assert payload["must_passed"] == 2
     assert all(item.status == "covered/pass" for item in result.items)
+
+
+def test_acceptance_result_splits_verifier_and_evidence_modes(tmp_path):
+    workspace, _verification, _qa = make_verified_qa_workspace(
+        tmp_path,
+        job_id="acceptance-evidence-mode-verifier",
+        criteria=[
+            criterion("AC-VERIFIER", verifier_check_id="package_skill_md_present"),
+            criterion(
+                "AC-QA",
+                evidence_kind="qa_report",
+                verifier_check_id=None,
+                required_evidence=["workflow_actionability"],
+            ),
+        ],
+    )
+
+    _plan, result = plan_and_evaluate(workspace)
+    verifier_item = result_item(result, "AC-VERIFIER")
+    qa_item = result_item(result, "AC-QA")
+    payload = read_json(workspace, ACCEPTANCE_COVERAGE_RESULT_REF)
+    payload_items = {item["criterion_id"]: item for item in payload["items"]}
+
+    assert verifier_item.coverage_mode == "verifier_check"
+    assert verifier_item.evidence_mode == EVIDENCE_MODE_VERIFIER_RESULT_CHECK
+    assert verifier_item.evaluator == "skillfoundry.acceptance.verifier_result"
+    assert verifier_item.evidence_provenance["verifier_check_id"] == "package_skill_md_present"
+    assert qa_item.evidence_mode == EVIDENCE_MODE_QA_REPORT_CHECK
+    assert payload_items["AC-VERIFIER"]["evidence_mode"] == EVIDENCE_MODE_VERIFIER_RESULT_CHECK
+    assert payload["provenance"]["evidence_semantics"]["legacy_coverage_mode_supported"] is True
+    assert payload["provenance"]["evidence_semantics"]["evidence_mode_counts"][EVIDENCE_MODE_VERIFIER_RESULT_CHECK] == 1
+
+
+def test_acceptance_result_marks_synthetic_static_checks_explicitly(tmp_path):
+    workspace, _verification, _qa = make_verified_qa_workspace(
+        tmp_path,
+        job_id="acceptance-evidence-mode-synthetic",
+        skill_md=MANIFEST_SCHEMA_SKILL_MD,
+        criteria=[
+            criterion(
+                "AC-SYNTHETIC",
+                description=(
+                    "The manifest format is JSON and requires evidence_id, source_type, title, "
+                    "summary, allowed_use, sensitivity, and created_at."
+                ),
+                pass_condition="The manifest schema is documented in the Skill package.",
+                verifier_check_id=None,
+                evidence_kind="verifier_check",
+            ),
+        ],
+    )
+
+    plan, result = plan_and_evaluate(workspace)
+    item = result_item(result, "AC-SYNTHETIC")
+
+    assert plan.items[0].coverage_mode == "verifier_check"
+    assert plan.items[0].verifier_check_id == "manifest_schema_documented"
+    assert item.coverage_mode == "verifier_check"
+    assert item.evidence_mode == EVIDENCE_MODE_ACCEPTANCE_SYNTHETIC_STATIC_CHECK
+    assert item.evaluator == "skillfoundry.acceptance.synthetic_static"
+    assert item.evidence_provenance["synthetic_check_id"] == "manifest_schema_documented"
+    assert item.evidence_provenance["uses_verifier_result_checks"] is True
+
+
+def test_legacy_acceptance_result_item_payload_defaults_evidence_mode():
+    item = AcceptanceCoverageResultItem(
+        criterion_id="AC-LEGACY",
+        priority="must",
+        status="covered/pass",
+        passed=True,
+        coverage_mode="verifier_check",
+        deterministic=True,
+        evidence_refs=["verifier/verification_result.json"],
+        failures=[],
+        verifier_check_id="package_skill_md_present",
+    )
+    payload = item.to_dict()
+    payload.pop("evidence_mode")
+    payload.pop("evaluator")
+    payload.pop("evidence_provenance")
+
+    loaded = AcceptanceCoverageResultItem.from_dict(payload)
+
+    assert loaded.evidence_mode == EVIDENCE_MODE_VERIFIER_RESULT_CHECK
+    assert loaded.evaluator == "skillfoundry.acceptance.verifier_result"
+    assert loaded.evidence_provenance == {}
 
 
 def test_bad_skill_fails_mapped_must_criterion(tmp_path):

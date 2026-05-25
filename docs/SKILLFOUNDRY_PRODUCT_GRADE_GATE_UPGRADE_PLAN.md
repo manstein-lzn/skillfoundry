@@ -589,11 +589,11 @@ Implemented:
   - WP1 Product Contract Schema
   - WP2 Product Contract Compiler MVP
   - WP3 Runtime Helper Product Matrix 的命令执行骨架
+  - WP4 Evidence Mode Refactor 的 acceptance result MVP
   - WP5 ProductGradeGate MVP
   - WP6 Registry Promotion Split 的 MVP
 
 Not implemented yet:
-  - WP4 Evidence Mode Refactor
   - WP7 Reviewer Repair Loop
   - 针对 reference_heavy / knowledge_db / service_bundle 等 profile 的真实执行门禁
 ```
@@ -618,6 +618,35 @@ qa/runtime_checks/*.stderr.txt
 candidate has docs/tests text that claims behavior
 candidate actually declares and passes executable product checks
 ```
+
+Acceptance coverage result 现在保留旧字段：
+
+```text
+coverage_mode
+```
+
+同时新增：
+
+```text
+evidence_mode
+evaluator
+evidence_provenance
+```
+
+用于区分：
+
+```text
+verifier_result_check
+acceptance_synthetic_static_check
+runtime_fixture_check
+runtime_command_check
+required_evidence_check
+qa_report_check
+manual_review_check
+```
+
+这样第三方 reviewer 不再需要猜测 `coverage_mode: verifier_check`
+到底来自真实 verifier result，还是来自 SkillFoundry acceptance 的 synthetic static check。
 
 Registry 现在区分：
 

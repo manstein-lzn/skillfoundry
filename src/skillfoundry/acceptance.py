@@ -45,6 +45,17 @@ COVERAGE_MODE_QA_REPORT_CHECK = "qa_report_check"
 COVERAGE_MODE_MANUAL_AUTHORITY = "manual_authority"
 COVERAGE_MODE_UNCOVERED = "uncovered"
 
+EVIDENCE_MODE_VERIFIER_RESULT_CHECK = "verifier_result_check"
+EVIDENCE_MODE_ACCEPTANCE_SYNTHETIC_STATIC_CHECK = "acceptance_synthetic_static_check"
+EVIDENCE_MODE_RUNTIME_FIXTURE_CHECK = "runtime_fixture_check"
+EVIDENCE_MODE_RUNTIME_COMMAND_CHECK = "runtime_command_check"
+EVIDENCE_MODE_SOURCE_CODE_BEHAVIOR_CHECK = "source_code_behavior_check"
+EVIDENCE_MODE_QA_REPORT_CHECK = "qa_report_check"
+EVIDENCE_MODE_REQUIRED_EVIDENCE_CHECK = "required_evidence_check"
+EVIDENCE_MODE_MANUAL_REVIEW_CHECK = "manual_review_check"
+EVIDENCE_MODE_LLM_REVIEWER_CHECK = "llm_reviewer_check"
+EVIDENCE_MODE_UNCOVERED = "uncovered"
+
 COVERAGE_RESULT_STATUS_COVERED_PASS = "covered/pass"
 COVERAGE_RESULT_STATUS_COVERED_FAIL = "covered/fail"
 COVERAGE_RESULT_STATUS_MANUAL_ONLY = "manual_only"
@@ -58,6 +69,20 @@ _COVERAGE_MODES = frozenset(
         COVERAGE_MODE_QA_REPORT_CHECK,
         COVERAGE_MODE_MANUAL_AUTHORITY,
         COVERAGE_MODE_UNCOVERED,
+    }
+)
+_EVIDENCE_MODES = frozenset(
+    {
+        EVIDENCE_MODE_VERIFIER_RESULT_CHECK,
+        EVIDENCE_MODE_ACCEPTANCE_SYNTHETIC_STATIC_CHECK,
+        EVIDENCE_MODE_RUNTIME_FIXTURE_CHECK,
+        EVIDENCE_MODE_RUNTIME_COMMAND_CHECK,
+        EVIDENCE_MODE_SOURCE_CODE_BEHAVIOR_CHECK,
+        EVIDENCE_MODE_QA_REPORT_CHECK,
+        EVIDENCE_MODE_REQUIRED_EVIDENCE_CHECK,
+        EVIDENCE_MODE_MANUAL_REVIEW_CHECK,
+        EVIDENCE_MODE_LLM_REVIEWER_CHECK,
+        EVIDENCE_MODE_UNCOVERED,
     }
 )
 _RESULT_STATUSES = frozenset(
@@ -263,6 +288,9 @@ class AcceptanceCoverageResultItem(SchemaModel):
     deterministic: bool
     evidence_refs: list[str]
     failures: list[str]
+    evidence_mode: str = ""
+    evaluator: str = ""
+    evidence_provenance: dict[str, JsonValue] = field(default_factory=dict)
     manual_authority: str | None = None
     verifier_check_id: str | None = None
     fixture_ref: str | None = None
@@ -280,6 +308,13 @@ class AcceptanceCoverageResultItem(SchemaModel):
         _require_bool(self.deterministic, "deterministic")
         _require_str_list(self.evidence_refs, "evidence_refs")
         _require_str_list(self.failures, "failures")
+        if not self.evidence_mode:
+            self.evidence_mode = _default_evidence_mode_for_coverage_mode(self.coverage_mode)
+        if not self.evaluator:
+            self.evaluator = _default_evaluator_for_evidence_mode(self.evidence_mode)
+        _require_enum(self.evidence_mode, "evidence_mode", _EVIDENCE_MODES)
+        _require_non_empty_str(self.evaluator, "evaluator")
+        _require_json_mapping(self.evidence_provenance, "evidence_provenance")
         _require_optional_non_empty_str(self.manual_authority, "manual_authority")
         _require_optional_non_empty_str(self.verifier_check_id, "verifier_check_id")
         _require_optional_non_empty_str(self.fixture_ref, "fixture_ref")
@@ -466,6 +501,13 @@ class AcceptanceCoverageEvaluator:
                     deterministic=True,
                     evidence_refs=["package"],
                     failures=[f"package_hash: {failure}"],
+                    evidence_mode=EVIDENCE_MODE_REQUIRED_EVIDENCE_CHECK,
+                    evaluator="skillfoundry.acceptance.package_hash",
+                    evidence_provenance={
+                        "criterion_id": "package",
+                        "legacy_coverage_mode": COVERAGE_MODE_REQUIRED_EVIDENCE,
+                        "source": "package_hash",
+                    },
                 )
             )
 
@@ -530,6 +572,11 @@ class AcceptanceCoverageEvaluator:
                 "package": {
                     "ref": "package",
                     "sha256": package_hash,
+                },
+                "evidence_semantics": {
+                    "version": "skillfoundry.acceptance.evidence_semantics.v1",
+                    "legacy_coverage_mode_supported": True,
+                    "evidence_mode_counts": _evidence_mode_counts(result_items),
                 },
             }
         )
@@ -735,6 +782,12 @@ def _evaluate_verifier_check(
             passed=False,
             evidence_refs=[VERIFICATION_RESULT_REF],
             failures=["verifier result is missing or invalid"],
+            evidence_mode=EVIDENCE_MODE_VERIFIER_RESULT_CHECK,
+            evidence_provenance={
+                "verifier_result_ref": VERIFICATION_RESULT_REF,
+                "verifier_check_id": item.verifier_check_id,
+                "source": "verifier_result.missing",
+            },
         )
     checks = _checks_by_name(verifier_result.checks)
     check = checks.get(str(item.verifier_check_id))
@@ -747,6 +800,12 @@ def _evaluate_verifier_check(
             passed=False,
             evidence_refs=[VERIFICATION_RESULT_REF],
             failures=[f"verifier check {item.verifier_check_id!r} was not found"],
+            evidence_mode=EVIDENCE_MODE_VERIFIER_RESULT_CHECK,
+            evidence_provenance={
+                "verifier_result_ref": VERIFICATION_RESULT_REF,
+                "verifier_check_id": item.verifier_check_id,
+                "source": "verifier_result.checks",
+            },
         )
     passed = check.get("passed") is True
     evidence_refs = [VERIFICATION_RESULT_REF]
@@ -759,6 +818,13 @@ def _evaluate_verifier_check(
         passed=passed,
         evidence_refs=_dedupe(evidence_refs),
         failures=[] if passed else [str(check.get("message") or "verifier check failed")],
+        evidence_mode=EVIDENCE_MODE_VERIFIER_RESULT_CHECK,
+        evidence_provenance={
+            "verifier_result_ref": VERIFICATION_RESULT_REF,
+            "verifier_check_id": item.verifier_check_id,
+            "source": "verifier_result.checks",
+            "check_message": str(check.get("message") or ""),
+        },
     )
 
 
@@ -1524,6 +1590,13 @@ def _evaluate_synthetic_verifier_check(
         passed=passed,
         evidence_refs=_dedupe(evidence_refs),
         failures=failures,
+        evidence_mode=EVIDENCE_MODE_ACCEPTANCE_SYNTHETIC_STATIC_CHECK,
+        evidence_provenance={
+            "synthetic_check_id": check_id,
+            "verifier_result_ref": VERIFICATION_RESULT_REF,
+            "source": "skillfoundry.acceptance.synthetic_static_check",
+            "uses_verifier_result_checks": True,
+        },
     )
 
 
@@ -1542,6 +1615,8 @@ def _evaluate_manual_authority(
             evidence_refs=[],
             failures=["manual_authority metadata is required for manual-only coverage"],
             uncovered_reason=item.uncovered_reason or "manual_authority_missing",
+            evidence_mode=EVIDENCE_MODE_MANUAL_REVIEW_CHECK,
+            evidence_provenance={"manual_authority": item.manual_authority, "source": "manual_authority"},
         )
     if manual_acceptance_record is None:
         return _result_item(
@@ -1551,6 +1626,12 @@ def _evaluate_manual_authority(
             evidence_refs=[MANUAL_ACCEPTANCE_RECORD_REF],
             failures=["manual acceptance record is required for manual-only must criteria"],
             uncovered_reason="manual_acceptance_record_missing",
+            evidence_mode=EVIDENCE_MODE_MANUAL_REVIEW_CHECK,
+            evidence_provenance={
+                "manual_acceptance_record_ref": MANUAL_ACCEPTANCE_RECORD_REF,
+                "manual_authority": item.manual_authority,
+                "source": "manual_acceptance_record.missing",
+            },
         )
 
     failures: list[str] = []
@@ -1575,6 +1656,12 @@ def _evaluate_manual_authority(
         evidence_refs=[manual_acceptance_record_ref or MANUAL_ACCEPTANCE_RECORD_REF],
         failures=failures,
         uncovered_reason=None if passed else "manual_acceptance_record_invalid",
+        evidence_mode=EVIDENCE_MODE_MANUAL_REVIEW_CHECK,
+        evidence_provenance={
+            "manual_acceptance_record_ref": manual_acceptance_record_ref or MANUAL_ACCEPTANCE_RECORD_REF,
+            "manual_authority": item.manual_authority,
+            "source": "manual_acceptance_record",
+        },
     )
 
 
@@ -1589,6 +1676,8 @@ def _evaluate_qa_report_check(
             passed=False,
             evidence_refs=[QA_REPORT_REF],
             failures=["QA report is missing or invalid"],
+            evidence_mode=EVIDENCE_MODE_QA_REPORT_CHECK,
+            evidence_provenance={"qa_report_ref": QA_REPORT_REF, "source": "qa_report.missing"},
         )
     checks_payload = qa_report.get("checks")
     checks = _checks_by_name(checks_payload if isinstance(checks_payload, list) else [])
@@ -1619,6 +1708,12 @@ def _evaluate_qa_report_check(
         passed=passed,
         evidence_refs=_dedupe(evidence_refs),
         failures=failures,
+        evidence_mode=EVIDENCE_MODE_QA_REPORT_CHECK,
+        evidence_provenance={
+            "qa_report_ref": QA_REPORT_REF,
+            "qa_report_checks": list(item.qa_report_checks),
+            "source": "qa_report.checks",
+        },
     )
 
 
@@ -1650,6 +1745,15 @@ def _evaluate_file_refs(
         passed=passed,
         evidence_refs=evidence_refs,
         failures=failures or ([] if passed else ["no evidence refs were provided"]),
+        evidence_mode=(
+            EVIDENCE_MODE_RUNTIME_FIXTURE_CHECK
+            if item.coverage_mode == COVERAGE_MODE_FIXTURE
+            else EVIDENCE_MODE_REQUIRED_EVIDENCE_CHECK
+        ),
+        evidence_provenance={
+            "required_refs": list(refs),
+            "source": "workspace_file_refs",
+        },
     )
 
 
@@ -1661,7 +1765,11 @@ def _result_item(
     evidence_refs: list[str],
     failures: list[str],
     uncovered_reason: str | None = None,
+    evidence_mode: str | None = None,
+    evaluator: str | None = None,
+    evidence_provenance: Mapping[str, Any] | None = None,
 ) -> AcceptanceCoverageResultItem:
+    resolved_evidence_mode = evidence_mode or _default_evidence_mode_for_coverage_mode(item.coverage_mode)
     return AcceptanceCoverageResultItem(
         criterion_id=item.criterion_id,
         priority=item.priority,
@@ -1671,6 +1779,15 @@ def _result_item(
         deterministic=item.deterministic,
         evidence_refs=evidence_refs,
         failures=failures,
+        evidence_mode=resolved_evidence_mode,
+        evaluator=evaluator or _default_evaluator_for_evidence_mode(resolved_evidence_mode),
+        evidence_provenance=ensure_json_compatible(
+            {
+                "criterion_id": item.criterion_id,
+                "legacy_coverage_mode": item.coverage_mode,
+                **dict(evidence_provenance or {}),
+            }
+        ),  # type: ignore[arg-type]
         manual_authority=item.manual_authority,
         verifier_check_id=item.verifier_check_id,
         fixture_ref=item.fixture_ref,
@@ -2356,6 +2473,41 @@ def _coverage_score(items: list[AcceptanceCoverageResultItem]) -> float:
     return round((covered / len(items)) * 100.0, 2)
 
 
+def _evidence_mode_counts(items: list[AcceptanceCoverageResultItem]) -> dict[str, JsonValue]:
+    counts: dict[str, int] = {}
+    for item in items:
+        counts[item.evidence_mode] = counts.get(item.evidence_mode, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _default_evidence_mode_for_coverage_mode(coverage_mode: str) -> str:
+    mapping = {
+        COVERAGE_MODE_VERIFIER_CHECK: EVIDENCE_MODE_VERIFIER_RESULT_CHECK,
+        COVERAGE_MODE_FIXTURE: EVIDENCE_MODE_RUNTIME_FIXTURE_CHECK,
+        COVERAGE_MODE_REQUIRED_EVIDENCE: EVIDENCE_MODE_REQUIRED_EVIDENCE_CHECK,
+        COVERAGE_MODE_QA_REPORT_CHECK: EVIDENCE_MODE_QA_REPORT_CHECK,
+        COVERAGE_MODE_MANUAL_AUTHORITY: EVIDENCE_MODE_MANUAL_REVIEW_CHECK,
+        COVERAGE_MODE_UNCOVERED: EVIDENCE_MODE_UNCOVERED,
+    }
+    return mapping.get(coverage_mode, EVIDENCE_MODE_UNCOVERED)
+
+
+def _default_evaluator_for_evidence_mode(evidence_mode: str) -> str:
+    mapping = {
+        EVIDENCE_MODE_VERIFIER_RESULT_CHECK: "skillfoundry.acceptance.verifier_result",
+        EVIDENCE_MODE_ACCEPTANCE_SYNTHETIC_STATIC_CHECK: "skillfoundry.acceptance.synthetic_static",
+        EVIDENCE_MODE_RUNTIME_FIXTURE_CHECK: "skillfoundry.acceptance.fixture_ref",
+        EVIDENCE_MODE_RUNTIME_COMMAND_CHECK: "skillfoundry.acceptance.runtime_command",
+        EVIDENCE_MODE_SOURCE_CODE_BEHAVIOR_CHECK: "skillfoundry.acceptance.source_code_behavior",
+        EVIDENCE_MODE_QA_REPORT_CHECK: "skillfoundry.acceptance.qa_report",
+        EVIDENCE_MODE_REQUIRED_EVIDENCE_CHECK: "skillfoundry.acceptance.required_evidence",
+        EVIDENCE_MODE_MANUAL_REVIEW_CHECK: "skillfoundry.acceptance.manual_review",
+        EVIDENCE_MODE_LLM_REVIEWER_CHECK: "skillfoundry.acceptance.llm_reviewer",
+        EVIDENCE_MODE_UNCOVERED: "skillfoundry.acceptance.uncovered",
+    }
+    return mapping.get(evidence_mode, "skillfoundry.acceptance.unknown")
+
+
 def _hash_package(workspace: JobWorkspace) -> tuple[str, list[str]]:
     entries: list[dict[str, JsonValue]] = []
     failures: list[str] = []
@@ -2463,6 +2615,16 @@ __all__ = [
     "ACCEPTANCE_COVERAGE_PLAN_VERSION",
     "ACCEPTANCE_COVERAGE_RESULT_REF",
     "ACCEPTANCE_COVERAGE_RESULT_VERSION",
+    "EVIDENCE_MODE_ACCEPTANCE_SYNTHETIC_STATIC_CHECK",
+    "EVIDENCE_MODE_LLM_REVIEWER_CHECK",
+    "EVIDENCE_MODE_MANUAL_REVIEW_CHECK",
+    "EVIDENCE_MODE_QA_REPORT_CHECK",
+    "EVIDENCE_MODE_REQUIRED_EVIDENCE_CHECK",
+    "EVIDENCE_MODE_RUNTIME_COMMAND_CHECK",
+    "EVIDENCE_MODE_RUNTIME_FIXTURE_CHECK",
+    "EVIDENCE_MODE_SOURCE_CODE_BEHAVIOR_CHECK",
+    "EVIDENCE_MODE_UNCOVERED",
+    "EVIDENCE_MODE_VERIFIER_RESULT_CHECK",
     "AcceptanceCriteriaPlanner",
     "AcceptanceCoverageEvaluator",
     "AcceptanceCoveragePlan",
