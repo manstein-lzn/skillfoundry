@@ -44,21 +44,35 @@ Return a verifier-valid SKILL.md package and boundary evidence refs.
 Do not put raw prompts, raw transcripts, or package bodies into graph state.
 """
 
+MINIMAL_VALID_SKILL = """---
+name: fake-skill
+description: "Fake skill used by wrapper boundary tests."
+---
+
+# Fake Skill
+
+## Overview
+Body.
+"""
+
 
 def test_forgeunit_codex_exec_worker_wraps_fake_codex_and_writes_boundary_result(tmp_path: Path) -> None:
     task_dir, run_dir, worker_result = _forgeunit_env_dirs(tmp_path)
     fake_codex = tmp_path / "fake_codex.py"
     fake_codex.write_text(
-        """
+        f"""
 from pathlib import Path
 import sys
 
 prompt = sys.stdin.read()
 assert "ForgeUnit Codex Exec Boundary Contract" in prompt
+assert "Satisfy every must acceptance criterion" in prompt
+assert "Exact H2 headings" in prompt
+assert "## When To Use" in prompt
 assert "package/SKILL.md" in prompt
 Path("package").mkdir(exist_ok=True)
 Path("evidence").mkdir(exist_ok=True)
-Path("package/SKILL.md").write_text("# Fake Skill\\n\\n## Overview\\nBody.\\n", encoding="utf-8")
+Path("package/SKILL.md").write_text({MINIMAL_VALID_SKILL!r}, encoding="utf-8")
 Path("evidence/transcript.md").write_text("fake codex transcript summary\\n", encoding="utf-8")
 """.strip(),
         encoding="utf-8",
@@ -94,7 +108,7 @@ def test_forgeunit_codex_exec_worker_reports_missing_package_with_actionable_mes
     task_dir, run_dir, worker_result = _forgeunit_env_dirs(tmp_path)
     fake_codex = tmp_path / "fake_codex_missing_package.py"
     fake_codex.write_text(
-        """
+        f"""
 from pathlib import Path
 import sys
 
@@ -118,6 +132,119 @@ Path("evidence/transcript.md").write_text("no package was written\\n", encoding=
     assert not worker_result.exists()
 
 
+def test_forgeunit_codex_exec_worker_rejects_invalid_skill_frontmatter(tmp_path: Path) -> None:
+    task_dir, run_dir, worker_result = _forgeunit_env_dirs(tmp_path)
+    fake_codex = tmp_path / "fake_codex_bad_frontmatter.py"
+    fake_codex.write_text(
+        f"""
+from pathlib import Path
+import sys
+
+_ = sys.stdin.read()
+Path("package").mkdir(exist_ok=True)
+Path("package/SKILL.md").write_text(
+    "---\\nname: fake\\ndescription: invalid: unquoted colon\\n---\\n\\n# Fake Skill\\n\\n## Overview\\nBody.\\n",
+    encoding="utf-8",
+)
+Path("evidence").mkdir(exist_ok=True)
+Path("evidence/transcript.md").write_text("fake codex transcript summary\\n", encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+
+    completed = _run_wrapper(
+        task_dir=task_dir,
+        run_dir=run_dir,
+        worker_result=worker_result,
+        codex_command=f"{sys.executable} {fake_codex}",
+    )
+
+    assert completed.returncode == 1
+    assert "frontmatter is invalid YAML" in completed.stderr
+    assert "quote frontmatter values containing colons" in completed.stderr
+    assert not worker_result.exists()
+
+
+def test_forgeunit_codex_exec_worker_fails_when_frozen_rust_requirement_is_unmet(tmp_path: Path) -> None:
+    task_dir, run_dir, worker_result = _forgeunit_env_dirs(tmp_path)
+    (task_dir / "acceptance_criteria.yaml").write_text(
+        """
+criteria:
+- id: AC-RUST
+  priority: must
+  description: The package must include a Rust verifier with Cargo.toml, src, tests/fixtures, and cargo test.
+""".strip(),
+        encoding="utf-8",
+    )
+    fake_codex = tmp_path / "fake_codex_skill_only.py"
+    fake_codex.write_text(
+        f"""
+from pathlib import Path
+import sys
+
+_ = sys.stdin.read()
+Path("package").mkdir(exist_ok=True)
+Path("package/SKILL.md").write_text({MINIMAL_VALID_SKILL!r}, encoding="utf-8")
+Path("evidence").mkdir(exist_ok=True)
+Path("evidence/transcript.md").write_text("fake codex transcript summary\\n", encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+
+    completed = _run_wrapper(
+        task_dir=task_dir,
+        run_dir=run_dir,
+        worker_result=worker_result,
+        codex_command=f"{sys.executable} {fake_codex}",
+    )
+
+    assert completed.returncode == 1
+    assert "requires Rust/Cargo verifier work" in completed.stderr
+    assert not worker_result.exists()
+
+
+def test_forgeunit_codex_exec_worker_accepts_package_level_fixture_directory(tmp_path: Path) -> None:
+    task_dir, run_dir, worker_result = _forgeunit_env_dirs(tmp_path)
+    (task_dir / "acceptance_criteria.yaml").write_text(
+        """
+criteria:
+- id: AC-RUST
+  priority: must
+  description: The package must include a Rust verifier with Cargo.toml, src, fixtures, and cargo test evidence.
+""".strip(),
+        encoding="utf-8",
+    )
+    fake_codex = tmp_path / "fake_codex_package_fixtures.py"
+    fake_codex.write_text(
+        """
+from pathlib import Path
+import sys
+
+_ = sys.stdin.read()
+Path("package/src").mkdir(parents=True, exist_ok=True)
+Path("package/fixtures/examples").mkdir(parents=True, exist_ok=True)
+Path("package/SKILL.md").write_text(__MINIMAL_VALID_SKILL__, encoding="utf-8")
+Path("package/Cargo.toml").write_text("[package]\\nname = \\"fake\\"\\nversion = \\"0.1.0\\"\\nedition = \\"2021\\"\\n", encoding="utf-8")
+Path("package/src/lib.rs").write_text("pub fn ok() -> bool { true }\\n", encoding="utf-8")
+Path("package/fixtures/examples/sample.json").write_text("{}", encoding="utf-8")
+Path("evidence").mkdir(exist_ok=True)
+Path("evidence/transcript.md").write_text("fake codex transcript summary\\n", encoding="utf-8")
+""".strip().replace("__MINIMAL_VALID_SKILL__", repr(MINIMAL_VALID_SKILL)),
+        encoding="utf-8",
+    )
+
+    completed = _run_wrapper(
+        task_dir=task_dir,
+        run_dir=run_dir,
+        worker_result=worker_result,
+        codex_command=f"{sys.executable} {fake_codex}",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(worker_result.read_text(encoding="utf-8"))
+    assert "package/fixtures/examples/sample.json" in result["changed_files"]
+
+
 def test_forgeunit_codex_exec_worker_normalizes_incomplete_existing_manifest(tmp_path: Path) -> None:
     task_dir, run_dir, worker_result = _forgeunit_env_dirs(tmp_path)
     fake_codex = tmp_path / "fake_codex_incomplete_manifest.py"
@@ -130,7 +257,7 @@ import sys
 _ = sys.stdin.read()
 Path("package").mkdir(exist_ok=True)
 Path("evidence").mkdir(exist_ok=True)
-Path("package/SKILL.md").write_text("# Fake Skill\\n\\n## Overview\\nBody.\\n", encoding="utf-8")
+Path("package/SKILL.md").write_text(__MINIMAL_VALID_SKILL__, encoding="utf-8")
 Path("evidence/transcript.md").write_text("fake codex transcript summary\\n", encoding="utf-8")
 Path("evidence/manifest.json").write_text(json.dumps({
     "schema": "forgeunit.worker_evidence_manifest",
@@ -141,7 +268,7 @@ Path("evidence/manifest.json").write_text(json.dumps({
     "usage": None,
     "usage_unavailable_reason": "external_worker_no_provider_telemetry"
 }, indent=2), encoding="utf-8")
-""".strip(),
+""".strip().replace("__MINIMAL_VALID_SKILL__", repr(MINIMAL_VALID_SKILL)),
         encoding="utf-8",
     )
 
@@ -158,6 +285,78 @@ Path("evidence/manifest.json").write_text(json.dumps({
     assert manifest["output_artifacts"][0]["path"] == "package/SKILL.md"
     assert manifest["evidence_artifacts"][0]["path"] == "evidence/transcript.md"
     assert manifest["commands"][0]["summary"] == ""
+
+
+def test_forgeunit_codex_exec_worker_filters_directory_artifacts_from_existing_worker_result(tmp_path: Path) -> None:
+    task_dir, run_dir, worker_result = _forgeunit_env_dirs(tmp_path)
+    fake_codex = tmp_path / "fake_codex_directory_worker_result.py"
+    fake_codex.write_text(
+        """
+from pathlib import Path
+import json
+import os
+import sys
+
+_ = sys.stdin.read()
+worker_result = Path(os.environ["FORGEUNIT_WORKER_RESULT"])
+Path("package/tests/fixtures").mkdir(parents=True, exist_ok=True)
+Path("package/SKILL.md").write_text(__MINIMAL_VALID_SKILL__, encoding="utf-8")
+Path("package/tests/fixtures/sample.json").write_text("{}", encoding="utf-8")
+Path("evidence").mkdir(exist_ok=True)
+Path("evidence/transcript.md").write_text("fake codex transcript summary\\n", encoding="utf-8")
+Path("evidence/manifest.json").write_text(json.dumps({
+    "schema": "forgeunit.worker_evidence_manifest",
+    "version": "0.6",
+    "unit_id": "execute",
+    "status": "completed",
+    "output_artifacts": [
+        {"path": "package/SKILL.md", "kind": "codex_skill", "summary": "skill"},
+    ],
+    "evidence_artifacts": [
+        {"path": "evidence/transcript.md", "kind": "transcript", "summary": "transcript"},
+    ],
+    "changed_files": ["package/SKILL.md", "package/tests/fixtures/sample.json", "evidence/transcript.md", "evidence/manifest.json"],
+    "commands": [{"command": "fake codex", "exit_code": 0}],
+    "usage": None,
+    "usage_unavailable_reason": "external_worker_no_provider_telemetry"
+}, indent=2), encoding="utf-8")
+worker_result.write_text(json.dumps({
+    "status": "completed",
+    "output_artifacts": [
+        {"path": "package/SKILL.md", "kind": "codex_skill", "summary": "skill"},
+        {"path": "package/tests/fixtures", "kind": "verifier_fixtures", "summary": "directory should be filtered"},
+    ],
+    "boundary_evidence": [
+        {"path": "evidence/transcript.md", "kind": "transcript", "summary": "transcript"},
+        {"path": "evidence/manifest.json", "kind": "worker_evidence_manifest", "summary": "manifest"},
+    ],
+    "changed_files": [
+        "package/SKILL.md",
+        "package/tests/fixtures",
+        "package/tests/fixtures/sample.json",
+        "evidence/transcript.md",
+        "evidence/manifest.json",
+    ],
+    "usage": None,
+    "usage_unavailable_reason": "external_worker_no_provider_telemetry"
+}, indent=2), encoding="utf-8")
+""".strip().replace("__MINIMAL_VALID_SKILL__", repr(MINIMAL_VALID_SKILL)),
+        encoding="utf-8",
+    )
+
+    completed = _run_wrapper(
+        task_dir=task_dir,
+        run_dir=run_dir,
+        worker_result=worker_result,
+        codex_command=f"{sys.executable} {fake_codex}",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(worker_result.read_text(encoding="utf-8"))
+    artifact_paths = [item["path"] for item in result["output_artifacts"]]
+    assert "package/tests/fixtures" not in artifact_paths
+    assert "package/tests/fixtures" not in result["changed_files"]
+    assert "package/tests/fixtures/sample.json" in result["changed_files"]
 
 
 def test_forgeunit_real_codex_exec_wrapper_can_drive_command_bridge_graph(tmp_path: Path) -> None:

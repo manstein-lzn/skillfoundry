@@ -412,10 +412,14 @@ def write_contextforge_contract_artifacts(
     workspace: JobWorkspace,
     *,
     created_at: str | None = None,
+    overwrite: bool = True,
 ) -> ContextForgeContractArtifacts:
     """Generate and write all Phase 1 ContextForge contract artifacts."""
 
     workspace.check_locked_inputs()
+    if not overwrite and _contextforge_contract_artifacts_exist(workspace):
+        return read_contextforge_contract_artifacts(workspace)
+
     timestamp = created_at or utc_now()
     goal_contract = build_goal_contract(workspace, created_at=timestamp)
     verification_gate = build_verification_gate(workspace, goal_contract.goal_id)
@@ -459,6 +463,26 @@ def write_contextforge_contract_artifacts(
         verification_gate=verification_gate,
         manifest=compatible_manifest,
     )
+
+
+def read_contextforge_contract_artifacts(workspace: JobWorkspace) -> ContextForgeContractArtifacts:
+    """Read previously written ContextForge contract artifacts without rewriting them."""
+
+    goal_payload = _read_json_record(workspace, GOAL_CONTRACT_REF)
+    build_node_payload = _read_json_record(workspace, BUILD_NODE_CONTRACT_REF)
+    verification_gate_payload = _read_json_record(workspace, VERIFICATION_GATE_REF)
+    manifest_payload = _read_json_record(workspace, CONTRACT_MANIFEST_REF)
+    return ContextForgeContractArtifacts(
+        goal_contract=GoalContract.from_dict(goal_payload),
+        build_node_contract=AgentNodeContract.from_dict(build_node_payload),
+        verification_gate=VerificationGate.from_dict(verification_gate_payload),
+        manifest=manifest_payload,
+    )
+
+
+def _contextforge_contract_artifacts_exist(workspace: JobWorkspace) -> bool:
+    refs = (GOAL_CONTRACT_REF, BUILD_NODE_CONTRACT_REF, VERIFICATION_GATE_REF, CONTRACT_MANIFEST_REF)
+    return all(workspace.resolve_path(ref).is_file() for ref in refs)
 
 
 @dataclass(frozen=True)
@@ -812,3 +836,11 @@ def _write_record(workspace: JobWorkspace, relative_path: str, payload: dict[str
         json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
         encoding="utf-8",
     )
+
+
+def _read_json_record(workspace: JobWorkspace, relative_path: str) -> dict[str, JsonValue]:
+    path = workspace.resolve_path(relative_path, must_exist=True)
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise SchemaValidationError(f"{relative_path} must contain a JSON object")
+    return ensure_json_compatible(payload)  # type: ignore[return-value]

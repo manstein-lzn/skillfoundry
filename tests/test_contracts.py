@@ -170,6 +170,27 @@ def test_write_contextforge_contract_artifacts_writes_manifest_and_json(tmp_path
     assert manifest["excluded_artifacts"] == ["frontdesk/conversation.jsonl"]
 
 
+def test_write_contextforge_contract_artifacts_can_reuse_frozen_artifacts(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    first = write_contextforge_contract_artifacts(workspace, created_at=CREATED_AT)
+    hashes = {
+        ref: sha256_file(workspace.resolve_path(ref, must_exist=True))
+        for ref in [GOAL_CONTRACT_REF, BUILD_NODE_CONTRACT_REF, VERIFICATION_GATE_REF, CONTRACT_MANIFEST_REF]
+    }
+
+    second = write_contextforge_contract_artifacts(
+        workspace,
+        created_at="2026-05-22T00:05:00Z",
+        overwrite=False,
+    )
+
+    assert second == first
+    assert {
+        ref: sha256_file(workspace.resolve_path(ref, must_exist=True))
+        for ref in [GOAL_CONTRACT_REF, BUILD_NODE_CONTRACT_REF, VERIFICATION_GATE_REF, CONTRACT_MANIFEST_REF]
+    } == hashes
+
+
 def test_raw_conversation_is_never_used_in_goal_or_visible_context(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     frontdesk_dir = workspace.root / "frontdesk"

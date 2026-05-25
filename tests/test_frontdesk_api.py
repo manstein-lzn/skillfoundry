@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import shlex
 import sys
 
 from contextforge.schema import ModelResponse
@@ -20,6 +21,8 @@ from skillfoundry.frontdesk_goal_runtime import (
 from skillfoundry.graph_v2 import GRAPH_V2_STATE_REF, validate_v2_graph_state
 from skillfoundry.frontdesk_schema import FrontDeskState
 from skillfoundry.frontdesk_schema import FrontDeskConfig
+from skillfoundry.schema import sha256_file
+from skillfoundry.workspace import initialize_job_workspace
 
 
 class ScriptedModelClient:
@@ -420,6 +423,37 @@ def test_frontdesk_api_defaults_to_offline_goal_harness_without_live_key(tmp_pat
     assert audit_runtime["trust_boundaries"]["raw_conversation_included"] is False
 
 
+def test_frontdesk_api_writes_inline_risk_policy_before_manifest_freeze(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    api = SkillFoundryAPI(tmp_path / "runs")
+    job_id = "frontdesk-risk-policy"
+
+    created = api.create_frontdesk_job(
+        {
+            "job_id": job_id,
+            "message": "Build a privacy-sensitive local Codex skill.",
+            "risk_policy": {
+                "policy_id": "test-risk-policy",
+                "raw_sensitive_payload_included": False,
+                "required_controls": ["No raw transcript persistence", "Human review summary"],
+            },
+        }
+    )
+
+    assert created["state"]["frontdesk_budget_ref"] == "frontdesk/budget.json"
+    run_root = tmp_path / "runs" / job_id
+    risk_policy_path = run_root / "frontdesk" / "risk_policy.json"
+    budget_path = run_root / "frontdesk" / "budget.json"
+    assert risk_policy_path.is_file()
+    budget = FrontDeskConfig.from_json(budget_path.read_text(encoding="utf-8"))
+    assert budget.risk_policy_ref == "frontdesk/risk_policy.json"
+
+    manifest = json.loads((run_root / "artifact_manifest.json").read_text(encoding="utf-8"))
+    by_path = {record["path"]: record for record in manifest["artifacts"]}
+    assert by_path["frontdesk/risk_policy.json"]["sha256"] == sha256_file(risk_policy_path)
+    assert by_path["frontdesk/budget.json"]["sha256"] == sha256_file(budget_path)
+
+
 def test_frontdesk_api_offline_goal_harness_preserves_request_semantics_in_frozen_inputs(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     api = SkillFoundryAPI(tmp_path / "runs")
@@ -643,6 +677,27 @@ def test_frontdesk_api_uses_constructor_configured_forgeunit_command_without_lea
     assert script.as_posix() not in status_serialized
     assert script.name not in status_serialized
     assert transcript_marker not in status_serialized
+
+
+def test_frontdesk_api_normalizes_relative_operator_forgeunit_command_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    script = tmp_path / "scripts" / "relative_worker.py"
+    script.parent.mkdir()
+    script.write_text("print('worker')\n", encoding="utf-8")
+    api = SkillFoundryAPI(
+        tmp_path / "runs",
+        forgeunit_command=f"{sys.executable} scripts/relative_worker.py --flag value",
+    )
+    workspace = initialize_job_workspace(api._runs_root_resolved, "frontdesk-relative-command")
+
+    configured_command, _ = api._frontdesk_forgeunit_commands(workspace, {})
+    payload_command, _ = api._frontdesk_forgeunit_commands(
+        workspace,
+        {"command": f"{sys.executable} scripts/relative_worker.py --flag value"},
+    )
+
+    assert shlex.split(configured_command)[1] == script.resolve().as_posix()
+    assert shlex.split(payload_command)[1] == script.resolve().as_posix()
 
 
 def test_frontdesk_api_explicit_fake_mode_happy_uses_offline_vnext_without_leaking(tmp_path, monkeypatch):

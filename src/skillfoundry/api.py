@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
@@ -135,6 +136,7 @@ class SkillFoundryAPI:
         forgeunit_command: str | None = None,
         forgeunit_repair_command: str | None = None,
     ) -> None:
+        self._command_base_dir = Path.cwd().resolve()
         self.runs_root = Path(runs_root).expanduser()
         self.runs_root.mkdir(parents=True, exist_ok=True)
         self._runs_root_resolved = self.runs_root.resolve(strict=True)
@@ -149,11 +151,41 @@ class SkillFoundryAPI:
 
     def _configured_command_value(self, value: str | None, env_name: str) -> str | None:
         if value is not None:
-            return value
+            return self._normalize_workspace_command(value)
         env_value = os.environ.get(env_name)
         if env_value is None or not env_value.strip():
             return None
-        return env_value
+        return self._normalize_workspace_command(env_value)
+
+    def _normalize_workspace_command(self, command: str | None) -> str | None:
+        if command is None:
+            return None
+        if not isinstance(command, str):
+            return command
+        stripped = command.strip()
+        if not stripped:
+            return command
+        if _looks_like_shell_command(stripped):
+            return command
+        try:
+            parts = shlex.split(stripped)
+        except ValueError:
+            return command
+        if not parts:
+            return command
+        normalized: list[str] = []
+        changed = False
+        for part in parts:
+            replacement = part
+            if _is_relative_command_path(part):
+                candidate = self._command_base_dir / part
+                if candidate.exists():
+                    replacement = candidate.resolve().as_posix()
+                    changed = True
+            normalized.append(replacement)
+        if not changed:
+            return command
+        return " ".join(shlex.quote(part) for part in normalized)
 
     def create_job(self, payload: Mapping[str, Any]) -> dict[str, JsonValue]:
         """Reject the retired legacy offline creation route."""
@@ -185,6 +217,7 @@ class SkillFoundryAPI:
             raise APIError(409, "job_exists", f"frontdesk job already exists: {safe_job_id}")
         workspace = initialize_job_workspace(self._runs_root_resolved, safe_job_id)
         frontdesk = initialize_frontdesk_workspace(workspace)
+        self._install_frontdesk_risk_policy(frontdesk, payload)
         append_conversation_turn(
             frontdesk,
             ConversationTurn(
@@ -197,6 +230,36 @@ class SkillFoundryAPI:
         _refresh_frontdesk_clarification_summary(frontdesk)
         result = self._run_frontdesk_round(frontdesk)
         return self._frontdesk_payload(safe_job_id, result=result)
+
+    def _install_frontdesk_risk_policy(
+        self,
+        frontdesk: FrontDeskWorkspace,
+        payload: Mapping[str, Any],
+    ) -> None:
+        risk_policy = payload.get("risk_policy")
+        risk_policy_ref = payload.get("risk_policy_ref")
+        if risk_policy is not None and risk_policy_ref is not None:
+            raise APIError(400, "invalid_risk_policy", "provide either risk_policy or risk_policy_ref, not both")
+        if risk_policy is None and risk_policy_ref is None:
+            return
+
+        config = FrontDeskConfig.read_json_file(frontdesk.workspace.resolve_path(FRONTDESK_BUDGET_REF, must_exist=True))
+        if risk_policy is not None:
+            if not isinstance(risk_policy, Mapping):
+                raise APIError(400, "invalid_risk_policy", "risk_policy must be a JSON object")
+            policy_ref = "frontdesk/risk_policy.json"
+            write_frontdesk_artifact(frontdesk, "risk_policy.json", ensure_json_compatible(dict(risk_policy)))
+        else:
+            if not isinstance(risk_policy_ref, str) or not risk_policy_ref.strip():
+                raise APIError(400, "invalid_risk_policy_ref", "risk_policy_ref must be a non-empty relative ref")
+            try:
+                policy_ref = validate_relative_path(risk_policy_ref).as_posix()
+            except PathSecurityError as exc:
+                raise APIError(400, "invalid_risk_policy_ref", f"risk_policy_ref is unsafe: {exc}") from exc
+
+        config.risk_policy_ref = policy_ref
+        config.validate()
+        write_frontdesk_artifact(frontdesk, "budget.json", config.to_dict())
 
     def append_frontdesk_message(self, job_id: str, payload: Mapping[str, Any]) -> dict[str, JsonValue]:
         """Append one user message and run the next Front Desk round."""
@@ -562,7 +625,10 @@ class SkillFoundryAPI:
         if fake_mode is not None:
             return self._frontdesk_fake_forgeunit_commands(workspace, fake_mode)
         if command is not None:
-            return command, repair_command
+            return (
+                self._normalize_workspace_command(command) or command,
+                self._normalize_workspace_command(repair_command),
+            )
         if configured_command is not None:
             return configured_command, repair_command or configured_repair_command
         return self._frontdesk_fake_forgeunit_commands(workspace, "happy")
@@ -3435,6 +3501,23 @@ def _truncate(text: str, limit: int) -> str:
     if len(stripped) <= limit:
         return stripped
     return stripped[: max(0, limit - 1)] + "…"
+
+
+def _looks_like_shell_command(command: str) -> bool:
+    return any(token in command for token in ("|", "&&", "||", ";", "$(", "`", "<", ">"))
+
+
+def _is_relative_command_path(value: str) -> bool:
+    if not value or value.startswith("-"):
+        return False
+    if os.path.isabs(value):
+        return False
+    if value.startswith(("http://", "https://")):
+        return False
+    if any(token in value for token in ("*", "?", "[", "]", "{", "}", "$", "`")):
+        return False
+    path = Path(value)
+    return "/" in value or value.startswith(".") or path.suffix in {".py", ".sh", ".js", ".mjs", ".cjs"}
 
 
 __all__ = [

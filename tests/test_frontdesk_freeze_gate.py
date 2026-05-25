@@ -346,6 +346,46 @@ def test_freeze_gate_freezes_approved_spec_and_writes_manifest_and_locked_record
         workspace.check_locked_inputs()
 
 
+def test_freeze_gate_treats_optional_elicitation_missing_fields_as_warnings(tmp_path):
+    criterion = sample_criterion()
+    elicitation_report = ElicitationReport(
+        readiness_guess="ready_for_audit",
+        current_understanding="The user wants a weekly update writer from pasted notes.",
+        known_fields={"input": "pasted weekly notes", "output": "markdown status update"},
+        missing_fields=[
+            "markdown.entry_template_optional_detail",
+            "verifier.cli_interface_optional_detail",
+            "confirmation_phrase_optional_detail",
+        ],
+        risk_flags=[],
+        next_questions=[],
+        draft_skill_spec=draft_skill_spec_payload(),
+        draft_acceptance_criteria=[criterion.to_dict()],
+        assumptions=["The remaining fields are optional implementation details."],
+        round_index=1,
+    )
+    workspace, frontdesk = make_freezable_frontdesk_workspace(
+        tmp_path,
+        criterion=criterion,
+        elicitation_report=elicitation_report,
+    )
+
+    result = FrontDeskFreezeGate().evaluate_and_freeze(frontdesk, round_index=1)
+
+    assert result.decision == FREEZE_GATE_DECISION_FREEZE
+    assert result.frozen is True
+    assert "unresolved_elicitation_missing_fields" not in reason_codes(result)
+    assert result.warnings == [
+        "Non-blocking elicitation details left for build-time judgment: "
+        "markdown.entry_template_optional_detail, verifier.cli_interface_optional_detail, "
+        "confirmation_phrase_optional_detail"
+    ]
+    gate_result = read_json(workspace, "frontdesk/freeze_gate_result.json")
+    assert gate_result["decision"] == "freeze"
+    assert gate_result["warnings"] == result.warnings
+    assert workspace.resolve_path("frontdesk/freeze_manifest.json", must_exist=True).is_file()
+
+
 def test_freeze_gate_blocks_when_auditor_not_approved_and_does_not_overwrite_root_inputs(tmp_path):
     audit = approved_audit_report(decision="needs_more_clarification")
     workspace, frontdesk = make_freezable_frontdesk_workspace(tmp_path, audit_report=audit)

@@ -366,6 +366,61 @@ def test_clear_need_materializes_audits_and_freezes(tmp_path):
     assert workspace.resolve_path("frontdesk/freeze_manifest.json", must_exist=True).is_file()
 
 
+def test_live_schema_variants_are_normalized_before_materialization(tmp_path):
+    workspace, frontdesk = make_frontdesk_workspace(tmp_path)
+    payload = ready_for_audit_payload(
+        draft_skill_spec={
+            "recommended_direction": {
+                "name": "Codexarium",
+                "one_sentence": "Capture evidence-bounded Codex collaboration knowledge into an Obsidian wiki.",
+            },
+            "wiki_schema": {"sections": ["projects", "decisions", "concepts"]},
+            "rust_helper_spec": {"required": True, "checks": ["cargo test"]},
+        },
+        criteria=[
+            {
+                "criterion": "The package includes SKILL.md, Cargo.toml, Rust sources, docs, and fixtures.",
+                "verification": "Inspect package files and run cargo test.",
+                "test_method": "file_and_command",
+                "evidence_kind": "file_and_command",
+                "coverage_status": "specified",
+                "data_sensitivity": "low",
+            }
+        ],
+    )
+    payload["missing_fields"] = [
+        "implementation.evidence_manifest_schema can be designed by the build stage and fixed by fixtures.",
+        "wiki.path_conventions",
+        "write_conflict_policy",
+        "manifest_serialization_format",
+    ]
+
+    result = run_frontdesk_round(
+        frontdesk,
+        elicitor_client=ScriptedModelClient(payload=payload),
+    )
+
+    assert result.status == "await_user_plan_review"
+    elicitation = read_json(workspace, "frontdesk/elicitation_report_001.json")
+    assert elicitation["missing_fields"] == []
+    assert "Non-blocking implementation detail" in elicitation["assumptions"][-1]
+    skill_spec = elicitation["draft_skill_spec"]
+    assert skill_spec["skill_id"] == "codexarium"
+    assert any("wiki_schema" in item for item in skill_spec["reference_materials"])
+    assert any("rust_helper_spec" in item for item in skill_spec["constraints"])
+    criteria = AcceptanceCriteriaSet.read_yaml_file(
+        workspace.resolve_path("frontdesk/acceptance_criteria.yaml", must_exist=True)
+    )
+    criterion = criteria.criteria[0]
+    assert criterion.id == "AC-001"
+    assert criterion.test_method == "fixture"
+    assert criterion.evidence_kind == "verifier_check"
+    assert criterion.coverage_status == "planned"
+    assert criterion.data_sensitivity == "public"
+    assert criterion.required_evidence == ["Inspect package files and run cargo test."]
+    assert criterion.pass_condition == "Inspect package files and run cargo test."
+
+
 def test_default_planning_round_uses_goal_harness_without_raw_conversation(tmp_path):
     marker = "RAW_FRONTDESK_MARKER_SHOULD_NOT_ENTER_PROMPTS"
     workspace, frontdesk = make_frontdesk_workspace(
@@ -582,6 +637,40 @@ def test_transient_provider_timeout_keeps_frontdesk_retryable(tmp_path):
     assert result.state.clarification_round == 3
     assert result.state.latest_elicitation_report_ref == "frontdesk/elicitation_report_003.json"
     assert result.failure_ref == "frontdesk/elicitation_failure_004.json"
+
+
+def test_transient_provider_bad_gateway_keeps_frontdesk_retryable(tmp_path):
+    workspace, frontdesk = make_frontdesk_workspace(tmp_path)
+    current_state = FrontDeskState(
+        job_id=workspace.job_id,
+        stage="ask_user",
+        clarification_round=1,
+        readiness="needs_clarification",
+        latest_elicitation_report_ref=None,
+        next_action="ask_user",
+    )
+
+    class BadGatewayElicitor:
+        def elicit(self, *_args, **_kwargs):
+            return RequirementsElicitationResult(
+                status="fail_closed",
+                round_index=2,
+                failure_ref="frontdesk/elicitation_failure_002.json",
+                failure={
+                    "failure_type": "provider_error",
+                    "message": "ERROR: Reconnecting... unexpected status 502 Bad Gateway",
+                    "details": {"error_type": "RuntimeError", "retryable": False},
+                },
+            )
+
+    result = run_frontdesk_round(frontdesk, state=current_state, elicitor=BadGatewayElicitor())
+
+    assert result.status == "retry_elicit"
+    assert result.failed_closed is False
+    assert result.state.readiness == "needs_clarification"
+    assert result.state.next_action == "elicit"
+    assert result.state.clarification_round == 1
+    assert result.failure_ref == "frontdesk/elicitation_failure_002.json"
 
 
 def test_ready_for_audit_with_missing_drafts_fails_closed(tmp_path):

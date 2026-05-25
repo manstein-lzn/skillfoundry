@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
 from typing import Any, Mapping
 
 import yaml
@@ -124,6 +127,7 @@ class Verifier:
         self._check_bundle_manifest(workspace, checks)
         self._check_contextforge_raw_frontdesk_exclusion(workspace, checks)
         self._check_package_hash(checks, package_hash)
+        self._check_rust_package(workspace, checks, static_evidence.skill_text)
         self._check_sandbox_smoke(workspace, checks)
         llm_ref = self._record_llm_judge_signal(workspace, checks)
 
@@ -843,6 +847,139 @@ class Verifier:
                 )
             )
 
+    def _check_rust_package(
+        self,
+        workspace: JobWorkspace,
+        checks: list[VerifierCheck],
+        skill_text: str | None,
+    ) -> None:
+        package_dir = workspace.resolve_path("package")
+        cargo_ref, cargo_path = _find_package_cargo_project(package_dir)
+        rust_sources = _package_rust_sources(package_dir)
+        rust_declared = _skill_text_declares_rust(skill_text)
+        if cargo_path is None or cargo_ref is None:
+            if rust_declared or rust_sources:
+                evidence_ref = "package/Cargo.toml"
+                checks.append(
+                    _check(
+                        "package_cargo_toml_present",
+                        False,
+                        "SKILL.md or package sources declare Rust/Cargo, but no package Cargo.toml was found",
+                        evidence_ref,
+                    )
+                )
+            return
+        if not cargo_path.is_file():
+            checks.append(_check("package_cargo_toml_present", False, "package/Cargo.toml is not a file", cargo_ref))
+            return
+
+        cargo_project_dir = cargo_path.parent
+        cargo_src_dir = cargo_project_dir / "src"
+        cargo_src_ref = _package_relative_ref(package_dir, cargo_src_dir) or "package/src"
+        cargo_rust_sources = sorted(cargo_src_dir.rglob("*.rs")) if cargo_src_dir.exists() and cargo_src_dir.is_dir() else []
+
+        checks.append(_check("package_cargo_toml_present", True, f"{cargo_ref} exists", cargo_ref))
+        if cargo_rust_sources:
+            checks.append(
+                _check(
+                    "package_rust_sources_present",
+                    True,
+                    f"Rust source files found: {len(cargo_rust_sources)}",
+                    cargo_src_ref,
+                )
+            )
+        else:
+            checks.append(
+                _check(
+                    "package_rust_sources_present",
+                    False,
+                    f"{cargo_ref} exists but no src/*.rs source files were found beside it",
+                    cargo_src_ref,
+                )
+            )
+            return
+
+        cargo_log_ref = "verifier/cargo_test.log"
+        cargo_log_path = workspace.resolve_path(cargo_log_ref)
+        cargo_exe = shutil.which("cargo")
+        if cargo_exe is None:
+            cargo_log_path.write_text("cargo executable was not found on PATH\n", encoding="utf-8")
+            checks.append(
+                _check(
+                    "package_cargo_test",
+                    False,
+                    "cargo executable was not found on PATH",
+                    cargo_log_ref,
+                )
+            )
+            return
+
+        cargo_work_dir = workspace.resolve_path("verifier/cargo-work")
+        cargo_target_dir = workspace.resolve_path("verifier/cargo-target")
+        if cargo_work_dir.exists():
+            shutil.rmtree(cargo_work_dir)
+        if cargo_target_dir.exists():
+            shutil.rmtree(cargo_target_dir)
+        shutil.copytree(package_dir, cargo_work_dir, ignore=shutil.ignore_patterns("target"))
+        try:
+            cargo_project_relative = cargo_project_dir.relative_to(package_dir)
+        except ValueError:
+            checks.append(
+                _check(
+                    "package_cargo_test",
+                    False,
+                    f"{cargo_ref} is not under package/",
+                    cargo_log_ref,
+                )
+            )
+            return
+        cargo_run_dir = cargo_work_dir / cargo_project_relative
+        try:
+            result = subprocess.run(
+                [cargo_exe, "test", "--color", "never"],
+                cwd=cargo_run_dir,
+                text=True,
+                capture_output=True,
+                timeout=120,
+                check=False,
+                env={**os.environ, "CARGO_TARGET_DIR": cargo_target_dir.as_posix()},
+            )
+        except subprocess.TimeoutExpired as exc:
+            cargo_log_path.write_text(
+                _cargo_log_text(
+                    command="cargo test --color never",
+                    returncode=None,
+                    stdout=exc.stdout,
+                    stderr=exc.stderr,
+                    timed_out=True,
+                ),
+                encoding="utf-8",
+            )
+            checks.append(_check("package_cargo_test", False, "cargo test timed out after 120s", cargo_log_ref))
+            return
+
+        cargo_log_path.write_text(
+            _cargo_log_text(
+                command="cargo test --color never",
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                timed_out=False,
+            ),
+            encoding="utf-8",
+        )
+        if result.returncode == 0:
+            checks.append(_check("package_cargo_test", True, "cargo test passed", cargo_log_ref))
+        else:
+            checks.append(
+                _check(
+                    "package_cargo_test",
+                    False,
+                    f"cargo test failed with exit code {result.returncode}",
+                    cargo_log_ref,
+                )
+            )
+
     def _record_llm_judge_signal(self, workspace: JobWorkspace, checks: list[VerifierCheck]) -> str | None:
         if self.llm_judge_passed is None and self.llm_judge_ref is None:
             return None
@@ -924,6 +1061,90 @@ def _hash_package(workspace: JobWorkspace) -> tuple[str, list[str]]:
             entries.append({"path": relative, "kind": "other"})
             failures.append(f"{relative}: unsupported package path type")
     return sha256_json(entries), failures
+
+
+def _skill_text_declares_rust(skill_text: str | None) -> bool:
+    if not skill_text:
+        return False
+    normalized = skill_text.lower()
+    return re.search(r"\b(rust|cargo|crate)\b|cargo\.toml|cargo\s+test", normalized) is not None
+
+
+def _find_package_cargo_project(package_dir: Path) -> tuple[str | None, Path | None]:
+    root_manifest = package_dir / "Cargo.toml"
+    if root_manifest.exists():
+        return "package/Cargo.toml", root_manifest
+
+    manifests: list[Path] = []
+    if package_dir.exists() and package_dir.is_dir():
+        for path in sorted(package_dir.rglob("Cargo.toml")):
+            try:
+                relative_parts = path.relative_to(package_dir).parts
+            except ValueError:
+                continue
+            if "target" in relative_parts:
+                continue
+            manifests.append(path)
+    if len(manifests) != 1:
+        return None, None
+    ref = _package_relative_ref(package_dir, manifests[0])
+    return ref, manifests[0] if ref is not None else None
+
+
+def _package_rust_sources(package_dir: Path) -> list[Path]:
+    if not package_dir.exists() or not package_dir.is_dir():
+        return []
+    sources: list[Path] = []
+    for path in sorted(package_dir.rglob("*.rs")):
+        try:
+            relative_parts = path.relative_to(package_dir).parts
+        except ValueError:
+            continue
+        if "target" in relative_parts:
+            continue
+        sources.append(path)
+    return sources
+
+
+def _package_relative_ref(package_dir: Path, path: Path) -> str | None:
+    try:
+        relative = path.relative_to(package_dir).as_posix()
+    except ValueError:
+        return None
+    return f"package/{relative}" if relative else "package"
+
+
+def _cargo_log_text(
+    *,
+    command: str,
+    returncode: int | None,
+    stdout: str | bytes | None,
+    stderr: str | bytes | None,
+    timed_out: bool,
+) -> str:
+    stdout_text = stdout.decode("utf-8", errors="replace") if isinstance(stdout, bytes) else (stdout or "")
+    stderr_text = stderr.decode("utf-8", errors="replace") if isinstance(stderr, bytes) else (stderr or "")
+    return "\n".join(
+        [
+            f"command: {command}",
+            f"returncode: {returncode}",
+            f"timed_out: {str(timed_out).lower()}",
+            "",
+            "stdout:",
+            _truncate_log(stdout_text),
+            "",
+            "stderr:",
+            _truncate_log(stderr_text),
+            "",
+        ]
+    )
+
+
+def _truncate_log(text: str, *, limit: int = 20000) -> str:
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return text[:limit] + f"\n[truncated {omitted} bytes]\n"
 
 
 def _check(

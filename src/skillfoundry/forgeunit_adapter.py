@@ -979,7 +979,35 @@ def run_forgeunit_repair_pilot_graph(
         FORGEUNIT_SKILLFOUNDRY_ATTEMPT_ID,
     )
     if first_verification.passed:
-        raise ForgeUnitIntegrationError("repair pilot expected attempt 001 verifier failure")
+        initial_success_state = _with_initial_repair_pilot_success_state(
+            workspace,
+            first_verified_state,
+            first_summary_ref=first_summary_ref,
+            first_verification_ref=first_verification_ref,
+        )
+        registry_state = build_forgeunit_registry_gate_node(
+            runs_path,
+            registry_path=registry_path,
+            version=version,
+            created_at=created_at,
+        )(initial_success_state)
+
+        refs = dict(registry_state.get("refs", {}))
+        refs["forgeunit_repair_graph_state"] = FORGEUNIT_REPAIR_GRAPH_STATE_REF
+        final_state: SkillFoundryV2State = dict(registry_state)
+        final_state.update(
+            {
+                "stage": V2Stage.EMIT_REPORT.value,
+                "status": V2Status.REPORT_EMITTED.value,
+                "refs": refs,
+                "human_review_required": False,
+                "next_route": V2Route.CONTINUE.value,
+            }
+        )
+        validate_v2_graph_state(final_state)
+        workspace.resolve_path("contextforge").mkdir(parents=True, exist_ok=True)
+        _write_json(workspace.resolve_path(FORGEUNIT_REPAIR_GRAPH_STATE_REF), final_state)
+        return final_state
 
     repair_packet_ref = write_forgeunit_repair_packet(
         workspace,
@@ -1162,7 +1190,7 @@ def _maybe_write_contextforge_frontdesk_boundary_evidence(
     timestamp = created_at or utc_now()
     run_id = f"{workspace.job_id}-forgeunit-context-boundary"
     try:
-        contracts = write_contextforge_contract_artifacts(workspace, created_at=timestamp)
+        contracts = write_contextforge_contract_artifacts(workspace, created_at=timestamp, overwrite=False)
         ledger = ContextLedger.connect(workspace.resolve_path(GOAL_RUNTIME_LEDGER_REF))
         ledger.initialize()
         try:
@@ -1302,6 +1330,51 @@ def _with_repair_packet_state(
         {
             "stage": V2Stage.REPAIR_GOAL_NODE.value,
             "status": V2Status.REPAIR_PLANNED.value,
+            "refs": refs,
+            "hashes": hashes,
+            "contextforge": contextforge,
+            "human_review_required": False,
+            "next_route": V2Route.CONTINUE.value,
+        }
+    )
+    validate_v2_graph_state(next_state)
+    return next_state
+
+
+def _with_initial_repair_pilot_success_state(
+    workspace: JobWorkspace,
+    state: Mapping[str, Any],
+    *,
+    first_summary_ref: str,
+    first_verification_ref: str,
+) -> SkillFoundryV2State:
+    refs = dict(state.get("refs", {}))
+    refs.update(
+        {
+            "forgeunit_initial_summary": first_summary_ref,
+            "forgeunit_initial_verification_result": first_verification_ref,
+        }
+    )
+    hashes = dict(state.get("hashes", {}))
+    hashes.update(
+        {
+            "forgeunit_initial_summary": sha256_file(workspace.resolve_path(first_summary_ref, must_exist=True)),
+            "forgeunit_initial_verification_result": sha256_file(
+                workspace.resolve_path(first_verification_ref, must_exist=True)
+            ),
+        }
+    )
+    contextforge = dict(state.get("contextforge", {}))
+    contextforge.update(
+        {
+            "forgeunit_repair_failed_attempt_id": None,
+            "forgeunit_repair_attempt_id": None,
+            "forgeunit_repair_status": "initial_verified_no_repair",
+        }
+    )
+    next_state: SkillFoundryV2State = dict(state)
+    next_state.update(
+        {
             "refs": refs,
             "hashes": hashes,
             "contextforge": contextforge,

@@ -125,6 +125,112 @@ def assert_failed_check(result: VerificationResult, name: str) -> None:
     assert any(check["passed"] is False and check["severity"] == "error" for check in checks)
 
 
+def write_rust_package(workspace, *, broken: bool = False) -> None:
+    workspace.resolve_path("package/Cargo.toml").write_text(
+        "\n".join(
+            [
+                "[package]",
+                'name = "verifier-rust-fixture"',
+                'version = "0.1.0"',
+                'edition = "2021"',
+                "",
+                "[lib]",
+                'path = "src/lib.rs"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    workspace.resolve_path("package/src").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("package/src/lib.rs").write_text(
+        (
+            "pub fn answer() -> i32 { 41 }\n"
+            "#[cfg(test)]\n"
+            "mod tests {\n"
+            "    #[test]\n"
+            "    fn answer_is_correct() {\n"
+            f"        assert_eq!(crate::answer(), {42 if broken else 41});\n"
+            "    }\n"
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_nested_rust_package(workspace, *, broken: bool = False) -> None:
+    workspace.resolve_path("package/verifier").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("package/verifier/Cargo.toml").write_text(
+        "\n".join(
+            [
+                "[package]",
+                'name = "nested-verifier-rust-fixture"',
+                'version = "0.1.0"',
+                'edition = "2021"',
+                "",
+                "[lib]",
+                'path = "src/lib.rs"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    workspace.resolve_path("package/verifier/src").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("package/verifier/src/lib.rs").write_text(
+        (
+            "pub fn answer() -> i32 { 41 }\n"
+            "#[cfg(test)]\n"
+            "mod tests {\n"
+            "    #[test]\n"
+            "    fn answer_is_correct() {\n"
+            f"        assert_eq!(crate::answer(), {42 if broken else 41});\n"
+            "    }\n"
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_nested_rust_package_with_package_level_fixture(workspace) -> None:
+    workspace.resolve_path("package/helper").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("package/helper/src").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("package/helper/tests").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("package/fixtures").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("package/helper/Cargo.toml").write_text(
+        "\n".join(
+            [
+                "[package]",
+                'name = "nested-helper-fixture"',
+                'version = "0.1.0"',
+                'edition = "2021"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    workspace.resolve_path("package/helper/src/main.rs").write_text(
+        "fn main() { println!(\"ok\"); }\n",
+        encoding="utf-8",
+    )
+    workspace.resolve_path("package/fixtures/sample.txt").write_text("fixture ok\n", encoding="utf-8")
+    workspace.resolve_path("package/helper/tests/fixture_ref.rs").write_text(
+        "\n".join(
+            [
+                "use std::fs;",
+                "use std::path::Path;",
+                "",
+                "#[test]",
+                "fn reads_package_level_fixture() {",
+                "    let fixture = Path::new(env!(\"CARGO_MANIFEST_DIR\")).join(\"../fixtures/sample.txt\");",
+                "    let text = fs::read_to_string(fixture).expect(\"package-level fixture must be available\");",
+                "    assert_eq!(text, \"fixture ok\\n\");",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_verifier_api_is_exported():
     assert skillfoundry.Verifier is Verifier
     assert isinstance(skillfoundry.DEFAULT_REQUIRED_SKILL_SECTIONS, tuple)
@@ -277,3 +383,67 @@ def test_sandbox_smoke_failure_causes_verification_fail(tmp_path):
     assert_failed_check(result, "sandbox_smoke")
     sandbox_log = workspace.resolve_path("verifier/sandbox.log", must_exist=True).read_text(encoding="utf-8")
     assert "No package scripts were executed." in sandbox_log
+
+
+def test_cargo_package_runs_cargo_test_when_present(tmp_path):
+    workspace = make_workspace(tmp_path)
+    write_rust_package(workspace)
+
+    result = Verifier().verify(workspace)
+
+    assert result.passed is True
+    assert check_by_name(result, "package_cargo_toml_present")[0]["passed"] is True
+    assert check_by_name(result, "package_rust_sources_present")[0]["passed"] is True
+    assert check_by_name(result, "package_cargo_test")[0]["passed"] is True
+    assert workspace.resolve_path("verifier/cargo_test.log", must_exist=True).is_file()
+
+
+def test_nested_cargo_tool_project_runs_cargo_test_when_declared(tmp_path):
+    workspace = make_workspace(
+        tmp_path,
+        skill_md=VALID_SKILL_MD.replace(
+            "This fixture describes a complete local Codex Skill package.",
+            "This fixture describes a complete local Codex Skill package with a nested Rust Cargo verifier.",
+        ),
+    )
+    write_nested_rust_package(workspace)
+
+    result = Verifier().verify(workspace)
+
+    assert result.passed is True
+    cargo_check = check_by_name(result, "package_cargo_toml_present")[0]
+    source_check = check_by_name(result, "package_rust_sources_present")[0]
+    assert cargo_check["passed"] is True
+    assert cargo_check["evidence_ref"] == "package/verifier/Cargo.toml"
+    assert source_check["passed"] is True
+    assert source_check["evidence_ref"] == "package/verifier/src"
+    assert check_by_name(result, "package_cargo_test")[0]["passed"] is True
+
+
+def test_nested_cargo_tool_project_keeps_package_level_fixtures_available(tmp_path):
+    workspace = make_workspace(
+        tmp_path,
+        skill_md=VALID_SKILL_MD.replace(
+            "This fixture describes a complete local Codex Skill package.",
+            "This fixture describes a complete local Codex Skill package with a nested Rust Cargo helper and fixtures.",
+        ),
+    )
+    write_nested_rust_package_with_package_level_fixture(workspace)
+
+    result = Verifier().verify(workspace)
+
+    assert result.passed is True
+    cargo_check = check_by_name(result, "package_cargo_toml_present")[0]
+    assert cargo_check["passed"] is True
+    assert cargo_check["evidence_ref"] == "package/helper/Cargo.toml"
+    assert check_by_name(result, "package_cargo_test")[0]["passed"] is True
+
+
+def test_broken_cargo_package_blocks_verification(tmp_path):
+    workspace = make_workspace(tmp_path)
+    write_rust_package(workspace, broken=True)
+
+    result = Verifier().verify(workspace)
+
+    assert result.passed is False
+    assert_failed_check(result, "package_cargo_test")

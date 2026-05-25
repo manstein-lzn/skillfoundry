@@ -34,6 +34,8 @@ from .frontdesk import (
     FrontDeskFreezeGate,
     RequirementsElicitor,
     SpecAuditor,
+    _normalize_acceptance_criterion_payload,
+    _normalize_skill_spec_payload,
 )
 from .frontdesk_goal_runtime import (
     FRONTDESK_CORE_NEED_REPORT_REF as FRONTDESK_GOAL_CORE_NEED_REPORT_REF,
@@ -983,9 +985,15 @@ def _materialize_elicitation_drafts(
 
     if report.draft_acceptance_criteria:
         try:
+            normalized_criteria = [
+                _normalize_acceptance_criterion_payload(criterion, index=index)
+                if isinstance(criterion, Mapping)
+                else criterion
+                for index, criterion in enumerate(report.draft_acceptance_criteria, start=1)
+            ]
             criteria = AcceptanceCriteriaSet.from_dict(
                 {
-                    "criteria": report.draft_acceptance_criteria,
+                    "criteria": normalized_criteria,
                     "job_id": frontdesk.job_id,
                 }
             )
@@ -1184,17 +1192,7 @@ def _elicitation_report_from_goal_harness_plan(
 
 
 def _skill_spec_from_draft_payload(payload: Mapping[str, Any]) -> SkillSpec:
-    data = dict(payload)
-    name = data.pop("name", None)
-    identifier = data.pop("id", None)
-    if "title" not in data and isinstance(name, str):
-        data["title"] = name
-    if "skill_id" not in data:
-        if isinstance(identifier, str) and identifier.strip():
-            data["skill_id"] = identifier
-        elif isinstance(name, str) and name.strip():
-            data["skill_id"] = _slugify_skill_id(name)
-    return SkillSpec.from_dict(data)
+    return SkillSpec.from_dict(_normalize_skill_spec_payload(payload))
 
 
 def _slugify_skill_id(value: str) -> str:
@@ -1718,6 +1716,15 @@ def _is_transient_model_failure(failure: Mapping[str, Any] | None) -> bool:
     error_type = str(details_map.get("error_type") or details_map.get("exception_type") or "").lower()
     message = str(failure.get("message") or "").lower()
     if "timeout" in error_type or "timed out" in message or "timeout" in message:
+        return True
+    if (
+        "bad gateway" in message
+        or "reconnecting" in message
+        or "unexpected status 502" in message
+        or "unexpected status 503" in message
+        or "unexpected status 504" in message
+        or re.search(r"\b50[234]\b", message) is not None
+    ):
         return True
     return bool(details_map.get("retryable"))
 

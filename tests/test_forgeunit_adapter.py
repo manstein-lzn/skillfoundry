@@ -314,6 +314,65 @@ def test_forgeunit_command_bridge_pilot_verifies_and_registers_offline_package(t
     assert "package_content" not in serialized_state
 
 
+def test_forgeunit_repair_pilot_registers_initial_success_without_repair(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    registry_path = tmp_path / "registry.json"
+    workspace = initialize_job_workspace(
+        runs_root,
+        "forgeunit-repair-initial-success",
+        worker_input="private initial success repair bridge request must remain in file refs only",
+    )
+    build_script = _write_fake_codex_exec_command(
+        workspace.root,
+        skill_text=VALID_FORGEUNIT_SKILL,
+        script_name="fake_initial_success_codex_exec.py",
+    )
+    unused_repair_script = _write_fake_codex_exec_command(
+        workspace.root,
+        skill_text=INVALID_FORGEUNIT_SKILL,
+        script_name="fake_unused_repair_codex_exec.py",
+    )
+
+    result = run_forgeunit_repair_pilot_graph(
+        runs_root,
+        workspace.job_id,
+        registry_path=registry_path,
+        build_command=f"{sys.executable} {build_script.name}",
+        repair_command=f"{sys.executable} {unused_repair_script.name}",
+        version="forgeunit-repair-initial-success",
+        created_at="2026-05-23T00:00:00Z",
+    )
+    serialized_state = json.dumps(result)
+    first_verification = json.loads(
+        workspace.resolve_path("attempts/001/verification_result.json", must_exist=True).read_text()
+    )
+    entry = LocalSkillRegistry(registry_path).get(
+        "forgeunit-repair-initial-success-skill",
+        "forgeunit-repair-initial-success",
+    )
+    registry_report = LocalSkillRegistry(registry_path).verify_entry(entry)
+
+    validate_v2_graph_state(result)
+    assert result["stage"] == V2Stage.EMIT_REPORT.value
+    assert result["status"] == V2Status.REPORT_EMITTED.value
+    assert result["human_review_required"] is False
+    assert result["refs"]["forgeunit_initial_verification_result"] == "attempts/001/verification_result.json"
+    assert "forgeunit_repair_packet" not in result["refs"]
+    assert "forgeunit_repair_verification_result" not in result["refs"]
+    assert result["refs"]["registry_decision"] == FORGEUNIT_REGISTRY_DECISION_REF
+    assert result["refs"]["final_report"] == FORGEUNIT_FINAL_REPORT_REF
+    assert result["contextforge"]["last_verification_status"] == "passed"
+    assert result["contextforge"]["registry_approved"] is True
+    assert result["contextforge"]["forgeunit_repair_status"] == "initial_verified_no_repair"
+    assert first_verification["passed"] is True
+    assert not workspace.resolve_path("attempts/002").exists()
+    assert not workspace.resolve_path(FORGEUNIT_REPAIR_PACKET_REF).exists()
+    assert registry_report.valid is True
+    assert "private initial success repair bridge request" not in serialized_state
+    assert "ForgeUnit Command Bridge Skill" not in serialized_state
+    assert "ForgeUnit Repair Fixture" not in serialized_state
+
+
 def test_forgeunit_repair_pilot_repairs_failed_verifier_package_and_registers(tmp_path: Path) -> None:
     runs_root = tmp_path / "runs"
     registry_path = tmp_path / "registry.json"

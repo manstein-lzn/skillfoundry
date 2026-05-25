@@ -749,11 +749,11 @@ class FrontDeskState(SchemaModel):
 @dataclass
 class FrontDeskConfig(SchemaModel):
     max_clarification_rounds: int = 10
-    max_core_need_rounds: int = 3
+    max_core_need_rounds: int = 5
     max_plan_revision_rounds: int = 3
     max_questions_per_core_need_round: int = 1
     max_open_confirmation_items: int = 3
-    max_total_frontdesk_rounds: int = 8
+    max_total_frontdesk_rounds: int = 12
     min_clarity_score: float = 0.75
     min_feasibility_score: float = 0.70
     min_testability_score: float = 0.75

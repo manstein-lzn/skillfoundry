@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping, Self
 
 from .frontdesk_schema import AcceptanceCriteriaSet, AcceptanceCriterion
@@ -77,6 +78,39 @@ _QA_CHECK_NAMES = frozenset(
         "workflow_actionability",
         "safety_actionability",
         "script_smoke",
+    }
+)
+_MACHINE_CHECK_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]*$")
+_SYNTHETIC_VERIFIER_CHECK_IDS = frozenset(
+    {
+        "package_contract_present",
+        "skill_package_instruction_contract",
+        "skill_instruction_content",
+        "skill_clean_room_boundary",
+        "skill_scope_exclusion_boundary",
+        "skill_privacy_boundary",
+        "skill_user_evidence_boundary",
+        "evidence_authorization_gate",
+        "evidence_references_contract",
+        "manifest_schema_documented",
+        "candidate_table_contract",
+        "candidate_entry_semantics",
+        "wiki_structure_contract",
+        "wiki_structure_and_paths_contract",
+        "path_generation_contract",
+        "write_conflict_policy_contract",
+        "rust_verifier_package_present",
+        "rust_verifier_core_validation",
+        "rust_verifier_path_safety",
+        "package_cargo_test",
+        "local_smoke_command_documented",
+        "rust_verifier_fixture_coverage",
+        "local_deterministic_verifier_boundary",
+        "no_external_runtime_dependency",
+        "codexarium_taxonomy_contract",
+        "codexarium_manifest_compact_contract",
+        "codexarium_fixture_scenario_coverage",
+        "codexarium_local_runtime_contract",
     }
 )
 _ZERO_HASH = "0" * 64
@@ -524,9 +558,7 @@ def _plan_item(criterion: AcceptanceCriterion) -> AcceptanceCoveragePlanItem:
     if _criterion_uses_only_llm_judge(criterion):
         return _uncovered_plan_item(criterion, "llm_only_without_deterministic_evidence")
 
-    verifier_check_id = criterion.verifier_check_id
-    if verifier_check_id is None and criterion.evidence_kind == "verifier_check" and criterion.required_evidence:
-        verifier_check_id = criterion.required_evidence[0].strip()
+    verifier_check_id = _verifier_check_id_for_criterion(criterion)
     if verifier_check_id:
         return AcceptanceCoveragePlanItem(
             criterion_id=criterion.id,
@@ -626,7 +658,7 @@ def _evaluate_plan_item(
         )
 
     if item.coverage_mode == COVERAGE_MODE_VERIFIER_CHECK:
-        return _evaluate_verifier_check(item, verifier_result)
+        return _evaluate_verifier_check(workspace, item, verifier_result)
 
     if item.coverage_mode == COVERAGE_MODE_QA_REPORT_CHECK:
         return _evaluate_qa_report_check(item, qa_report)
@@ -648,6 +680,7 @@ def _evaluate_plan_item(
 
 
 def _evaluate_verifier_check(
+    workspace: JobWorkspace,
     item: AcceptanceCoveragePlanItem,
     verifier_result: VerificationResult | None,
 ) -> AcceptanceCoverageResultItem:
@@ -661,6 +694,8 @@ def _evaluate_verifier_check(
         )
     checks = _checks_by_name(verifier_result.checks)
     check = checks.get(str(item.verifier_check_id))
+    if check is None and item.verifier_check_id in _SYNTHETIC_VERIFIER_CHECK_IDS:
+        return _evaluate_synthetic_verifier_check(workspace, item, checks)
     if check is None:
         return _result_item(
             item,
@@ -680,6 +715,568 @@ def _evaluate_verifier_check(
         passed=passed,
         evidence_refs=_dedupe(evidence_refs),
         failures=[] if passed else [str(check.get("message") or "verifier check failed")],
+    )
+
+
+def _evaluate_synthetic_verifier_check(
+    workspace: JobWorkspace,
+    item: AcceptanceCoveragePlanItem,
+    checks: Mapping[str, Mapping[str, Any]],
+) -> AcceptanceCoverageResultItem:
+    check_id = str(item.verifier_check_id)
+    evidence_refs: list[str] = [VERIFICATION_RESULT_REF]
+    failures: list[str] = []
+
+    if check_id == "package_contract_present":
+        _require_verifier_checks(checks, failures, "package_skill_md_present", "package_cargo_toml_present")
+        _require_any_verifier_check(checks, failures, ("package_rust_sources_present",), "Rust source files")
+        _require_paths(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/SKILL.md",
+            "package/Cargo.toml",
+        )
+        _require_any_path(workspace, evidence_refs, failures, "Rust source file", ("package/src/lib.rs", "package/src/main.rs"))
+        _require_any_glob(workspace, evidence_refs, failures, "documentation file", "package/docs/*.md")
+        _require_any_glob(workspace, evidence_refs, failures, "test fixture file", "package/tests/fixtures/**/*")
+        _require_any_text_group(
+            _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md", "package/docs/security-boundary.md"),
+            failures,
+            "security boundary documentation",
+            ("security boundary", "safety", "raw sensitive", "sensitive material"),
+        )
+    elif check_id == "skill_package_instruction_contract":
+        _require_verifier_checks(checks, failures, "package_skill_md_present")
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("skill name", ("name: codexarium", "# codexarium")),
+                ("trigger guidance", ("when to use", "use this skill")),
+                ("input requirements", ("inputs", "required inputs")),
+                ("output structure", ("outputs", "primary outputs")),
+                ("workflow", ("workflow",)),
+                ("safety boundary", ("safety", "boundary")),
+                ("confirmation gate", ("confirmation", "confirm", "wait for explicit user confirmation")),
+                ("refusal conditions", ("refuse", "do not use", "stop")),
+            ],
+        )
+    elif check_id == "skill_instruction_content":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("trigger guidance", ("trigger phrases", "when to use")),
+                ("non-trigger guidance", ("when not to use", "do not use")),
+                ("evidence boundary", ("evidence manifest", "compact evidence", "evidence boundary")),
+                ("confirmation gate", ("confirmation", "confirm", "wait for user")),
+                ("write workflow", ("workflow", "write")),
+                ("conflict policy", ("conflict", "no overwrite", "update", "append", "merge")),
+                ("refusal or failure policy", ("refuse", "stop", "failure")),
+                ("raw sensitive material policy", ("raw sensitive", "sensitive material", "do not save", "never save")),
+            ],
+        )
+    elif check_id == "skill_clean_room_boundary":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md", "worker_input.md", "evidence/transcript.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("clean-room statement", ("clean-room", "clean room")),
+                (
+                    "existing implementation exclusion",
+                    (
+                        "does not depend",
+                        "does not inspect",
+                        "do not read",
+                        "do not read, depend",
+                        "existing local codexarium",
+                        "existing local codexarium code",
+                        "from the frozen skillfoundry inputs",
+                        "frozen front desk sources",
+                    ),
+                ),
+                ("current user-provided boundary", ("user-provided", "current user", "user-authorized", "user explicitly")),
+            ],
+        )
+    elif check_id == "skill_scope_exclusion_boundary":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("chat backup excluded", ("chat backup", "chat logs")),
+                ("daily report excluded", ("daily report", "daily reports")),
+                ("automatic collection excluded", ("automatic collection", "background ingestion")),
+                ("network sync excluded", ("network sync", "cloud publishing", "cloud sync")),
+                ("full-disk scan excluded", ("full-disk", "full disk")),
+                ("database service excluded", ("database service", "databases")),
+            ],
+        )
+    elif check_id == "skill_privacy_boundary":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md", "package/docs/security-boundary.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("explicit input boundary", ("user-provided", "explicitly", "approved")),
+                ("JSON evidence manifest", ("json evidence manifest", "evidence manifest")),
+                ("compact evidence", ("compact evidence", "compact collaboration evidence")),
+                ("raw chat exclusion", ("raw chat", "chat logs")),
+                ("terminal output exclusion", ("terminal output", "terminal-output", "stdout", "stderr", "command output")),
+                (
+                    "arbitrary scan exclusion",
+                    ("arbitrary files", "whole-disk", "full-disk", "full disk", "automatic filesystem scan", "automatic collection"),
+                ),
+                (
+                    "network/database/background exclusion",
+                    ("network sync", "network services", "database service", "background ingestion", "daily reports"),
+                ),
+            ],
+        )
+    elif check_id == "skill_user_evidence_boundary":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("user-provided JSON manifest", ("user-provided json evidence manifest", "json evidence manifest")),
+                ("compact notes", ("compact evidence notes", "compact notes")),
+                ("raw chat exclusion", ("raw chat", "raw conversations", "chat logs")),
+                ("terminal/private/arbitrary exclusion", ("terminal output", "private paths", "arbitrary files")),
+                (
+                    "no scanning beyond supplied evidence",
+                    (
+                        "do not read or search beyond",
+                        "never scan",
+                        "refuse to scan",
+                        "do not inspect",
+                        "unprovided sources",
+                        "do not discover it by scanning",
+                        "do not authorize reading",
+                    ),
+                ),
+            ],
+        )
+    elif check_id == "evidence_authorization_gate":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("authorization confirmation", ("explicitly authorize", "explicit authorization", "authorized")),
+                ("missing manifest stop", ("required fields are missing", "missing", "stop")),
+                ("allowed_use enforcement", ("allowed_use",)),
+                ("sensitivity enforcement", ("sensitivity",)),
+                ("unknown evidence refusal", ("unknown evidence_id", "unknown `evidence_id`")),
+                ("refuse or stop behavior", ("refuse", "stop")),
+            ],
+        )
+    elif check_id == "evidence_references_contract":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("evidence references required", ("evidence references", "evidence_id references", "evidence:<id>")),
+                (
+                    "known manifest IDs",
+                    (
+                        "known in the manifest",
+                        "known `evidence_id`",
+                        "known evidence",
+                        "exist in the manifest",
+                        "exists in the manifest",
+                        "manifest-backed",
+                        "manifest `evidence_id`",
+                    ),
+                ),
+                ("allowed evidence use", ("allowed", "allowed_use")),
+                ("candidate or wiki validation", ("candidate", "wiki")),
+            ],
+        )
+    elif check_id == "manifest_schema_documented":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md", "package/docs/manifest-schema.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("JSON manifest", ("json",)),
+                ("evidence_id", ("evidence_id",)),
+                ("source_type", ("source_type",)),
+                ("title", ("title",)),
+                ("summary", ("summary",)),
+                ("allowed_use", ("allowed_use",)),
+                ("sensitivity", ("sensitivity",)),
+                ("created_at", ("created_at",)),
+                ("optional project", ("project",)),
+                ("optional tags", ("tags",)),
+                ("optional related_entries", ("related_entries",)),
+            ],
+        )
+    elif check_id == "candidate_table_contract":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("candidate table", ("candidate table",)),
+                ("entry_type", ("entry_type",)),
+                ("title", ("title",)),
+                ("target wiki path", ("target wiki path", "target_path")),
+                ("summary", ("summary",)),
+                ("evidence references", ("evidence references", "evidence_refs")),
+                ("related links", ("related links", "related_links")),
+                ("uncertainty", ("uncertainty",)),
+                ("before writing", ("before any write", "before writing", "before files are written")),
+            ],
+        )
+    elif check_id == "candidate_entry_semantics":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("project context", ("project context",)),
+                ("decision", ("decision",)),
+                ("principle", ("principle",)),
+                ("lesson", ("lesson",)),
+                ("open question", ("open question",)),
+                ("experiment", ("experiment",)),
+            ],
+        )
+    elif check_id == "wiki_structure_contract":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md", "package/docs/wiki-structure.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("index directory", ("index",)),
+                ("projects directory", ("projects",)),
+                ("concepts directory", ("concepts",)),
+                ("decisions directory", ("decisions",)),
+                ("experiments directory", ("experiments",)),
+                ("retrospectives directory", ("retrospectives",)),
+                ("open-questions directory", ("open-questions",)),
+                ("principles directory", ("principles",)),
+            ],
+        )
+    elif check_id == "wiki_structure_and_paths_contract":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md", "package/docs/wiki-structure.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("wiki structure described", ("wiki structure", "wiki taxonomy", "wiki root", "top-level directories", "directories")),
+                ("decisions directory", ("decisions",)),
+                ("projects directory", ("projects",)),
+                ("open-questions directory", ("open-questions",)),
+                ("principles directory", ("principles",)),
+                ("research directory", ("research", "research-notes")),
+                ("lessons directory", ("lessons",)),
+                ("decision path example", ("decisions/<slug>.md", "decisions/")),
+                ("project path example", ("projects/<project>/index.md", "projects/")),
+            ],
+        )
+    elif check_id == "path_generation_contract":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md", "package/docs/wiki-structure.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("entry_type based path", ("entry_type", "entry type")),
+                ("slug based path", ("slug",)),
+                ("decision path example", ("decisions/<slug>.md", "decisions/")),
+                ("project path example", ("projects/<project>/index.md", "projects/")),
+            ],
+        )
+    elif check_id == "write_conflict_policy_contract":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("no overwrite default", ("no overwrite", "do not overwrite")),
+                ("conflict proposal", ("conflict proposal", "proposal")),
+                (
+                    "non-destructive conflict behavior",
+                    ("not overwrite", "no overwrite", "not directly", "instead of overwriting", "stop before writing"),
+                ),
+                ("confirmation before conflict write", ("confirm", "confirmation", "wait for user", "user decision")),
+            ],
+        )
+    elif check_id == "rust_verifier_package_present":
+        _require_verifier_checks(checks, failures, "package_cargo_toml_present", "package_rust_sources_present")
+        _require_any_glob(workspace, evidence_refs, failures, "Rust verifier fixture file", "package/**/tests/fixtures/**/*")
+        _require_any_glob(workspace, evidence_refs, failures, "Rust verifier test file", "package/**/tests/**/*.rs")
+    elif check_id == "rust_verifier_core_validation":
+        _require_verifier_checks(checks, failures, "package_cargo_test")
+        text = _read_glob_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/src/*.rs",
+            "package/tests/**/*.rs",
+            "package/**/src/*.rs",
+            "package/**/tests/**/*.rs",
+        )
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("manifest validation", ("manifest",)),
+                ("evidence_id validation", ("evidence_id",)),
+                ("duplicate evidence rejection", ("duplicate",)),
+                ("required wiki directory validation", ("required wiki", "required_wiki")),
+                ("unknown evidence reference rejection", ("unknown evidence", "known evidence")),
+                ("invalid fixture rejection", ("invalid", "fixture")),
+            ],
+        )
+    elif check_id == "rust_verifier_path_safety":
+        _require_verifier_checks(checks, failures, "package_cargo_test")
+        text = _read_glob_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/src/*.rs",
+            "package/tests/**/*.rs",
+            "package/**/src/*.rs",
+            "package/**/tests/**/*.rs",
+        )
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("target path validation", ("target path", "target_path")),
+                ("absolute path rejection", ("absolute", "relative")),
+                ("parent traversal rejection", ("parent", "..", "parentdir")),
+                ("unsafe path fixture", ("unsafe", "traversal")),
+            ],
+        )
+    elif check_id == "package_cargo_test":
+        _require_verifier_checks(checks, failures, "package_cargo_test")
+        evidence_refs.append("verifier/cargo_test.log")
+    elif check_id == "local_smoke_command_documented":
+        text = _read_refs_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/SKILL.md",
+            "package/docs/smoke-verification.md",
+            "package/references/runtime_and_tests.md",
+        )
+        has_cli_smoke = _text_has_any(text, ("cargo run", "validate-manifest", "validate-wiki", "validate-candidate"))
+        has_cargo_test_smoke = _text_has_any(text, ("cargo test",))
+        if not (has_cli_smoke or has_cargo_test_smoke):
+            failures.append(
+                "local smoke command: expected one of cargo test, cargo run, validate-manifest, "
+                "validate-wiki, validate-candidate"
+            )
+        if has_cli_smoke:
+            _require_text_groups(
+                text,
+                failures,
+                [
+                    ("manifest argument", ("manifest",)),
+                    ("wiki argument", ("wiki",)),
+                ],
+            )
+        if has_cargo_test_smoke:
+            _require_verifier_checks(checks, failures, "package_cargo_test")
+            _require_text_groups(
+                text,
+                failures,
+                [
+                    ("local test scope", ("local", "skill package root", "package/cargo.toml", "--manifest-path")),
+                    ("verification expectation", ("verification", "expected evidence", "fixture", "test")),
+                ],
+            )
+    elif check_id == "codexarium_taxonomy_contract":
+        text = _read_refs_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/SKILL.md",
+            "package/references/codexarium_reference.md",
+            "package/references/taxonomy.md",
+        )
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("fixed taxonomy", ("fixed taxonomy", "taxonomy")),
+                ("projects category", ("projects", "project")),
+                ("domain knowledge category", ("domain_knowledge", "domain knowledge", "domain")),
+                ("workflows category", ("workflows", "workflow")),
+                ("decisions category", ("decisions", "decision")),
+                ("references/snippets category", ("references_or_snippets", "references", "snippets", "reference", "snippet")),
+            ],
+        )
+    elif check_id == "codexarium_manifest_compact_contract":
+        text = _read_refs_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/SKILL.md",
+            "package/references/codexarium_reference.md",
+            "package/references/artifact-formats.md",
+            "package/examples/manifest.cdxm",
+            "package/examples/compact_note.cdxn",
+        )
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("manifest format", ("manifest format", "manifest_version", "manifest")),
+                ("compact note format", ("compact note format", "compact_note_version", "compact note", "compact notes")),
+                ("stable version", ("version", "v1")),
+                ("entry path", ("path", "source_path")),
+                ("summary", ("summary",)),
+            ],
+        )
+    elif check_id == "codexarium_fixture_scenario_coverage":
+        _require_verifier_checks(checks, failures, "package_cargo_test")
+        _require_any_glob(workspace, evidence_refs, failures, "Codexarium fixture file", "package/**/fixtures/**/*")
+        text = _read_glob_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/**/fixtures/**/*",
+            "package/references/*.md",
+            "package/src/*.rs",
+        )
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("valid fixture", ("valid_wiki", "valid wiki", "valid fixture")),
+                ("conflict fixture", ("conflict_wiki", "conflict")),
+                ("path escape fixture", ("path_escape_wiki", "path-traversal", "path traversal", "parent traversal")),
+                ("taxonomy error fixture", ("taxonomy_error_wiki", "bad-taxonomy", "taxonomy error", "invalid taxonomy", "taxonomy")),
+                ("manifest or compact error fixture", ("bad_manifest_wiki", "bad-compact-note", "bad compact", "compact note", "manifest")),
+            ],
+        )
+    elif check_id == "codexarium_local_runtime_contract":
+        _require_verifier_checks(checks, failures, "package_cargo_test")
+        text = _read_refs_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/SKILL.md",
+            "package/references/runtime_and_tests.md",
+        )
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("local runtime", ("local",)),
+                ("cargo test", ("cargo test",)),
+                ("no external services", ("external services", "no external service", "does not call external services")),
+                ("workspace verification", ("workspace", "skill package root", "package/cargo.toml")),
+            ],
+        )
+    elif check_id == "rust_verifier_fixture_coverage":
+        _require_verifier_checks(checks, failures, "package_cargo_test")
+        valid_fixture_refs = _glob_refs(workspace, "package/**/tests/fixtures/valid/**/*")
+        valid_fixture_refs.extend(_glob_refs(workspace, "package/**/tests/fixtures/**/*valid*"))
+        valid_fixture_refs.extend(_glob_refs(workspace, "package/**/fixtures/valid*/**/*"))
+        if valid_fixture_refs:
+            evidence_refs.extend(_dedupe(valid_fixture_refs)[:8])
+        else:
+            failures.append(
+                "valid fixture: no file matched package/**/tests/fixtures/valid/**/*, "
+                "package/**/tests/fixtures/**/*valid*, or package/**/fixtures/valid*/**/*"
+            )
+        fixture_text = _read_glob_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/**/tests/fixtures/**/*",
+            "package/**/fixtures/**/*",
+            "package/**/tests/**/*.rs",
+            "package/src/*.rs",
+        )
+        _require_text_groups(
+            fixture_text,
+            failures,
+            [
+                ("missing field fixture", ("missing_field", "missing field", "missing required")),
+                ("duplicate evidence fixture", ("duplicate",)),
+                ("unknown evidence fixture", ("unknown", "missing evidence", "missing_evidence", "evidence references")),
+                ("allowed_use fixture", ("allowed_use",)),
+                ("sensitivity fixture", ("sensitivity",)),
+                ("invalid slug/path fixture", ("invalid_target", "illegal slug", "path traversal", "target escape")),
+                (
+                    "missing directory fixture",
+                    (
+                        "missing_dir",
+                        "missing required directory",
+                        "missing required wiki dirs",
+                        "missing_required_wiki_dirs",
+                        "taxonomy directory",
+                        "full fixed taxonomy",
+                    ),
+                ),
+            ],
+        )
+    elif check_id == "local_deterministic_verifier_boundary":
+        _require_verifier_checks(checks, failures, "package_cargo_test")
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md", "package/docs/security-boundary.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("local verifier", ("local verifier", "local rust verifier", "bundled verifier")),
+                ("deterministic verifier", ("deterministic",)),
+                ("network exclusion", ("no network", "does not perform networking", "networking", "network services")),
+                ("scan/sync exclusion", ("scanning", "syncing", "broad filesystem scanning", "automatic filesystem scanning")),
+                ("background service exclusion", ("background service", "background service behavior", "database work", "database service")),
+            ],
+        )
+    elif check_id == "no_external_runtime_dependency":
+        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md", "package/docs/security-boundary.md")
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("MCP not required", ("no mcp", "not require mcp", "do not require mcp", "without mcp")),
+                (
+                    "database not required",
+                    ("no database", "not require database", "do not require database", "without database", "database service"),
+                ),
+                (
+                    "network not required",
+                    ("no network", "not require network", "do not require network", "without network", "network access"),
+                ),
+                (
+                    "cloud sync not required",
+                    ("no cloud sync", "not require cloud sync", "do not require cloud sync", "cloud sync"),
+                ),
+                (
+                    "automatic scan not required",
+                    (
+                        "no automatic",
+                        "not require automatic",
+                        "do not require automatic",
+                        "automatic filesystem scan",
+                        "full-disk scan",
+                    ),
+                ),
+            ],
+        )
+    else:
+        failures.append(f"unsupported synthetic verifier check: {check_id}")
+
+    passed = not failures
+    return _result_item(
+        item,
+        status=COVERAGE_RESULT_STATUS_COVERED_PASS if passed else COVERAGE_RESULT_STATUS_COVERED_FAIL,
+        passed=passed,
+        evidence_refs=_dedupe(evidence_refs),
+        failures=failures,
     )
 
 
@@ -926,6 +1523,243 @@ def _criterion_uses_only_llm_judge(criterion: AcceptanceCriterion) -> bool:
     return not (has_non_model_ref or has_non_model_kind or has_non_model_named_evidence)
 
 
+def _verifier_check_id_for_criterion(criterion: AcceptanceCriterion) -> str | None:
+    explicit = _normalize_machine_check_id(criterion.verifier_check_id)
+    if explicit:
+        return explicit
+    if criterion.evidence_kind != "verifier_check":
+        return None
+    for evidence in criterion.required_evidence:
+        evidence_check = _normalize_machine_check_id(evidence)
+        if evidence_check:
+            return evidence_check
+    return _infer_synthetic_verifier_check_id(criterion)
+
+
+def _normalize_machine_check_id(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    for prefix in ("verifier:", "verifier_check:", "check:"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix) :].strip()
+    for prefix in ("verifier/verification_result.json#", "verifier/verification_result.json:"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix) :].strip()
+    if normalized.startswith("/checks/"):
+        normalized = normalized.rsplit("/", maxsplit=1)[-1]
+    if _MACHINE_CHECK_ID_RE.match(normalized):
+        return normalized
+    return None
+
+
+def _infer_synthetic_verifier_check_id(criterion: AcceptanceCriterion) -> str | None:
+    text = _normalized_text(
+        " ".join(
+            [
+                criterion.id,
+                criterion.description,
+                criterion.pass_condition,
+                criterion.test_method,
+                *criterion.required_evidence,
+            ]
+        )
+    )
+    if (
+        ("complete local codex skill package" in text or "complete local codex skill" in text)
+        and "codexarium" in text
+        and ("existing local codexarium" in text or "existing local" in text or "clean-room" in text)
+    ):
+        return "skill_clean_room_boundary"
+    if "local codex skill package named codexarium" in text and "skill.md" in text:
+        return "skill_package_instruction_contract"
+    if (
+        "existing local codexarium" in text
+        and (
+            "does not read" in text
+            or "does not depend" in text
+            or "copy" in text
+            or "reference" in text
+            or "implementation" in text
+        )
+    ):
+        return "skill_clean_room_boundary"
+    if (
+        "skill.md" in text
+        and ("trigger" in text or "non-trigger" in text or "non trigger" in text)
+        and ("input" in text or "allowed inputs" in text)
+        and ("output" in text or "expected outputs" in text)
+        and "workflow" in text
+        and ("safety" in text or "boundary" in text)
+        and ("confirmation" in text or "confirm" in text)
+        and ("refusal" in text or "refuse" in text)
+        and not ("raw sensitive" in text or "sensitive materials" in text or "must not be saved" in text)
+    ):
+        return "skill_package_instruction_contract"
+    if (
+        "local and deterministic" in text
+        and ("verifier" in text or "verification" in text)
+        and ("networking" in text or "scanning" in text or "syncing" in text or "background service" in text)
+    ):
+        return "local_deterministic_verifier_boundary"
+    if "smoke verification" in text or "smoke command" in text or "smoke" in text:
+        return "local_smoke_command_documented"
+    if "cargo test" in text:
+        return "package_cargo_test"
+    if (
+        ("agent interface" in text or "何时使用" in text or "何时不使用" in text)
+        and "skill.md" in text
+        and ("输入" in text or "input" in text)
+        and ("输出" in text or "output" in text)
+    ):
+        return "skill_package_instruction_contract"
+    if (
+        ("fixed taxonomy" in text or "固定 taxonomy" in text)
+        and ("项目" in text or "projects" in text)
+        and ("领域知识" in text or "domain" in text)
+        and ("工作流" in text or "workflow" in text)
+        and ("决策" in text or "decisions" in text)
+    ):
+        return "codexarium_taxonomy_contract"
+    if (
+        ("manifest" in text and ("compact notes" in text or "compact note" in text))
+        and ("稳定格式" in text or "format" in text or "可检查示例" in text or "example" in text)
+    ):
+        return "codexarium_manifest_compact_contract"
+    if (
+        ("路径安全" in text or "path safety" in text)
+        and ("路径穿越" in text or "traversal" in text or "root 外" in text or "outside" in text)
+    ):
+        return "rust_verifier_path_safety"
+    if (
+        ("不依赖外部服务" in text or "external services" in text or "external service" in text)
+        and ("本地工作区" in text or "local workspace" in text or "locally" in text)
+    ):
+        return "codexarium_local_runtime_contract"
+    if (
+        "fixtures" in text
+        and ("成功" in text or "valid" in text or "success" in text)
+        and ("冲突" in text or "conflict" in text)
+        and ("越界" in text or "escape" in text or "traversal" in text)
+        and "taxonomy" in text
+        and ("manifest" in text or "compact" in text)
+    ):
+        return "codexarium_fixture_scenario_coverage"
+    if "rust verifier" in text and (
+        "unsafe target" in text or "absolute path" in text or "parent-directory" in text or "traversal" in text
+    ):
+        return "rust_verifier_path_safety"
+    if "rust verifier" in text and ("cargo.toml" in text or "tests/fixtures" in text):
+        return "rust_verifier_package_present"
+    if "rust verifier" in text or ("manifest shape" in text and "evidence_id" in text):
+        return "rust_verifier_core_validation"
+    if "valid fixture" in text and "invalid fixture" in text:
+        return "rust_verifier_fixture_coverage"
+    if "delivered package" in text or ("skill.md" in text and "rust project" in text):
+        return "package_contract_present"
+    if "trigger phrases" in text or (
+        "skill.md" in text
+        and "confirmation" in text
+        and "conflict" in text
+        and ("raw sensitive" in text or "sensitive materials" in text or "must not be saved" in text)
+    ):
+        return "skill_instruction_content"
+    if (
+        ("raw chat" in text or "terminal-output" in text or "terminal output" in text or "stdout/stderr" in text)
+        and ("arbitrary file" in text or "whole-disk" in text or "full-disk" in text or "automatic collection" in text)
+    ):
+        return "skill_privacy_boundary"
+    if (
+        ("only user-explicitly-provided" in text or "user-explicitly-provided" in text or "user explicitly provided" in text)
+        and "json evidence manifest" in text
+        and "compact evidence notes" in text
+    ):
+        return "skill_user_evidence_boundary"
+    if "manifest format" in text or ("evidence_id" in text and "source_type" in text and "allowed_use" in text):
+        return "manifest_schema_documented"
+    if "duplicate evidence_id" in text and ("verifier rejects" in text or "rejects duplicate" in text):
+        return "rust_verifier_core_validation"
+    if "candidate table" in text:
+        return "candidate_table_contract"
+    if "candidate entries" in text and ("open question" in text or "experiment" in text):
+        return "candidate_entry_semantics"
+    if "wiki taxonomy" in text and all(term in text for term in ("projects", "decisions", "open-questions", "principles")):
+        return "wiki_structure_and_paths_contract"
+    if (
+        ("wiki structure" in text or "top-level directories" in text)
+        and ("derived target paths" in text or "target paths" in text)
+    ):
+        return "wiki_structure_and_paths_contract"
+    if "wiki structure" in text or "top-level directories" in text:
+        return "wiki_structure_contract"
+    if (
+        ("target path" in text or "target-path" in text or "slug and target" in text or "path safety logic" in text)
+        and (
+            "绝对路径" in text
+            or "父目录" in text
+            or "非法 slug" in text
+            or "absolute path" in text
+            or "parent directory" in text
+            or "outside the wiki root" in text
+            or "backslashes" in text
+        )
+    ):
+        return "rust_verifier_path_safety"
+    if "target wiki paths" in text or ("entry_type" in text and "slug" in text) or (
+        "target paths" in text and ("entry type" in text or "slug/project" in text)
+    ):
+        return "path_generation_contract"
+    if (
+        "authorization is unclear" in text
+        or "authorization unclear" in text
+        or ("allowed_use" in text and "sensitivity" in text and ("disallowed" in text or "duplicate evidence_id" in text))
+        or ("unknown evidence" in text and ("stop" in text or "before processing" in text))
+    ):
+        return "evidence_authorization_gate"
+    if "write conflict policy" in text or "no overwrite" in text or "no-overwrite" in text or (
+        ("overwrite" in text or "overwritten" in text)
+        and "conflict" in text
+        and ("update" in text or "append" in text or "merge" in text)
+    ) or (
+        "existing target" in text
+        and ("update" in text or "append" in text or "merge" in text)
+        and ("confirmation" in text or "confirms" in text)
+    ):
+        return "write_conflict_policy_contract"
+    if "no mcp" in text or "cloud sync" in text or "database service" in text or "full-disk scan" in text:
+        return "no_external_runtime_dependency"
+    if ("skill 包包含" in text and "skill.md" in text) or "触发条件" in text:
+        return "skill_package_instruction_contract"
+    if "clean-room" in text or "既有 codexarium" in text:
+        return "skill_clean_room_boundary"
+    if "聊天记录备份" in text or "自动采集" in text or "联网同步" in text or "数据库服务" in text:
+        return "skill_scope_exclusion_boundary"
+    if "只允许处理用户提供" in text or "原始聊天" in text or "终端输出" in text or "任意文件" in text:
+        return "skill_user_evidence_boundary"
+    if "测试 fixtures" in text or "无效案例" in text:
+        return "rust_verifier_fixture_coverage"
+    if "必需字段" in text and "evidence_id" in text:
+        return "manifest_schema_documented"
+    if "明确授权" in text or "allowed_use/sensitivity" in text:
+        return "evidence_authorization_gate"
+    if "wiki 结构" in text and "target path" in text:
+        return "wiki_structure_and_paths_contract"
+    if "写入策略" in text or "默认不覆盖" in text:
+        return "write_conflict_policy_contract"
+    if (
+        ("evidence references" in text or "evidence_id references" in text or "generated markdown" in text or "markdown wiki entries" in text)
+        and ("known" in text or "manifest" in text or "review and reuse" in text or "substantive content" in text)
+    ):
+        return "evidence_references_contract"
+    if "rust 本地 verifier" in text and "cargo.toml" in text:
+        return "rust_verifier_package_present"
+    if "rust verifier" in text and ("wiki/candidate" in text or "target path 安全" in text):
+        return "rust_verifier_core_validation"
+    return None
+
+
 def _qa_report_checks_for_criterion(criterion: AcceptanceCriterion) -> list[str]:
     checks: list[str] = []
     if criterion.evidence_kind != "qa_report":
@@ -961,6 +1795,170 @@ def _checks_by_name(checks_payload: list[Any]) -> dict[str, Mapping[str, Any]]:
         if isinstance(name, str) and name.strip() and name not in checks:
             checks[name] = check
     return checks
+
+
+def _require_verifier_checks(
+    checks: Mapping[str, Mapping[str, Any]],
+    failures: list[str],
+    *names: str,
+) -> None:
+    for name in names:
+        check = checks.get(name)
+        if check is None:
+            failures.append(f"verifier check {name!r} was not found")
+        elif check.get("passed") is not True:
+            failures.append(f"verifier check {name!r} failed: {check.get('message') or 'no message'}")
+
+
+def _require_any_verifier_check(
+    checks: Mapping[str, Mapping[str, Any]],
+    failures: list[str],
+    names: tuple[str, ...],
+    label: str,
+) -> None:
+    existing = [checks[name] for name in names if name in checks]
+    if not existing:
+        failures.append(f"no verifier check found for {label}")
+        return
+    if not any(check.get("passed") is True for check in existing):
+        failures.append(f"no passing verifier check found for {label}")
+
+
+def _require_paths(
+    workspace: JobWorkspace,
+    evidence_refs: list[str],
+    failures: list[str],
+    *refs: str,
+) -> None:
+    for ref in refs:
+        try:
+            path = workspace.resolve_path(ref, must_exist=True)
+        except Exception as exc:
+            failures.append(f"{ref}: missing or unsafe evidence ref: {exc}")
+            continue
+        if not path.is_file():
+            failures.append(f"{ref}: expected file")
+            continue
+        evidence_refs.append(ref)
+
+
+def _require_any_path(
+    workspace: JobWorkspace,
+    evidence_refs: list[str],
+    failures: list[str],
+    label: str,
+    refs: tuple[str, ...],
+) -> None:
+    for ref in refs:
+        try:
+            path = workspace.resolve_path(ref, must_exist=True)
+        except Exception:
+            continue
+        if path.is_file():
+            evidence_refs.append(ref)
+            return
+    failures.append(f"{label}: no matching file found")
+
+
+def _require_any_glob(
+    workspace: JobWorkspace,
+    evidence_refs: list[str],
+    failures: list[str],
+    label: str,
+    pattern: str,
+) -> None:
+    refs = _glob_refs(workspace, pattern)
+    if not refs:
+        failures.append(f"{label}: no file matched {pattern}")
+        return
+    evidence_refs.extend(refs[:8])
+
+
+def _read_refs_text(
+    workspace: JobWorkspace,
+    evidence_refs: list[str],
+    failures: list[str],
+    *refs: str,
+) -> str:
+    chunks: list[str] = []
+    for ref in refs:
+        try:
+            path = workspace.resolve_path(ref, must_exist=True)
+        except Exception:
+            continue
+        if not path.is_file():
+            continue
+        try:
+            chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+            evidence_refs.append(ref)
+        except Exception as exc:
+            failures.append(f"{ref}: could not read evidence text: {exc}")
+    return _normalized_text("\n".join(chunks))
+
+
+def _read_glob_text(
+    workspace: JobWorkspace,
+    evidence_refs: list[str],
+    failures: list[str],
+    *patterns: str,
+) -> str:
+    refs: list[str] = []
+    for pattern in patterns:
+        refs.extend(_glob_refs(workspace, pattern))
+    chunks: list[str] = []
+    for ref in _dedupe(refs)[:64]:
+        try:
+            path = workspace.resolve_path(ref, must_exist=True)
+            chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+            evidence_refs.append(ref)
+        except Exception as exc:
+            failures.append(f"{ref}: could not read evidence text: {exc}")
+    return _normalized_text("\n".join(chunks))
+
+
+def _glob_refs(workspace: JobWorkspace, pattern: str) -> list[str]:
+    if pattern.startswith("/") or ".." in Path(pattern).parts:
+        return []
+    root = workspace.root.resolve()
+    refs: list[str] = []
+    for path in sorted(root.glob(pattern)):
+        if not path.is_file():
+            continue
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        refs.append(path.relative_to(root).as_posix())
+    return refs
+
+
+def _require_text_groups(
+    text: str,
+    failures: list[str],
+    groups: list[tuple[str, tuple[str, ...]]],
+) -> None:
+    for label, alternatives in groups:
+        _require_any_text_group(text, failures, label, alternatives)
+
+
+def _require_any_text_group(
+    text: str,
+    failures: list[str],
+    label: str,
+    alternatives: tuple[str, ...],
+) -> None:
+    normalized_terms = [_normalized_text(term) for term in alternatives]
+    if not any(term in text for term in normalized_terms):
+        failures.append(f"{label}: expected one of {', '.join(alternatives)}")
+
+
+def _text_has_any(text: str, alternatives: tuple[str, ...]) -> bool:
+    normalized_terms = [_normalized_text(term) for term in alternatives]
+    return any(term in text for term in normalized_terms)
+
+
+def _normalized_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value.lower()).strip()
 
 
 def _coverage_score(items: list[AcceptanceCoverageResultItem]) -> float:

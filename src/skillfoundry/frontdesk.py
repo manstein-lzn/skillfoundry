@@ -21,6 +21,12 @@ from .contracts import (
 )
 from .frontdesk_schema import (
     AcceptanceCriteriaSet,
+    AcceptanceCriterion,
+    ACCEPTANCE_COVERAGE_STATUSES,
+    ACCEPTANCE_EVIDENCE_KINDS,
+    ACCEPTANCE_PRIORITIES,
+    ACCEPTANCE_TEST_METHODS,
+    DATA_SENSITIVITY_LEVELS,
     ElicitationReport,
     FeasibilityReport,
     FreezeManifest,
@@ -745,6 +751,7 @@ class FrontDeskFreezeGate:
             )
             _evaluate_frontdesk_reports(
                 blocking_reasons,
+                warnings=warnings,
                 config=loaded_config,
                 elicitation_report=elicitation_report,
                 elicitation_ref=elicitation_ref,
@@ -1080,14 +1087,27 @@ def _parse_response_json(text: str) -> Mapping[str, Any]:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise _ElicitationFailure(
-            "invalid_json",
-            f"model response is not valid JSON: {exc}",
-            details={
-                "response_sha256": sha256_json({"response_text": text}),
-                "json_error": str(exc),
-            },
-        ) from exc
+        repaired = _extract_json_object_text(text)
+        if repaired is None:
+            raise _ElicitationFailure(
+                "invalid_json",
+                f"model response is not valid JSON: {exc}",
+                details={
+                    "response_sha256": sha256_json({"response_text": text}),
+                    "json_error": str(exc),
+                },
+            ) from exc
+        try:
+            payload = json.loads(repaired)
+        except json.JSONDecodeError:
+            raise _ElicitationFailure(
+                "invalid_json",
+                f"model response is not valid JSON: {exc}",
+                details={
+                    "response_sha256": sha256_json({"response_text": text}),
+                    "json_error": str(exc),
+                },
+            ) from exc
     if not isinstance(payload, Mapping):
         raise _ElicitationFailure(
             "schema_validation_failed",
@@ -1095,6 +1115,22 @@ def _parse_response_json(text: str) -> Mapping[str, Any]:
             details={"payload_type": type(payload).__name__},
         )
     return payload
+
+
+def _extract_json_object_text(text: str) -> str | None:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if len(lines) >= 3 and lines[-1].strip() == "```":
+            candidate = "\n".join(lines[1:-1]).strip()
+            if candidate.startswith("{") and candidate.endswith("}"):
+                return candidate
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    candidate = stripped[start : end + 1].strip()
+    return candidate if candidate.startswith("{") and candidate.endswith("}") else None
 
 
 def _report_from_payload(payload: Mapping[str, Any], *, round_index: int) -> ElicitationReport:
@@ -1130,6 +1166,16 @@ def _normalize_elicitation_payload(payload: Mapping[str, Any]) -> dict[str, Any]
         if isinstance(value, list):
             normalized[field_name] = _normalize_string_list(value)
 
+    if normalized.get("readiness_guess") == "ready_for_audit":
+        missing = normalized.get("missing_fields")
+        if isinstance(missing, list):
+            blocking, nonblocking = _split_ready_for_audit_missing_fields(missing)
+            normalized["missing_fields"] = blocking
+            if nonblocking:
+                assumptions = _normalize_string_list_field(normalized.get("assumptions"))
+                assumptions.extend(f"Non-blocking implementation detail: {item}" for item in nonblocking)
+                normalized["assumptions"] = _dedupe_normalized_strings(assumptions)
+
     questions = normalized.get("next_questions")
     if isinstance(questions, list):
         normalized_questions: list[Any] = []
@@ -1152,17 +1198,358 @@ def _normalize_elicitation_payload(payload: Mapping[str, Any]) -> dict[str, Any]
         normalized_criteria: list[Any] = []
         for index, criterion in enumerate(criteria, start=1):
             if isinstance(criterion, str):
-                normalized_criteria.append(
-                    {
-                        "id": f"AC-{index:03d}",
-                        "description": criterion,
-                    }
-                )
+                normalized_criteria.append({"id": f"AC-{index:03d}", "description": criterion})
+            elif isinstance(criterion, Mapping):
+                normalized_criteria.append(_normalize_acceptance_criterion_payload(criterion, index=index))
             else:
                 normalized_criteria.append(criterion)
         normalized["draft_acceptance_criteria"] = normalized_criteria
 
+    draft = normalized.get("draft_skill_spec")
+    if isinstance(draft, Mapping) and draft and normalized.get("readiness_guess") == "ready_for_audit":
+        fallback_text = str(normalized.get("current_understanding") or "")
+        normalized["draft_skill_spec"] = _normalize_skill_spec_payload(draft, fallback_text=fallback_text)
+
     return normalized
+
+
+def _normalize_acceptance_criterion_payload(payload: Mapping[str, Any], *, index: int) -> dict[str, Any]:
+    allowed_fields = set(AcceptanceCriterion.__dataclass_fields__)  # type: ignore[attr-defined]
+    data = {key: value for key, value in dict(payload).items() if key in allowed_fields}
+    data.setdefault("id", f"AC-{index:03d}")
+
+    description = data.get("description")
+    if not isinstance(description, str) or not description.strip():
+        fallback = (
+            payload.get("pass_condition")
+            or payload.get("name")
+            or payload.get("title")
+            or payload.get("text")
+            or payload.get("criterion")
+            or payload.get("summary")
+            or payload.get("verification")
+            or payload.get("requirement")
+            or payload.get("source_requirement")
+        )
+        data["description"] = (
+            str(fallback).strip()
+            if fallback is not None and str(fallback).strip()
+            else json.dumps(ensure_json_compatible(dict(payload)), sort_keys=True, ensure_ascii=False)
+        )
+
+    for list_field in ("source_turn_ids", "failure_examples", "required_evidence", "risk_tags"):
+        data[list_field] = _normalize_string_list_field(data.get(list_field))
+    if not data["required_evidence"]:
+        data["required_evidence"] = _normalize_string_list_field(
+            payload.get("verification")
+            or payload.get("evidence")
+            or payload.get("deterministic_evidence")
+            or payload.get("check")
+            or payload.get("test")
+        )
+    if not data["required_evidence"] and isinstance(data.get("description"), str):
+        data["required_evidence"] = [str(data["description"]).strip()]
+
+    data["test_method"] = _normalize_enum_field(
+        data.get("test_method"),
+        default="static",
+        aliases={
+            "file_and_command": "fixture",
+            "file": "static",
+            "inspection": "static",
+            "static_check": "static",
+            "command": "fixture",
+            "command_check": "fixture",
+            "script": "fixture",
+            "smoke": "fixture",
+            "cargo_test": "fixture",
+            "llm": "llm_judge",
+            "model_judge": "llm_judge",
+            "human": "human_review",
+            "manual": "manual_check",
+        },
+        allowed=ACCEPTANCE_TEST_METHODS,
+    )
+    data["evidence_kind"] = _normalize_enum_field(
+        data.get("evidence_kind"),
+        default="verifier_check",
+        aliases={
+            "file_and_command": "verifier_check",
+            "inspection": "file",
+            "static": "verifier_check",
+            "command_check": "command",
+            "script": "command",
+            "fixture": "file",
+            "llm": "model_judge",
+            "manual": "human_note",
+            "human": "human_note",
+        },
+        allowed=ACCEPTANCE_EVIDENCE_KINDS,
+    )
+    data["priority"] = _normalize_enum_field(
+        data.get("priority"),
+        default="must",
+        aliases={"required": "must", "high": "must", "medium": "should", "low": "could"},
+        allowed=ACCEPTANCE_PRIORITIES,
+    )
+    data["data_sensitivity"] = _normalize_enum_field(
+        data.get("data_sensitivity"),
+        default="public",
+        aliases={
+            "low": "public",
+            "medium": "internal",
+            "moderate": "internal",
+            "high": "confidential",
+            "secret": "restricted",
+            "secrets": "restricted",
+            "private": "confidential",
+        },
+        allowed=DATA_SENSITIVITY_LEVELS,
+    )
+    data["coverage_status"] = _normalize_enum_field(
+        data.get("coverage_status"),
+        default="planned",
+        aliases={
+            "specified": "planned",
+            "defined": "planned",
+            "to_be_tested": "planned",
+            "testable": "planned",
+            "implemented": "covered",
+            "verified": "covered",
+            "manual": "manual_only",
+            "not_covered": "uncovered",
+        },
+        allowed=ACCEPTANCE_COVERAGE_STATUSES,
+    )
+
+    if not isinstance(data.get("source_requirement"), str):
+        data["source_requirement"] = str(data.get("source_requirement") or "").strip()
+    if not isinstance(data.get("requirement_id"), str) or not str(data.get("requirement_id")).strip():
+        data["requirement_id"] = f"REQ-{index:03d}"
+    if not isinstance(data.get("pass_condition"), str) or not str(data.get("pass_condition")).strip():
+        data["pass_condition"] = str(
+            data.get("pass_condition")
+            or payload.get("verification")
+            or payload.get("criterion")
+            or data.get("description")
+            or ""
+        ).strip()
+
+    for optional_string in ("verifier_check_id", "fixture_ref", "manual_authority", "unverifiable_reason"):
+        value = data.get(optional_string)
+        if value is not None and not isinstance(value, str):
+            data[optional_string] = str(value).strip()
+
+    return data
+
+
+def _normalize_skill_spec_payload(payload: Mapping[str, Any], *, fallback_text: str | None = None) -> dict[str, Any]:
+    data = dict(payload)
+    name = data.get("name") or data.get("skill_name") or data.get("skill")
+    identifier = data.get("id")
+    direction = data.get("recommended_skill_direction")
+    if not isinstance(direction, Mapping):
+        direction = data.get("recommended_direction")
+    if isinstance(direction, Mapping):
+        if not isinstance(name, str) or not name.strip():
+            name = direction.get("name") or direction.get("title")
+        if "description" not in data or not isinstance(data.get("description"), str) or not data.get("description"):
+            data["description"] = (
+                direction.get("summary")
+                or direction.get("one_sentence")
+                or direction.get("description")
+                or direction.get("why_this_direction")
+            )
+    if "description" not in data or not isinstance(data.get("description"), str) or not data.get("description"):
+        data["description"] = data.get("summary") or data.get("recommended_direction")
+    if (not isinstance(name, str) or not name.strip()) and fallback_text:
+        name = _infer_skill_name_from_text(fallback_text)
+    if not isinstance(data.get("description"), str) or not str(data.get("description")).strip():
+        data["description"] = fallback_text or _first_descriptive_string(data)
+    if (not isinstance(name, str) or not name.strip()) and isinstance(data.get("description"), str):
+        name = _infer_skill_name_from_text(str(data["description"]))
+    if not isinstance(name, str) or not name.strip():
+        name = "Generated Skill"
+
+    normalized: dict[str, Any] = {}
+    if isinstance(data.get("skill_id"), str):
+        normalized["skill_id"] = data["skill_id"]
+    elif isinstance(identifier, str) and identifier.strip():
+        normalized["skill_id"] = identifier.strip()
+    elif isinstance(name, str) and name.strip():
+        normalized["skill_id"] = _slugify_skill_id(name)
+
+    if isinstance(data.get("title"), str):
+        normalized["title"] = data["title"]
+    elif isinstance(name, str) and name.strip():
+        normalized["title"] = name.strip()
+
+    if isinstance(data.get("description"), str):
+        normalized["description"] = data["description"]
+
+    for field_name in (
+        "trigger_scenarios",
+        "non_trigger_scenarios",
+        "required_inputs",
+        "expected_outputs",
+        "constraints",
+        "acceptance_criteria",
+        "reference_materials",
+        "security_notes",
+    ):
+        normalized[field_name] = _normalize_string_list_field(data.get(field_name))
+
+    _fold_unknown_skill_spec_fields(
+        source=data,
+        target=normalized,
+        known=set(normalized) | {"name", "id", "schema_version"},
+    )
+    if isinstance(data.get("schema_version"), str):
+        normalized["schema_version"] = data["schema_version"]
+    return normalized
+
+
+def _infer_skill_name_from_text(text: str) -> str | None:
+    if not isinstance(text, str) or not text.strip():
+        return None
+    patterns = (
+        r"\bnamed\s+([A-Za-z][A-Za-z0-9_.-]{1,80})\b",
+        r"\bcalled\s+([A-Za-z][A-Za-z0-9_.-]{1,80})\b",
+        r"\bname\s+is\s+([A-Za-z][A-Za-z0-9_.-]{1,80})\b",
+        r"\b([A-Za-z][A-Za-z0-9_.-]{1,80})\s+(?:should|is|will)\s+be\b",
+        r"\b([A-Za-z][A-Za-z0-9_.-]{1,80})\s+应该",
+        r"名为\s*([A-Za-z][A-Za-z0-9_.-]{1,80})",
+        r"叫\s*([A-Za-z][A-Za-z0-9_.-]{1,80})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _first_descriptive_string(payload: Mapping[str, Any]) -> str:
+    for key in ("recommended_direction", "summary", "purpose", "overview", "current_understanding"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for value in payload.values():
+        if isinstance(value, str) and len(value.strip()) >= 20:
+            return value.strip()
+    return "Skill generated from the clarified Front Desk requirements."
+
+
+def _fold_unknown_skill_spec_fields(
+    *,
+    source: Mapping[str, Any],
+    target: dict[str, Any],
+    known: set[str],
+) -> None:
+    for key, value in source.items():
+        if key in known:
+            continue
+        summary = _summarize_freeform_skill_spec_field(key, value)
+        if not summary:
+            continue
+        lowered = key.lower()
+        if any(term in lowered for term in ("security", "privacy", "secret", "risk", "permission")):
+            target.setdefault("security_notes", []).append(summary)
+        elif any(term in lowered for term in ("schema", "reference", "doc", "database", "corpus")):
+            target.setdefault("reference_materials", []).append(summary)
+        elif any(term in lowered for term in ("acceptance", "test", "qa", "verifier", "fixture")):
+            target.setdefault("acceptance_criteria", []).append(summary)
+        elif any(term in lowered for term in ("constraint", "policy", "boundary", "runtime", "helper", "rust")):
+            target.setdefault("constraints", []).append(summary)
+        else:
+            target.setdefault("reference_materials", []).append(summary)
+
+
+def _summarize_freeform_skill_spec_field(key: str, value: Any) -> str:
+    if value is None or value == "" or value == [] or value == {}:
+        return ""
+    if isinstance(value, str):
+        body = value.strip()
+    elif isinstance(value, list):
+        body = "; ".join(_normalize_string_list(value))
+    else:
+        body = json.dumps(ensure_json_compatible(value), sort_keys=True, ensure_ascii=False)
+    if not body:
+        return ""
+    return f"{key}: {body}"
+
+
+def _normalize_string_list_field(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return _normalize_string_list(value)
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, Mapping):
+        return _normalize_string_list([value])
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _split_ready_for_audit_missing_fields(values: list[str]) -> tuple[list[str], list[str]]:
+    blocking: list[str] = []
+    nonblocking: list[str] = []
+    for value in values:
+        if _is_nonblocking_ready_detail(value):
+            nonblocking.append(value)
+        else:
+            blocking.append(value)
+    return blocking, nonblocking
+
+
+def _is_nonblocking_ready_detail(value: str) -> bool:
+    normalized = value.strip().lower()
+    if not normalized:
+        return True
+    markers = (
+        "implementation.",
+        "_optional_",
+        "optional_detail",
+        "optional detail",
+        "wiki.",
+        "manifest_",
+        "write_conflict_policy",
+        "path_conventions",
+        "serialization_format",
+        "can be designed",
+        "can be decided",
+        "can be chosen",
+        "may be designed",
+        "builder",
+        "build stage",
+        "fixture",
+        "synthetic",
+        "not required",
+        "not hardcoded",
+        "可由",
+        "构建阶段",
+        "可以用",
+        "不应硬编码",
+        "示例 fixture",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def _normalize_enum_field(
+    value: Any,
+    *,
+    default: str,
+    aliases: Mapping[str, str],
+    allowed: frozenset[str],
+) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return default
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    mapped = aliases.get(normalized, normalized)
+    if mapped in allowed:
+        return mapped
+    return default
 
 
 def _normalize_string_list(values: list[Any]) -> list[str]:
@@ -1187,6 +1574,18 @@ def _normalize_string_list(values: list[Any]) -> list[str]:
         if text:
             normalized.append(text)
     return normalized
+
+
+def _dedupe_normalized_strings(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = value.strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 
 def _normalize_question_options(values: list[Any]) -> list[str]:
@@ -1517,14 +1916,27 @@ def _parse_audit_response_json(text: str) -> Mapping[str, Any]:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise _SpecAuditFailure(
-            "invalid_json",
-            f"model response is not valid JSON: {exc}",
-            details={
-                "response_sha256": sha256_json({"response_text": text}),
-                "json_error": str(exc),
-            },
-        ) from exc
+        repaired = _extract_json_object_text(text)
+        if repaired is None:
+            raise _SpecAuditFailure(
+                "invalid_json",
+                f"model response is not valid JSON: {exc}",
+                details={
+                    "response_sha256": sha256_json({"response_text": text}),
+                    "json_error": str(exc),
+                },
+            ) from exc
+        try:
+            payload = json.loads(repaired)
+        except json.JSONDecodeError:
+            raise _SpecAuditFailure(
+                "invalid_json",
+                f"model response is not valid JSON: {exc}",
+                details={
+                    "response_sha256": sha256_json({"response_text": text}),
+                    "json_error": str(exc),
+                },
+            ) from exc
     if not isinstance(payload, Mapping):
         raise _SpecAuditFailure(
             "schema_validation_failed",
@@ -1874,6 +2286,7 @@ def _load_conversation_for_gate(
 def _evaluate_frontdesk_reports(
     blocking_reasons: list[dict[str, JsonValue]],
     *,
+    warnings: list[str],
     config: FrontDeskConfig,
     elicitation_report: ElicitationReport | None,
     elicitation_ref: str,
@@ -1891,12 +2304,23 @@ def _evaluate_frontdesk_reports(
                 details={"readiness_guess": elicitation_report.readiness_guess, "ref": elicitation_ref},
             )
         if elicitation_report.missing_fields:
+            blocking_missing_fields, nonblocking_missing_fields = _split_ready_for_audit_missing_fields(
+                list(elicitation_report.missing_fields)
+            )
+            if nonblocking_missing_fields:
+                warnings.append(
+                    "Non-blocking elicitation details left for build-time judgment: "
+                    + ", ".join(nonblocking_missing_fields)
+                )
+        else:
+            blocking_missing_fields = []
+        if blocking_missing_fields:
             _add_blocker(
                 blocking_reasons,
                 "unresolved_elicitation_missing_fields",
                 "elicitation report still has unresolved missing_fields",
                 route=FREEZE_GATE_DECISION_ASK_USER,
-                details={"missing_fields": list(elicitation_report.missing_fields), "ref": elicitation_ref},
+                details={"missing_fields": list(blocking_missing_fields), "ref": elicitation_ref},
             )
 
     if audit_report is not None:
@@ -2435,17 +2859,7 @@ def _route_for_feasibility_decision(decision: str) -> str:
 
 
 def _skill_spec_from_draft_payload(payload: Mapping[str, Any]) -> SkillSpec:
-    data = dict(payload)
-    name = data.pop("name", None)
-    identifier = data.pop("id", None)
-    if "title" not in data and isinstance(name, str):
-        data["title"] = name
-    if "skill_id" not in data:
-        if isinstance(identifier, str) and identifier.strip():
-            data["skill_id"] = identifier
-        elif isinstance(name, str) and name.strip():
-            data["skill_id"] = _slugify_skill_id(name)
-    return SkillSpec.from_dict(data)
+    return SkillSpec.from_dict(_normalize_skill_spec_payload(payload))
 
 
 def _slugify_skill_id(value: str) -> str:

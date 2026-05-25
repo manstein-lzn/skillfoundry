@@ -353,6 +353,21 @@ def test_elicitor_normalizes_common_live_model_schema_variants(tmp_path):
     assert not workspace.resolve_path("frontdesk/elicitation_failure_001.json").exists()
 
 
+def test_elicitor_accepts_json_object_wrapped_in_markdown_fence(tmp_path):
+    workspace, frontdesk = make_frontdesk_workspace(tmp_path)
+    payload = needs_clarification_payload()
+    text = "```json\n" + json.dumps(payload, sort_keys=True) + "\n```"
+    client = ScriptedModelClient(text=text)
+
+    result = RequirementsElicitor().elicit(frontdesk, round_index=1, client=client)
+
+    assert result.status == ELICITATION_STATUS_SUCCEEDED
+    assert result.report is not None
+    assert result.report.readiness_guess == "needs_clarification"
+    assert workspace.resolve_path("frontdesk/elicitation_report_001.json", must_exist=True).is_file()
+    assert not workspace.resolve_path("frontdesk/elicitation_failure_001.json").exists()
+
+
 def test_prompt_labels_untrusted_conversation_and_platform_boundary(tmp_path):
     workspace, frontdesk = make_frontdesk_workspace(
         tmp_path,

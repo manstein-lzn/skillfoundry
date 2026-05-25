@@ -19,6 +19,8 @@ import subprocess
 import sys
 from typing import Any, Mapping
 
+import yaml
+
 
 DEFAULT_CODEX_COMMAND = "codex exec"
 PACKAGE_REF = "package/SKILL.md"
@@ -93,15 +95,24 @@ def _run_boundary(*, env: Mapping[str, str], command: str, timeout_seconds: int)
         )
 
     package_path = _require_file(task_dir, PACKAGE_REF, "codex exec completed but package/SKILL.md was not produced")
+    _validate_skill_frontmatter(package_path)
+    _validate_frozen_task_requirements(task_dir)
     transcript_path = _ensure_transcript(task_dir=task_dir, unit_id=unit_id)
-    manifest_path = _ensure_manifest(task_dir=task_dir, unit_id=unit_id, command_returncode=result.returncode)
-    _validate_changed_files(CHANGED_FILES)
+    changed_files = _discover_changed_files(task_dir)
+    manifest_path = _ensure_manifest(
+        task_dir=task_dir,
+        unit_id=unit_id,
+        command_returncode=result.returncode,
+        changed_files=changed_files,
+    )
+    _validate_changed_files(changed_files)
     _ensure_worker_result(
         worker_result_path=worker_result_path,
         task_dir=task_dir,
         package_path=package_path,
         transcript_path=transcript_path,
         manifest_path=manifest_path,
+        changed_files=changed_files,
     )
     print("forgeunit codex exec worker completed")
 
@@ -135,9 +146,49 @@ You are running inside a ForgeUnit task directory. Follow these hard output rule
 5. Only change files under package/ and evidence/.
 6. Do not inline raw prompts, private requirements, or raw model transcripts in graph state.
 7. The worker_result is not acceptance. SkillFoundry Verifier and LocalSkillRegistry decide acceptance.
+8. In worker_result, output_artifacts, boundary_evidence, and changed_files must list files only, not directories.
 
-Required SKILL.md sections:
-Overview, When To Use, When Not To Use, Inputs, Outputs, Workflow, Safety.
+You must read the frozen task files in this directory before writing output:
+- skill_spec.yaml
+- acceptance_criteria.yaml
+- verification_spec.yaml
+- worker_input.md
+
+Satisfy every must acceptance criterion in acceptance_criteria.yaml. Do not stop
+after writing only package/SKILL.md when the frozen spec asks for executable
+assets, tests, fixtures, docs, or verifier code.
+
+If any frozen task file mentions Rust, Cargo, verifier, tests/fixtures, or
+cargo test, you must also create a local Rust project inside package/:
+- either package/Cargo.toml with package/src, or a single nested tool project
+  such as package/verifier/Cargo.toml with package/verifier/src
+- Rust tests and fixtures under the Rust project, for example
+  package/tests/fixtures or package/fixtures when the tests reference it
+- a documented cargo test / smoke verification command
+
+Run cargo test yourself when you create a Rust project. If you cannot create the
+required Rust project and tests, exit non-zero instead of claiming completion.
+
+Required SKILL.md Markdown structure:
+- YAML frontmatter first.
+- Frontmatter must be valid YAML. Quote string values containing colons,
+  commas, brackets, hash signs, or other punctuation.
+- Recommended frontmatter shape:
+  ---
+  name: codexarium
+  description: "Clean-room local wiki / atomic note maintenance skill."
+  ---
+- A single H1 title for the skill, for example: # Codexarium
+- Exact H2 headings with non-empty bodies:
+  ## Overview
+  ## When To Use
+  ## When Not To Use
+  ## Inputs
+  ## Outputs
+  ## Workflow
+  ## Safety
+- Do not use H1 headings for the required sections; SkillFoundry verifies
+  these sections as H2 headings below the skill title.
 
 Required worker_result shape if you write it:
 {{
@@ -242,6 +293,98 @@ def _require_file(task_dir: Path, ref: str, message: str) -> Path:
     return path
 
 
+def _validate_frozen_task_requirements(task_dir: Path) -> None:
+    frozen_text = _frozen_task_text(task_dir)
+    if not _requires_rust_project(frozen_text):
+        return
+
+    cargo_manifests = _package_files(task_dir, "Cargo.toml")
+    if not cargo_manifests:
+        raise WorkerBoundaryError(
+            "frozen acceptance requires Rust/Cargo verifier work, but no Cargo.toml was produced under package/"
+        )
+    rust_sources = [path for path in _package_files(task_dir, "*.rs") if "/src/" in path]
+    if not rust_sources:
+        raise WorkerBoundaryError(
+            "frozen acceptance requires Rust/Cargo verifier work, but no package/**/src/*.rs files were produced"
+        )
+    fixture_files = [path for path in _package_files(task_dir, "*") if _is_fixture_ref(path)]
+    if not fixture_files:
+        raise WorkerBoundaryError(
+            "frozen acceptance requires verifier fixtures, but no package/**/fixtures files were produced"
+        )
+
+
+def _validate_skill_frontmatter(package_path: Path) -> None:
+    skill_text = package_path.read_text(encoding="utf-8", errors="replace")
+    if not skill_text.startswith("---\n"):
+        raise WorkerBoundaryError("package/SKILL.md must start with YAML frontmatter")
+    end = skill_text.find("\n---", 4)
+    if end == -1:
+        raise WorkerBoundaryError("package/SKILL.md frontmatter closing delimiter is missing")
+    try:
+        payload = yaml.safe_load(skill_text[4:end])
+    except yaml.YAMLError as exc:
+        raise WorkerBoundaryError(
+            "package/SKILL.md frontmatter is invalid YAML; quote frontmatter values containing colons "
+            f"or punctuation: {exc}"
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise WorkerBoundaryError("package/SKILL.md frontmatter must be a YAML mapping")
+    for key in ("name", "description"):
+        value = payload.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise WorkerBoundaryError(f"package/SKILL.md frontmatter must include non-empty {key!r}")
+
+
+def _frozen_task_text(task_dir: Path) -> str:
+    refs = ("skill_spec.yaml", "acceptance_criteria.yaml", "verification_spec.yaml", "worker_input.md")
+    chunks: list[str] = []
+    for ref in refs:
+        path = _resolve_task_ref(task_dir, ref)
+        if path.exists() and path.is_file():
+            chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+    return "\n".join(chunks).lower()
+
+
+def _requires_rust_project(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in (
+            "rust",
+            "cargo",
+            "cargo.toml",
+            "cargo test",
+            "tests/fixtures",
+            "local verifier",
+            "本地 verifier",
+        )
+    )
+
+
+def _is_fixture_ref(ref: str) -> bool:
+    parts = Path(ref).parts
+    return "fixtures" in parts
+
+
+def _package_files(task_dir: Path, pattern: str) -> list[str]:
+    package_dir = _resolve_task_ref(task_dir, "package")
+    if not package_dir.exists() or not package_dir.is_dir():
+        return []
+    refs: list[str] = []
+    for path in sorted(package_dir.rglob(pattern)):
+        if not path.is_file():
+            continue
+        try:
+            relative_parts = path.relative_to(package_dir).parts
+        except ValueError:
+            continue
+        if "target" in relative_parts:
+            continue
+        refs.append("package/" + path.relative_to(package_dir).as_posix())
+    return refs
+
+
 def _ensure_transcript(*, task_dir: Path, unit_id: str) -> Path:
     path = _resolve_task_ref(task_dir, TRANSCRIPT_REF)
     if path.exists() and path.is_file():
@@ -264,7 +407,13 @@ def _ensure_transcript(*, task_dir: Path, unit_id: str) -> Path:
     return path
 
 
-def _ensure_manifest(*, task_dir: Path, unit_id: str, command_returncode: int) -> Path:
+def _ensure_manifest(
+    *,
+    task_dir: Path,
+    unit_id: str,
+    command_returncode: int,
+    changed_files: list[str],
+) -> Path:
     path = _resolve_task_ref(task_dir, MANIFEST_REF)
     if path.exists() and path.is_file():
         payload = _read_json_object(path, "worker evidence manifest")
@@ -272,16 +421,27 @@ def _ensure_manifest(*, task_dir: Path, unit_id: str, command_returncode: int) -
             existing=payload,
             unit_id=unit_id,
             command_returncode=command_returncode,
+            changed_files=changed_files,
         )
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return path
-    payload = _default_manifest_payload(unit_id=unit_id, command_returncode=command_returncode)
+    payload = _default_manifest_payload(
+        unit_id=unit_id,
+        command_returncode=command_returncode,
+        changed_files=changed_files,
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
 
-def _default_manifest_payload(*, unit_id: str, command_returncode: int) -> dict[str, Any]:
+def _default_manifest_payload(
+    *,
+    unit_id: str,
+    command_returncode: int,
+    changed_files: list[str] | None = None,
+) -> dict[str, Any]:
+    changed_files = changed_files or CHANGED_FILES
     return {
         "schema": "forgeunit.worker_evidence_manifest",
         "version": "0.6",
@@ -293,7 +453,7 @@ def _default_manifest_payload(*, unit_id: str, command_returncode: int) -> dict[
         "evidence_artifacts": [
             {"path": TRANSCRIPT_REF, "kind": "transcript", "summary": "Boundary transcript summary."}
         ],
-        "changed_files": CHANGED_FILES,
+        "changed_files": changed_files,
         "commands": [
             {
                 "command": "codex exec command bridge",
@@ -321,10 +481,15 @@ def _normalized_manifest_payload(
     existing: Mapping[str, Any],
     unit_id: str,
     command_returncode: int,
+    changed_files: list[str],
 ) -> dict[str, Any]:
     if existing.get("schema") not in {None, "forgeunit.worker_evidence_manifest"}:
         raise WorkerBoundaryError("evidence/manifest.json has invalid schema")
-    default = _default_manifest_payload(unit_id=unit_id, command_returncode=command_returncode)
+    default = _default_manifest_payload(
+        unit_id=unit_id,
+        command_returncode=command_returncode,
+        changed_files=changed_files,
+    )
     payload = dict(existing)
     payload["schema"] = "forgeunit.worker_evidence_manifest"
     payload["version"] = "0.6"
@@ -334,8 +499,7 @@ def _normalized_manifest_payload(
         payload["output_artifacts"] = default["output_artifacts"]
     if not payload.get("evidence_artifacts"):
         payload["evidence_artifacts"] = default["evidence_artifacts"]
-    if not payload.get("changed_files"):
-        payload["changed_files"] = default["changed_files"]
+    payload["changed_files"] = _merged_changed_files(_string_list(payload.get("changed_files")), changed_files)
     if not payload.get("commands"):
         payload["commands"] = default["commands"]
     else:
@@ -374,13 +538,19 @@ def _ensure_worker_result(
     package_path: Path,
     transcript_path: Path,
     manifest_path: Path,
+    changed_files: list[str],
 ) -> None:
     _assert_under(task_dir, package_path)
     _assert_under(task_dir, transcript_path)
     _assert_under(task_dir, manifest_path)
     if worker_result_path.exists():
         payload = _read_json_object(worker_result_path, "worker_result")
-        _validate_worker_result_payload(payload)
+        payload = _normalized_worker_result_payload(
+            existing=payload,
+            task_dir=task_dir,
+            changed_files=changed_files,
+        )
+        worker_result_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return
     payload = {
         "status": "completed",
@@ -391,14 +561,87 @@ def _ensure_worker_result(
             {"path": TRANSCRIPT_REF, "kind": "transcript", "summary": "Boundary transcript summary."},
             {"path": MANIFEST_REF, "kind": "worker_evidence_manifest", "summary": "Worker evidence manifest."},
         ],
-        "changed_files": CHANGED_FILES,
+        "changed_files": changed_files,
         "usage": None,
         "usage_unavailable_reason": "external_worker_no_provider_telemetry",
     }
     worker_result_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _validate_worker_result_payload(payload: Mapping[str, Any]) -> None:
+def _normalized_worker_result_payload(
+    *,
+    existing: Mapping[str, Any],
+    task_dir: Path,
+    changed_files: list[str],
+) -> dict[str, Any]:
+    if existing.get("status") != "completed":
+        raise WorkerBoundaryError("worker_result status must be completed")
+    payload = dict(existing)
+    payload["status"] = "completed"
+    payload["output_artifacts"] = _normalized_artifacts(
+        payload.get("output_artifacts"),
+        task_dir=task_dir,
+        required=[
+            {"path": PACKAGE_REF, "kind": "codex_skill", "summary": "Generated Codex Skill package."},
+        ],
+    )
+    payload["boundary_evidence"] = _normalized_artifacts(
+        payload.get("boundary_evidence"),
+        task_dir=task_dir,
+        required=[
+            {"path": TRANSCRIPT_REF, "kind": "transcript", "summary": "Boundary transcript summary."},
+            {"path": MANIFEST_REF, "kind": "worker_evidence_manifest", "summary": "Worker evidence manifest."},
+        ],
+    )
+    payload["changed_files"] = _merged_changed_files(
+        _existing_file_refs(task_dir, _string_list(payload.get("changed_files"))),
+        changed_files,
+    )
+    if "usage" not in payload:
+        payload["usage"] = None
+    if not payload.get("usage_unavailable_reason") and payload.get("usage") is None:
+        payload["usage_unavailable_reason"] = "external_worker_no_provider_telemetry"
+    _validate_worker_result_payload(payload, task_dir=task_dir)
+    return payload
+
+
+def _normalized_artifacts(
+    value: Any,
+    *,
+    task_dir: Path,
+    required: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    artifacts: list[dict[str, str]] = []
+    seen: set[str] = set()
+    if isinstance(value, list):
+        for item in value:
+            if not isinstance(item, Mapping):
+                continue
+            path = item.get("path")
+            if not isinstance(path, str) or not path.strip():
+                continue
+            ref = path.strip()
+            if not _is_existing_file_ref(task_dir, ref) or ref in seen:
+                continue
+            artifacts.append(
+                {
+                    "path": ref,
+                    "kind": str(item.get("kind") or "artifact"),
+                    "summary": str(item.get("summary") or ""),
+                }
+            )
+            seen.add(ref)
+    for item in required:
+        ref = item["path"]
+        if ref not in seen:
+            if not _is_existing_file_ref(task_dir, ref):
+                raise WorkerBoundaryError(f"required worker_result artifact is missing or not a file: {ref}")
+            artifacts.append(dict(item))
+            seen.add(ref)
+    return artifacts
+
+
+def _validate_worker_result_payload(payload: Mapping[str, Any], *, task_dir: Path) -> None:
     if payload.get("status") != "completed":
         raise WorkerBoundaryError("worker_result status must be completed")
     output_paths = _artifact_paths(payload.get("output_artifacts"))
@@ -408,7 +651,11 @@ def _validate_worker_result_payload(payload: Mapping[str, Any]) -> None:
     for required in (TRANSCRIPT_REF, MANIFEST_REF):
         if required not in evidence_paths:
             raise WorkerBoundaryError(f"worker_result is missing boundary evidence: {required}")
-    _validate_changed_files(_string_list(payload.get("changed_files")))
+    for ref in [*output_paths, *evidence_paths]:
+        if not _is_existing_file_ref(task_dir, ref):
+            raise WorkerBoundaryError(f"worker_result artifact is missing or not a file: {ref}")
+    changed_files = _merged_changed_files(_string_list(payload.get("changed_files")), _discover_changed_files(task_dir))
+    _validate_changed_files(changed_files)
 
 
 def _read_json_object(path: Path, label: str) -> dict[str, Any]:
@@ -435,6 +682,44 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str)]
+
+
+def _discover_changed_files(task_dir: Path) -> list[str]:
+    discovered: list[str] = []
+    for root_name in ("package", "evidence"):
+        root = task_dir / root_name
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                discovered.append(path.relative_to(task_dir).as_posix())
+    return _merged_changed_files(CHANGED_FILES, discovered)
+
+
+def _merged_changed_files(first: list[str], second: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in [*first, *second]:
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _existing_file_refs(task_dir: Path, refs: list[str]) -> list[str]:
+    return [ref for ref in refs if _is_existing_file_ref(task_dir, ref)]
+
+
+def _is_existing_file_ref(task_dir: Path, ref: str) -> bool:
+    try:
+        path = _resolve_task_ref(task_dir, ref)
+    except WorkerBoundaryError:
+        return False
+    return path.is_file()
 
 
 def _validate_changed_files(changed_files: list[str]) -> None:
