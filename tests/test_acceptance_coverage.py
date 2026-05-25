@@ -1161,11 +1161,11 @@ Codexarium works only from user-provided compact evidence.
 ## When Not To Use
 Codexarium is not a chat backup tool, automatic computer scanner,
 background collector, network sync tool, or database service.
-Do not automatically scan the home directory, the whole disk, browser data,
-application data, repositories, or arbitrary folders.
+Do not automatically scan the home directory, the whole computer, browser data,
+application data, repositories, broad filesystem locations, or arbitrary folders.
 
 ## Safety
-Do not run whole-disk scans, background collection, file watchers, network sync,
+Do not run all-system scans, background collection, file watchers, network sync,
 remote indexing, or database service behavior.
 """
     workspace = make_workspace(
