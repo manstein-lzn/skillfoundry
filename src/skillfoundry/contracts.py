@@ -686,12 +686,6 @@ def _artifact_hash_requirements(
             by_path[_safe_relative_path(record.path, "artifact_manifest.locked_records")] = record.sha256
         except SchemaValidationError:
             rejected.append(record.path)
-    try:
-        manifest_path = workspace.resolve_path("artifact_manifest.json", must_exist=True)
-        by_path["artifact_manifest.json"] = sha256_file(manifest_path)
-    except PathSecurityError:
-        rejected.append("artifact_manifest.json")
-
     requirements = [
         {
             "path": path,

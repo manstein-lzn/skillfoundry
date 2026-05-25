@@ -133,15 +133,25 @@ def test_build_verification_gate_maps_required_evidence_hashes_and_forbidden_cla
             "verification_spec.yaml",
             "worker_input.md",
             "build_contract.yaml",
-            "artifact_manifest.json",
         }
     )
+    assert "artifact_manifest.json" not in {item.path for item in gate.artifact_hashes}
     assert all(item.sha256.startswith("sha256:") for item in gate.artifact_hashes)
     assert "self-approved" in gate.forbidden_claims
     assert ".." not in gate.forbidden_paths
     assert ".." in gate.metadata["rejected_forbidden_path_policies"]
     assert gate.metadata["gate_stage"] == "post_build_verification_promotion"
     assert VerificationGate.from_dict(gate.to_dict()) == gate
+
+
+def test_verification_gate_requires_but_does_not_hash_pin_mutable_artifact_manifest(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    goal = build_goal_contract(workspace, created_at=CREATED_AT)
+
+    gate = build_verification_gate(workspace, goal.goal_id)
+
+    assert "artifact_manifest.json" in gate.required_evidence
+    assert "artifact_manifest.json" not in {item.path for item in gate.artifact_hashes}
 
 
 def test_write_contextforge_contract_artifacts_writes_manifest_and_json(tmp_path: Path) -> None:
