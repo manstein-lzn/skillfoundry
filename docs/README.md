@@ -17,6 +17,7 @@ Read these first, in order:
 - [Development Workflow](DEVELOPMENT_WORKFLOW.md): local commands and validation gates.
 - [Fresh Clone Gate](FRESH_CLONE_GATE.md): new-user reproducibility check.
 - [SkillFoundry Cleanup Completion Plan](SKILLFOUNDRY_CLEANUP_COMPLETION_PLAN.md): completed short-term cleanup plan; product validation remains later.
+- [Product-Grade Gate Upgrade Plan](SKILLFOUNDRY_PRODUCT_GRADE_GATE_UPGRADE_PLAN.md): planned upgrade from candidate generation to product-grade delivery gates.
 
 ## Current Mainline
 
@@ -42,6 +43,7 @@ Implementation docs:
 - [Development Workflow](DEVELOPMENT_WORKFLOW.md)
 - [Fresh Clone Gate](FRESH_CLONE_GATE.md)
 - [SkillFoundry Cleanup Completion Plan](SKILLFOUNDRY_CLEANUP_COMPLETION_PLAN.md)
+- [Product-Grade Gate Upgrade Plan](SKILLFOUNDRY_PRODUCT_GRADE_GATE_UPGRADE_PLAN.md)
 - [Source/Test Cleanup Plan](SOURCE_TEST_CLEANUP_PLAN.md)
 
 Architecture and product direction:

@@ -17,6 +17,7 @@ import fcntl
 from contextforge import VerificationResult as ContextForgeVerificationResult
 
 from .acceptance import ACCEPTANCE_COVERAGE_RESULT_REF, MANUAL_ACCEPTANCE_RECORD_REF
+from .product_contract import PRODUCT_GRADE_REPORT_REF, PRODUCT_REPAIR_PACKET_REF, ProductGradeReport
 from .schema import (
     ArtifactManifest,
     ExecutionReport,
@@ -47,6 +48,25 @@ APPROVAL_APPROVED = "approved"
 APPROVAL_REJECTED = "rejected"
 QUARANTINE_NONE = "none"
 QUARANTINE_QUARANTINED = "quarantined"
+REGISTRY_STATUS_REGISTERED = "registered"
+REGISTRY_STATUS_GENERATED = "generated"
+REGISTRY_STATUS_VERIFIED = "verified"
+REGISTRY_STATUS_CANDIDATE_REGISTERED = "candidate_registered"
+REGISTRY_STATUS_PRODUCT_GRADE_REGISTERED = "product_grade_registered"
+REGISTRY_STATUS_PUBLISHED = "published"
+REGISTRY_STATUS_DEPRECATED = "deprecated"
+REGISTRY_STATUSES = frozenset(
+    {
+        REGISTRY_STATUS_REGISTERED,
+        REGISTRY_STATUS_GENERATED,
+        REGISTRY_STATUS_VERIFIED,
+        REGISTRY_STATUS_CANDIDATE_REGISTERED,
+        REGISTRY_STATUS_PRODUCT_GRADE_REGISTERED,
+        REGISTRY_STATUS_PUBLISHED,
+        REGISTRY_STATUS_DEPRECATED,
+        QUARANTINE_QUARANTINED,
+    }
+)
 
 _EXECUTION_REPORT_RE = re.compile(r"^attempts/(?P<attempt_id>[0-9]+)/execution_report\.json$")
 _REGISTRY_THREAD_LOCKS: dict[Path, threading.RLock] = {}
@@ -142,7 +162,7 @@ class LocalSkillRegistry:
         review_status: str = "not_reviewed",
         require_contextforge_verification: bool = False,
     ) -> RegistryEntry:
-        """Register a package only after the independent verifier and hash gates pass."""
+        """Register a verifier-approved package as a candidate delivery."""
 
         entry = _build_verified_entry(
             workspace,
@@ -150,7 +170,51 @@ class LocalSkillRegistry:
             version=version,
             review_status=review_status,
             require_contextforge_verification=require_contextforge_verification,
+            require_product_grade=False,
         )
+        return self._add_entry(entry)
+
+    def add_candidate(
+        self,
+        workspace: JobWorkspace,
+        *,
+        skill_id: str | None = None,
+        version: str = DEFAULT_REGISTRY_VERSION,
+        review_status: str = "not_reviewed",
+        require_contextforge_verification: bool = False,
+    ) -> RegistryEntry:
+        """Explicit alias for candidate registration."""
+
+        return self.add_verified(
+            workspace,
+            skill_id=skill_id,
+            version=version,
+            review_status=review_status,
+            require_contextforge_verification=require_contextforge_verification,
+        )
+
+    def add_product_grade(
+        self,
+        workspace: JobWorkspace,
+        *,
+        skill_id: str | None = None,
+        version: str = DEFAULT_REGISTRY_VERSION,
+        review_status: str = "product_grade_reviewed",
+        require_contextforge_verification: bool = False,
+    ) -> RegistryEntry:
+        """Register only after verifier gates and ProductGradeGate have passed."""
+
+        entry = _build_verified_entry(
+            workspace,
+            skill_id=skill_id,
+            version=version,
+            review_status=review_status,
+            require_contextforge_verification=require_contextforge_verification,
+            require_product_grade=True,
+        )
+        return self._add_entry(entry)
+
+    def _add_entry(self, entry: RegistryEntry) -> RegistryEntry:
         report = self.verify_entry(entry)
         if not report.valid:
             raise RegistryGateError(report.failures)
@@ -182,6 +246,7 @@ class LocalSkillRegistry:
         self,
         *,
         status: str | None = APPROVAL_APPROVED,
+        registry_status: str | None = None,
         include_quarantined: bool = False,
     ) -> list[RegistryEntry]:
         """List entries, defaulting to approved and non-quarantined reuse candidates."""
@@ -194,9 +259,21 @@ class LocalSkillRegistry:
         else:
             result = [entry for entry in entries if entry.approval_status == status]
 
+        if registry_status is not None and registry_status != "all":
+            result = [entry for entry in result if _entry_registry_status(entry) == registry_status]
+
         if not include_quarantined and status != QUARANTINE_QUARANTINED:
             result = [entry for entry in result if entry.quarantine_status != QUARANTINE_QUARANTINED]
         return sorted(result, key=_entry_sort_key)
+
+    def product_grade_entries(self, *, include_quarantined: bool = False) -> list[RegistryEntry]:
+        """Return approved product-grade entries."""
+
+        return self.list(
+            status=APPROVAL_APPROVED,
+            registry_status=REGISTRY_STATUS_PRODUCT_GRADE_REGISTERED,
+            include_quarantined=include_quarantined,
+        )
 
     def reuse_candidates(self) -> list[RegistryEntry]:
         """Return approved entries eligible for default reuse."""
@@ -216,6 +293,10 @@ class LocalSkillRegistry:
             entry.validate()
         except Exception as exc:
             failures.append(f"registry_entry: invalid RegistryEntry: {exc}")
+        registry_status = _entry_registry_status(entry)
+        if registry_status not in REGISTRY_STATUSES:
+            allowed = ", ".join(sorted(REGISTRY_STATUSES))
+            failures.append(f"registry_status: expected one of {allowed}, got {registry_status!r}")
 
         workspace_root = _workspace_root_for_entry(entry, failures)
         package_dir = _package_dir_for_entry(entry, workspace_root, failures)
@@ -271,6 +352,7 @@ class LocalSkillRegistry:
 
         _check_acceptance_coverage_against_entry(entry, workspace_root, failures)
         _check_contextforge_verification_against_entry(entry, workspace_root, failures)
+        _check_product_grade_against_entry(entry, workspace_root, failures)
 
         return RegistryVerificationReport(
             skill_id=entry.skill_id,
@@ -422,6 +504,7 @@ def _build_verified_entry(
     version: str,
     review_status: str,
     require_contextforge_verification: bool,
+    require_product_grade: bool,
 ) -> RegistryEntry:
     failures: list[str] = []
     _require_non_empty(version, "version")
@@ -456,6 +539,12 @@ def _build_verified_entry(
         failures,
         required=require_contextforge_verification,
     )
+    product_grade_report = _product_grade_for_registration(
+        workspace,
+        package_hash,
+        failures,
+        required=require_product_grade,
+    )
 
     if failures:
         raise RegistryGateError(failures)
@@ -480,6 +569,10 @@ def _build_verified_entry(
     provenance = ensure_json_compatible(
         {
             "schema_version": REGISTRY_PROVENANCE_VERSION,
+            "registry_status": REGISTRY_STATUS_PRODUCT_GRADE_REGISTERED
+            if require_product_grade
+            else REGISTRY_STATUS_CANDIDATE_REGISTERED,
+            "product_grade_required": require_product_grade,
             "workspace_root": workspace.root.resolve(strict=True).as_posix(),
             "build_job_id": workspace.job_id,
             "package": {
@@ -525,6 +618,8 @@ def _build_verified_entry(
         provenance["acceptance_coverage_result"] = acceptance_coverage
     if contextforge_verification is not None:
         provenance["contextforge_verification_result"] = contextforge_verification
+    if product_grade_report is not None:
+        provenance["product_grade_report"] = product_grade_report
 
     entry = RegistryEntry(
         skill_id=resolved_skill_id,
@@ -818,6 +913,72 @@ def _contextforge_verification_for_registration(
             ),
             "acceptance_coverage_result_hash": _json_str(result.metadata.get("acceptance_coverage_result_hash")),
             "current_package_hash": _json_str(result.metadata.get("current_package_hash")),
+        }
+    )  # type: ignore[return-value]
+
+
+def _product_grade_for_registration(
+    workspace: JobWorkspace,
+    package_hash: str | None,
+    failures: list[str],
+    *,
+    required: bool,
+) -> dict[str, JsonValue] | None:
+    ref = PRODUCT_GRADE_REPORT_REF
+    try:
+        path = workspace.resolve_path(ref, must_exist=True)
+    except Exception as exc:
+        if required:
+            failures.append(f"product_grade_report: missing or unsafe: {exc}")
+        return None
+
+    local_failures: list[str] = []
+    digest = sha256_file(path)
+    try:
+        report = ProductGradeReport.read_json_file(path)
+    except Exception as exc:
+        if required:
+            failures.append(f"product_grade_report: missing or invalid: {exc}")
+        return None
+
+    if report.job_id != workspace.job_id:
+        local_failures.append(f"product_grade_report.job_id: expected {workspace.job_id}, got {report.job_id}")
+    if package_hash is not None and report.package_hash != package_hash:
+        local_failures.append(
+            f"product_grade_report.package_hash: expected {package_hash}, got {report.package_hash}"
+        )
+    if required and report.product_grade is not True:
+        local_failures.append("product_grade_report.product_grade: ProductGradeGate did not pass")
+
+    if local_failures:
+        if required:
+            failures.extend(local_failures)
+        return None
+
+    repair_packet = _product_repair_packet_for_registration(workspace)
+    payload: dict[str, JsonValue] = {
+        "ref": ref,
+        "sha256": digest,
+        "product_grade": report.product_grade,
+        "gate_version": report.gate_version,
+        "checked_item_ids": list(report.checked_item_ids),
+        "finding_ids": [finding.finding_id for finding in report.findings],
+    }
+    if repair_packet is not None:
+        payload["repair_packet"] = repair_packet
+    return ensure_json_compatible(payload)  # type: ignore[return-value]
+
+
+def _product_repair_packet_for_registration(workspace: JobWorkspace) -> dict[str, JsonValue] | None:
+    ref = PRODUCT_REPAIR_PACKET_REF
+    try:
+        path = workspace.resolve_path(ref, must_exist=True)
+    except Exception:
+        return None
+    return ensure_json_compatible(
+        {
+            "ref": ref,
+            "sha256": sha256_file(path),
         }
     )  # type: ignore[return-value]
 
@@ -1300,6 +1461,91 @@ def _check_contextforge_verification_against_entry(
         )
 
 
+def _check_product_grade_against_entry(
+    entry: RegistryEntry,
+    workspace_root: Path | None,
+    failures: list[str],
+) -> None:
+    registry_status = _entry_registry_status(entry)
+    product_grade_value = entry.provenance.get("product_grade_report")
+    if product_grade_value is None:
+        if registry_status == REGISTRY_STATUS_PRODUCT_GRADE_REGISTERED:
+            failures.append("product_grade_report: required for product_grade_registered entries")
+        return
+    if not isinstance(product_grade_value, Mapping):
+        failures.append("product_grade_report: provenance must be a JSON object")
+        return
+    if workspace_root is None:
+        failures.append("product_grade_report: cannot resolve without workspace_root")
+        return
+
+    ref = _nested_str(entry.provenance, ("product_grade_report", "ref")) or PRODUCT_GRADE_REPORT_REF
+    try:
+        path = resolve_under_root(workspace_root, ref, must_exist=True)
+    except Exception as exc:
+        failures.append(f"product_grade_report: missing or unsafe ref {ref!r}: {exc}")
+        return
+
+    expected_hash = _nested_str(entry.provenance, ("product_grade_report", "sha256"))
+    if expected_hash is None:
+        failures.append("product_grade_report.sha256: missing from provenance")
+    actual_hash = _hash_file_or_failure(path, "product_grade_report_hash", failures)
+    if expected_hash is not None and actual_hash is not None and actual_hash != expected_hash:
+        failures.append(f"product_grade_report_hash: expected {expected_hash}, got {actual_hash}")
+
+    try:
+        report = ProductGradeReport.read_json_file(path)
+    except Exception as exc:
+        failures.append(f"product_grade_report: missing or invalid: {exc}")
+        return
+
+    if report.job_id != entry.build_job_id:
+        failures.append(f"product_grade_report.job_id: expected {entry.build_job_id}, got {report.job_id}")
+    if report.package_hash != entry.package_hash:
+        failures.append(f"product_grade_report.package_hash: expected {entry.package_hash}, got {report.package_hash}")
+
+    recorded_product_grade = product_grade_value.get("product_grade")
+    if recorded_product_grade is not report.product_grade:
+        failures.append(
+            f"product_grade_report.product_grade: expected provenance {recorded_product_grade!r}, "
+            f"got {report.product_grade}"
+        )
+    if registry_status == REGISTRY_STATUS_PRODUCT_GRADE_REGISTERED and report.product_grade is not True:
+        failures.append("product_grade_report.product_grade: product_grade_registered requires product_grade=true")
+
+    _check_product_repair_packet_against_entry(entry, workspace_root, product_grade_value, failures)
+
+
+def _check_product_repair_packet_against_entry(
+    entry: RegistryEntry,
+    workspace_root: Path,
+    product_grade_value: Mapping[str, Any],
+    failures: list[str],
+) -> None:
+    repair_packet = product_grade_value.get("repair_packet")
+    if repair_packet is None:
+        return
+    if not isinstance(repair_packet, Mapping):
+        failures.append("product_grade_report.repair_packet: provenance must be a JSON object")
+        return
+    ref = repair_packet.get("ref")
+    if not isinstance(ref, str) or not ref.strip():
+        failures.append("product_grade_report.repair_packet.ref: missing")
+        return
+    try:
+        path = resolve_under_root(workspace_root, ref, must_exist=True)
+    except Exception as exc:
+        failures.append(f"product_grade_report.repair_packet: missing or unsafe ref {ref!r}: {exc}")
+        return
+    expected_hash = repair_packet.get("sha256")
+    if not isinstance(expected_hash, str) or not expected_hash.strip():
+        failures.append("product_grade_report.repair_packet.sha256: missing")
+        return
+    actual_hash = _hash_file_or_failure(path, "product_repair_packet_hash", failures)
+    if actual_hash is not None and actual_hash != expected_hash:
+        failures.append(f"product_repair_packet_hash: expected {expected_hash}, got {actual_hash}")
+
+
 def _check_manual_acceptance_record_against_coverage(
     entry: RegistryEntry,
     workspace_root: Path,
@@ -1464,7 +1710,17 @@ def _same_registered_asset(left: RegistryEntry, right: RegistryEntry) -> bool:
         and left.verification_result_hash == right.verification_result_hash
         and left.artifact_manifest_hash == right.artifact_manifest_hash
         and left.verifier_version == right.verifier_version
+        and _entry_registry_status(left) == _entry_registry_status(right)
+        and _nested_str(left.provenance, ("product_grade_report", "sha256"))
+        == _nested_str(right.provenance, ("product_grade_report", "sha256"))
     )
+
+
+def _entry_registry_status(entry: RegistryEntry) -> str:
+    status = entry.provenance.get("registry_status")
+    if isinstance(status, str) and status.strip():
+        return status
+    return REGISTRY_STATUS_REGISTERED
 
 
 def _entry_sort_key(entry: RegistryEntry) -> tuple[str, str]:
@@ -1486,6 +1742,14 @@ __all__ = [
     "QUARANTINE_QUARANTINED",
     "REGISTRY_PROVENANCE_VERSION",
     "REGISTRY_STORE_VERSION",
+    "REGISTRY_STATUS_CANDIDATE_REGISTERED",
+    "REGISTRY_STATUS_DEPRECATED",
+    "REGISTRY_STATUS_GENERATED",
+    "REGISTRY_STATUS_PRODUCT_GRADE_REGISTERED",
+    "REGISTRY_STATUS_PUBLISHED",
+    "REGISTRY_STATUS_REGISTERED",
+    "REGISTRY_STATUS_VERIFIED",
+    "REGISTRY_STATUSES",
     "RegistryDuplicateError",
     "RegistryEntryNotFound",
     "RegistryError",

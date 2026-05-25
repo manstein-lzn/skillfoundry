@@ -7,11 +7,17 @@ import pytest
 import skillfoundry
 from skillfoundry import (
     APPROVAL_APPROVED,
+    PRODUCT_GRADE_REPORT_REF,
+    PRODUCT_REPAIR_PACKET_REF,
     QUARANTINE_QUARANTINED,
+    REGISTRY_STATUS_CANDIDATE_REGISTERED,
+    REGISTRY_STATUS_PRODUCT_GRADE_REGISTERED,
     AcceptanceCoverageEvaluator,
     AcceptanceCriteriaPlanner,
     DuplicatePolicy,
     LocalSkillRegistry,
+    ProductGradeReport,
+    ProductRepairPacket,
     RegistryDuplicateError,
     RegistryEntry,
     RegistryGateError,
@@ -196,6 +202,32 @@ def write_fake_contextforge_result(workspace, *, status: str = "passed", passed:
     path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
+def write_product_grade_report(workspace, *, product_grade: bool = True) -> ProductGradeReport:
+    workspace.resolve_path("qa").mkdir(parents=True, exist_ok=True)
+    verification_result = VerificationResult.read_json_file(
+        workspace.resolve_path("verifier/verification_result.json", must_exist=True)
+    )
+    report = ProductGradeReport(
+        job_id=workspace.job_id,
+        product_grade=product_grade,
+        package_hash=verification_result.package_hash,
+        matrix_ref="product_contract/product_acceptance_matrix.json",
+        findings=[],
+        checked_item_ids=["PG-RUNTIME-SAME-PLAN-DUPLICATE-PATH"],
+        evidence_refs=[],
+    )
+    report.write_json_file(workspace.resolve_path(PRODUCT_GRADE_REPORT_REF))
+    ProductRepairPacket(
+        job_id=workspace.job_id,
+        repair_required=not product_grade,
+        source_report_ref=PRODUCT_GRADE_REPORT_REF,
+        findings=[],
+        repair_instructions=[] if product_grade else ["Repair product-grade findings."],
+        required_tests=[] if product_grade else ["runtime matrix checks"],
+    ).write_json_file(workspace.resolve_path(PRODUCT_REPAIR_PACKET_REF))
+    return report
+
+
 def test_registry_api_is_exported():
     assert skillfoundry.LocalSkillRegistry is LocalSkillRegistry
     assert skillfoundry.DuplicatePolicy is DuplicatePolicy
@@ -339,6 +371,62 @@ def test_approved_entry_traces_to_required_wp6_evidence(tmp_path):
     assert provenance["artifact_manifest"]["ref"] == "artifact_manifest.json"
     assert provenance["artifact_manifest"]["sha256"] == entry.artifact_manifest_hash
     assert provenance["verifier"]["version"] == entry.verifier_version
+
+
+def test_add_verified_records_candidate_registered_status(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path, job_id="registry-candidate")
+    registry = LocalSkillRegistry(tmp_path / "registry-candidate.json")
+
+    entry = registry.add_verified(workspace, version="1.0.0")
+
+    assert entry.approval_status == APPROVAL_APPROVED
+    assert entry.provenance["registry_status"] == REGISTRY_STATUS_CANDIDATE_REGISTERED
+    assert entry.provenance["product_grade_required"] is False
+    assert registry.list(registry_status=REGISTRY_STATUS_CANDIDATE_REGISTERED) == [entry]
+    assert registry.product_grade_entries() == []
+
+
+def test_add_product_grade_requires_passing_product_grade_report(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path, job_id="registry-product-grade")
+    registry = LocalSkillRegistry(tmp_path / "registry-product-grade.json")
+
+    with pytest.raises(RegistryGateError) as missing_exc:
+        registry.add_product_grade(workspace, version="1.0.0")
+    assert any("product_grade_report" in failure for failure in missing_exc.value.failures)
+
+    failed_report = write_product_grade_report(workspace, product_grade=False)
+    with pytest.raises(RegistryGateError) as failed_exc:
+        registry.add_product_grade(workspace, version="1.0.0")
+    assert failed_report.product_grade is False
+    assert any("ProductGradeGate did not pass" in failure for failure in failed_exc.value.failures)
+
+    passed_report = write_product_grade_report(workspace, product_grade=True)
+    entry = registry.add_product_grade(workspace, version="1.0.0")
+
+    assert entry.provenance["registry_status"] == REGISTRY_STATUS_PRODUCT_GRADE_REGISTERED
+    assert entry.provenance["product_grade_required"] is True
+    assert entry.provenance["product_grade_report"]["ref"] == PRODUCT_GRADE_REPORT_REF
+    assert entry.provenance["product_grade_report"]["product_grade"] is True
+    assert entry.provenance["product_grade_report"]["gate_version"] == passed_report.gate_version
+    assert registry.product_grade_entries() == [entry]
+    assert registry.verify_entry(entry).valid is True
+
+
+def test_product_grade_registry_verify_fails_after_report_tampering(tmp_path):
+    workspace, _result = make_verified_workspace(tmp_path, job_id="registry-product-grade-tamper")
+    write_product_grade_report(workspace, product_grade=True)
+    registry = LocalSkillRegistry(tmp_path / "registry-product-grade-tamper.json")
+    entry = registry.add_product_grade(workspace, version="1.0.0")
+
+    report_path = workspace.resolve_path(PRODUCT_GRADE_REPORT_REF, must_exist=True)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["product_grade"] = False
+    report_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+    report = registry.verify_entry(entry)
+
+    assert report.valid is False
+    assert any("product_grade_report_hash" in failure for failure in report.failures)
 
 
 def test_contextforge_verified_workspace_registers_with_v2_provenance(tmp_path):
