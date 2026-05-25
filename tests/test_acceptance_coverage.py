@@ -825,6 +825,321 @@ def test_codexarium_v1_accepts_singular_taxonomy_and_hyphen_fixture_names(tmp_pa
     assert result.must_passed == 2
 
 
+def test_codexarium_dialog_025_criteria_map_to_deterministic_evidence(tmp_path):
+    criteria_texts = [
+        "Package contains a clean-room SKILL.md with valid YAML frontmatter and sections: Overview, When To Use, When Not To Use, Inputs, Outputs, Workflow, and Safety.",
+        "SKILL.md clearly states Codexarium is not a chat backup tool, automatic scanner, background collector, network sync tool, or database service.",
+        "SKILL.md requires the user to provide an explicit wiki root and forbids guessing real local paths.",
+        "Runtime helper is implemented as a Rust Cargo project and can be tested locally with cargo test.",
+        "Rust helper validates only the allowed taxonomy categories: project, domain, workflow, decision, reference, snippet.",
+        "Rust helper validates JSON evidence manifest and compact note/note draft inputs, returning deterministic errors for malformed or incomplete data.",
+        "Rust helper validates write plans and rejects path traversal and any write outside the supplied wiki root.",
+        "Default behavior never overwrites existing files.",
+        "Title or path conflicts produce a conflict proposal that can be shown to the user for confirmation before any conflicting write.",
+        "All fixtures and examples are synthetic and do not rely on existing Codexarium code, notes, or real user data.",
+        "References documentation includes example compact evidence, JSON manifest, note drafts, expected write plan/output, and safety/error examples.",
+        "Final package is suitable for later verifier and acceptance coverage checks before registry approval.",
+    ]
+    skill_md = """---
+name: codexarium
+description: "Clean-room local wiki and atomic note maintenance skill with Rust validation for safe markdown write plans."
+---
+
+# Codexarium
+
+## Overview
+Codexarium converts explicitly supplied compact evidence, JSON evidence
+manifests, and note drafts into structured local Markdown atomic notes. It is a
+clean-room skill and does not rely on existing Codexarium code.
+
+Codexarium is not a chat backup tool, not an automatic scanner, not a
+background collector, not a network synchronization tool, and not a database
+service.
+
+## When To Use
+Use when the user supplies an explicit wiki root and user-provided evidence for
+project, domain, workflow, decision, reference, and snippet notes.
+
+## When Not To Use
+Do not use for chat logs, automatic full-disk scanning, background collection,
+network sync, database service behavior, or guessing a wiki root.
+
+## Inputs
+Require wiki_root, JSON evidence manifest, compact evidence, and note drafts.
+
+## Outputs
+Return a write plan, validation errors, or conflict proposal.
+
+## Workflow
+Confirm the user supplied wiki root. Run cargo test and cargo run from the
+package root to validate the write plan.
+
+## Safety
+The user must supply the wiki root explicitly. Do not guess or infer real local
+paths. Default behavior is no overwrite; conflicts require user confirmation.
+All examples and fixtures are synthetic and not real user data.
+"""
+    workspace = make_workspace(
+        tmp_path,
+        job_id="acceptance-codexarium-dialog-025",
+        skill_md=skill_md,
+        criteria=[
+            criterion(
+                f"AC-{index:03d}",
+                verifier_check_id=None,
+                description=text,
+                pass_condition=text,
+                required_evidence=[text],
+                evidence_kind="verifier_check",
+            )
+            for index, text in enumerate(criteria_texts, start=1)
+        ],
+    )
+    write_workspace_text(
+        workspace,
+        "worker_input.md",
+        "Build a clean-room Codexarium package from current user-provided FrontDesk inputs only.\n",
+    )
+    write_workspace_text(
+        workspace,
+        "evidence/transcript.md",
+        "Clean-room boundary evidence from synthetic requirements. No existing implementation was read.\n",
+    )
+    write_workspace_text(
+        workspace,
+        "evidence/manifest.json",
+        json.dumps(
+            {
+                "schema": "forgeunit.worker_evidence_manifest",
+                "version": "0.6",
+                "status": "completed",
+                "changed_files": ["package/SKILL.md", "package/Cargo.toml", "package/src/lib.rs"],
+                "commands": [{"command": "cargo test", "exit_code": 0}],
+                "usage_unavailable_reason": "test",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+    )
+    write_workspace_text(
+        workspace,
+        "package/references/codexarium_reference.md",
+        """
+# Codexarium Reference
+All examples are synthetic. The request includes compact evidence, JSON evidence manifest, and note drafts.
+Expected write plan output includes planned writes, conflict proposal output, validation errors, and safety examples.
+Required categories are project, domain, workflow, decision, reference, and snippet.
+Existing Codexarium code is not used and fixtures are not real user data.
+""".strip(),
+    )
+    write_workspace_text(
+        workspace,
+        "package/references/acceptance_coverage.md",
+        """
+# Acceptance Coverage Notes
+AC-010: Fixtures and examples are synthetic and do not rely on existing Codexarium code, notes, or real user data.
+AC-011: References documentation includes compact evidence, JSON manifest, note drafts, expected write plan, and safety/error examples.
+AC-012: Boundary evidence records verifier validation commands for downstream acceptance coverage review.
+""".strip(),
+    )
+    write_workspace_text(workspace, "qa/acceptance_coverage_plan.json", "{}\n")
+    write_workspace_text(workspace, "package/Cargo.toml", "[package]\nname = \"codexarium-helper\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+    write_workspace_text(
+        workspace,
+        "package/src/lib.rs",
+        (
+            "pub fn validates_taxonomy_manifest_compact_notes_write_plan_path_traversal_conflict() {}\n"
+            "// target path validation rejects absolute paths, requires relative paths,\n"
+            "// and rejects parent traversal through .. before any write plan escapes the wiki root.\n"
+        ),
+    )
+    write_workspace_text(
+        workspace,
+        "package/tests/helper_tests.rs",
+        "valid bad_taxonomy bad_manifest bad compact note path traversal outside wiki root conflict proposal no overwrite\n",
+    )
+    write_workspace_text(workspace, "package/tests/fixtures/valid_request.json", "{\"kind\":\"synthetic valid fixture\"}\n")
+    write_workspace_text(workspace, "package/tests/fixtures/conflict_request.json", "{\"conflict\":\"proposal\"}\n")
+    write_workspace_text(workspace, "package/tests/fixtures/path_traversal_request.json", "{\"path\":\"../escape\"}\n")
+    write_workspace_text(workspace, "package/tests/fixtures/bad_taxonomy_request.json", "{\"category\":\"idea\"}\n")
+    write_workspace_text(workspace, "package/tests/fixtures/bad_manifest_request.json", "{\"schema\":\"bad\"}\n")
+    write_fake_codexarium_verification_result(workspace)
+
+    plan, result = plan_and_evaluate(workspace)
+
+    assert {item.criterion_id: item.verifier_check_id for item in plan.items} == {
+        "AC-001": "package_skill_md_present",
+        "AC-002": "skill_scope_exclusion_boundary",
+        "AC-003": "codexarium_explicit_wiki_root_contract",
+        "AC-004": "package_cargo_test",
+        "AC-005": "package_cargo_test",
+        "AC-006": "package_cargo_test",
+        "AC-007": "rust_verifier_path_safety",
+        "AC-008": "write_conflict_policy_contract",
+        "AC-009": "write_conflict_policy_contract",
+        "AC-010": "codexarium_synthetic_fixture_boundary",
+        "AC-011": "codexarium_reference_documentation_contract",
+        "AC-012": "downstream_verifier_acceptance_gate",
+    }
+    assert result.passed is True
+    assert result.must_passed == 12
+
+
+def test_codexarium_dialog_027_criteria_map_to_generated_package_evidence(tmp_path):
+    criteria_texts = [
+        "SKILL.md clearly states that Codexarium is for explicitly user-provided evidence/manifests/drafts and must not be used for chat backup, automatic scanning, background collection, network sync, or database service behavior.",
+        "The package includes a Rust Cargo project for a local CLI/helper.",
+        "The Rust helper validates planned paths, rejects path traversal, and rejects any write target outside the authorized wiki root.",
+        "The Rust helper detects title/path conflicts and emits a conflict proposal instead of overwriting existing files.",
+        "The default write policy is no overwrite; contested writes require explicit user confirmation or an approved follow-up write plan.",
+        "All generated or updated notes are markdown atomic notes placed only inside the authorized wiki root.",
+        "The repository includes synthetic fixtures only; no fixture is derived from existing Codexarium code, notes, docs, or user data.",
+        "The package includes references documentation, example inputs, example outputs, and an evidence manifest example.",
+        "Before final registration, verifier and acceptance coverage are expected to pass.",
+    ]
+    skill_md = """---
+name: codexarium
+description: "Clean-room local wiki and atomic-note maintenance skill."
+---
+
+# Codexarium
+
+## Overview
+Codexarium uses user-provided manifests, compact evidence, and drafts to produce
+markdown atomic-note write plans inside the explicit wiki root.
+
+## When To Use
+Use when a user supplies evidence/manifests/drafts and an explicit wiki root.
+
+## When Not To Use
+Do not use Codexarium for chat backup, automatic scanning, background collection,
+network synchronization, full-disk scan, or database service behavior.
+
+## Inputs
+Explicit wiki root, JSON manifest, compact note drafts, and optional approved
+conflict choices.
+
+## Outputs
+Markdown atomic notes inside the authorized wiki root, validation errors, and
+conflict proposals.
+
+## Workflow
+Run cargo test, then validate paths, conflicts, and write plans before writing.
+
+## Safety
+The helper rejects absolute note paths, parent traversal, destinations outside
+the authorized wiki root, and existing destination files. Existing destinations
+produce conflict proposals instead of overwrites. Contested writes require
+explicit user confirmation or an approved follow-up write plan. All examples and
+tests are synthetic and not derived from existing Codexarium code, notes, docs,
+or user data.
+"""
+    workspace = make_workspace(
+        tmp_path,
+        job_id="acceptance-codexarium-dialog-027",
+        skill_md=skill_md,
+        criteria=[
+            criterion(
+                f"AC-{index:03d}",
+                verifier_check_id=None,
+                description=text,
+                pass_condition=text,
+                required_evidence=[text],
+                evidence_kind="verifier_check",
+            )
+            for index, text in enumerate(criteria_texts, start=1)
+        ],
+    )
+    write_workspace_text(
+        workspace,
+        "package/references/safety.md",
+        """
+# Clean-Room Safety Model
+Use only the current user-provided manifest, compact evidence, note drafts, and explicit wiki root.
+The user must supply the explicit wiki root; do not guess root paths.
+Use fresh synthetic fixtures for examples and tests. These fixtures are not real user data.
+Do not read or copy existing Codexarium code, notes, docs, real fixtures, databases, or prior implementation details.
+Do not collect information in the background. Do not sync over the network. Do not create or use a database service.
+The helper rejects absolute destination paths, parent traversal, symlink components, and non-markdown destinations.
+The helper opens output files with create-new semantics so existing files are not overwritten.
+Existing destinations and duplicate planned titles or paths become conflict proposals.
+Conflicts require a user-approved follow-up plan before any contested update.
+""".strip(),
+    )
+    write_workspace_text(
+        workspace,
+        "package/references/schema.md",
+        """
+# Codexarium Manifest Schema
+This clean-room package includes synthetic examples only.
+The helper accepts a JSON evidence manifest and compact notes with slug or path.
+When path is supplied, it must be a relative .md path inside the explicit wiki root.
+Validation statuses include ok, conflict, and error.
+""".strip(),
+    )
+    write_workspace_text(workspace, "package/Cargo.toml", "[package]\nname = \"codexarium-helper\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+    write_workspace_text(
+        workspace,
+        "package/src/lib.rs",
+        (
+            "fn validate_relative_markdown_path() { /* destination path absolute parent traversal target would escape wiki root */ }\n"
+            "fn write_without_overwrite() { /* create_new conflict proposal */ }\n"
+        ),
+    )
+    write_workspace_text(
+        workspace,
+        "package/tests/integration.rs",
+        (
+            "fixture_valid_input_can_be_written_after_confirmation "
+            "fixture_conflict_does_not_overwrite path_traversal_is_rejected bad_taxonomy "
+            "bad_compact_note manifest_error\n"
+        ),
+    )
+    write_workspace_text(workspace, "package/tests/fixtures/valid_manifest.json", "{\"source\":\"fresh synthetic fixture\"}\n")
+    write_workspace_text(workspace, "package/tests/fixtures/path_traversal_manifest.json", "{\"path\":\"../outside.md\"}\n")
+    write_workspace_text(workspace, "package/tests/fixtures/bad_taxonomy_manifest.json", "{\"taxonomy\":\"bad\"}\n")
+    write_workspace_text(workspace, "package/tests/fixtures/bad_compact_note_manifest.json", "{\"body\":\"\"}\n")
+    write_workspace_text(workspace, "package/tests/fixtures/manifest_error.json", "{\"schema\":\"bad\"}\n")
+    write_workspace_text(workspace, "package/examples/evidence_manifest.example.json", "{\"schema\":\"synthetic\"}\n")
+    write_workspace_text(workspace, "package/examples/inputs/valid_manifest.json", "{}\n")
+    write_workspace_text(workspace, "package/examples/outputs/valid_write_plan.json", "{\"status\":\"ok\"}\n")
+    write_workspace_text(workspace, "package/examples/outputs/conflict_proposal.json", "{\"status\":\"conflict\"}\n")
+    write_workspace_text(
+        workspace,
+        "evidence/manifest.json",
+        json.dumps(
+            {
+                "schema": "forgeunit.worker_evidence_manifest",
+                "version": "0.6",
+                "status": "completed",
+                "commands": [{"command": "cargo test", "exit_code": 0}],
+                "changed_files": ["package/SKILL.md", "package/Cargo.toml"],
+                "usage_unavailable_reason": "test",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+    )
+    write_workspace_text(workspace, "qa/acceptance_coverage_plan.json", "{}\n")
+    write_fake_codexarium_verification_result(workspace)
+
+    plan, result = plan_and_evaluate(workspace)
+
+    assert {item.criterion_id: item.verifier_check_id for item in plan.items} == {
+        "AC-001": "skill_scope_exclusion_boundary",
+        "AC-002": "rust_verifier_package_present",
+        "AC-003": "rust_verifier_path_safety",
+        "AC-004": "write_conflict_policy_contract",
+        "AC-005": "write_conflict_policy_contract",
+        "AC-006": "codexarium_explicit_wiki_root_contract",
+        "AC-007": "codexarium_synthetic_fixture_boundary",
+        "AC-008": "codexarium_reference_documentation_contract",
+        "AC-009": "downstream_verifier_acceptance_gate",
+    }
+    assert result.passed is True
+    assert result.must_passed == 9
+
+
 def test_planner_maps_codexarium_dialog_015_granular_criteria(tmp_path):
     criteria_texts = [
         "The generated package is a local Codex Skill package named codexarium and includes SKILL.md.",

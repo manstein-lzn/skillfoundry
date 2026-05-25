@@ -1509,6 +1509,10 @@ def _is_nonblocking_ready_detail(value: str) -> bool:
         return True
     markers = (
         "implementation.",
+        "not_blocking_for_audit",
+        "not blocking for audit",
+        '"status": "not_blocking_for_audit"',
+        "'status': 'not_blocking_for_audit'",
         "_optional_",
         "optional_detail",
         "optional detail",

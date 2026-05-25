@@ -386,6 +386,44 @@ def test_freeze_gate_treats_optional_elicitation_missing_fields_as_warnings(tmp_
     assert workspace.resolve_path("frontdesk/freeze_manifest.json", must_exist=True).is_file()
 
 
+def test_freeze_gate_treats_not_blocking_for_audit_missing_field_payloads_as_warnings(tmp_path):
+    criterion = sample_criterion()
+    nonblocking_payload = (
+        '{"field_path": "conflict_proposal.required_fields", '
+        '"reason": "The builder can choose the exact JSON shape while preserving the required behavior.", '
+        '"status": "not_blocking_for_audit"}'
+    )
+    elicitation_report = ElicitationReport(
+        readiness_guess="ready_for_audit",
+        current_understanding="The user wants a local skill with build-time implementation details.",
+        known_fields={"input": "user-provided data", "output": "validated local package"},
+        missing_fields=[nonblocking_payload],
+        risk_flags=[],
+        next_questions=[],
+        draft_skill_spec=draft_skill_spec_payload(),
+        draft_acceptance_criteria=[criterion.to_dict()],
+        assumptions=["Exact conflict proposal fields can be chosen by the builder."],
+        round_index=1,
+    )
+    workspace, frontdesk = make_freezable_frontdesk_workspace(
+        tmp_path,
+        criterion=criterion,
+        elicitation_report=elicitation_report,
+    )
+
+    result = FrontDeskFreezeGate().evaluate_and_freeze(frontdesk, round_index=1)
+
+    assert result.decision == FREEZE_GATE_DECISION_FREEZE
+    assert result.frozen is True
+    assert "unresolved_elicitation_missing_fields" not in reason_codes(result)
+    assert result.warnings == [
+        "Non-blocking elicitation details left for build-time judgment: " + nonblocking_payload
+    ]
+    gate_result = read_json(workspace, "frontdesk/freeze_gate_result.json")
+    assert gate_result["decision"] == "freeze"
+    assert gate_result["warnings"] == result.warnings
+
+
 def test_freeze_gate_blocks_when_auditor_not_approved_and_does_not_overwrite_root_inputs(tmp_path):
     audit = approved_audit_report(decision="needs_more_clarification")
     workspace, frontdesk = make_freezable_frontdesk_workspace(tmp_path, audit_report=audit)

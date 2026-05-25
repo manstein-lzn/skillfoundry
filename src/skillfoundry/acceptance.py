@@ -111,6 +111,10 @@ _SYNTHETIC_VERIFIER_CHECK_IDS = frozenset(
         "codexarium_manifest_compact_contract",
         "codexarium_fixture_scenario_coverage",
         "codexarium_local_runtime_contract",
+        "codexarium_explicit_wiki_root_contract",
+        "codexarium_synthetic_fixture_boundary",
+        "codexarium_reference_documentation_contract",
+        "downstream_verifier_acceptance_gate",
     }
 )
 _ZERO_HASH = "0" * 64
@@ -803,16 +807,25 @@ def _evaluate_synthetic_verifier_check(
             ],
         )
     elif check_id == "skill_scope_exclusion_boundary":
-        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md")
+        text = _read_refs_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/SKILL.md",
+            "package/references/safety.md",
+            "package/references/security-boundary.md",
+        )
         _require_text_groups(
             text,
             failures,
             [
                 ("chat backup excluded", ("chat backup", "chat logs")),
-                ("daily report excluded", ("daily report", "daily reports")),
-                ("automatic collection excluded", ("automatic collection", "background ingestion")),
+                (
+                    "automatic collection excluded",
+                    ("automatic collection", "background ingestion", "background collector", "background collection"),
+                ),
                 ("network sync excluded", ("network sync", "cloud publishing", "cloud sync")),
-                ("full-disk scan excluded", ("full-disk", "full disk")),
+                ("full-disk scan excluded", ("full-disk", "full disk", "full-disk scanning", "full-disk scan")),
                 ("database service excluded", ("database service", "databases")),
             ],
         )
@@ -994,16 +1007,43 @@ def _evaluate_synthetic_verifier_check(
             ],
         )
     elif check_id == "write_conflict_policy_contract":
-        text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md")
+        text = _read_refs_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/SKILL.md",
+            "package/references/safety.md",
+            "package/references/schema.md",
+        )
+        text += "\n" + _read_glob_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/src/*.rs",
+            "package/tests/**/*.rs",
+        )
         _require_text_groups(
             text,
             failures,
             [
-                ("no overwrite default", ("no overwrite", "do not overwrite")),
+                (
+                    "no overwrite default",
+                    ("no overwrite", "do not overwrite", "without overwrite", "not overwritten", "overwrites"),
+                ),
                 ("conflict proposal", ("conflict proposal", "proposal")),
                 (
                     "non-destructive conflict behavior",
-                    ("not overwrite", "no overwrite", "not directly", "instead of overwriting", "stop before writing"),
+                    (
+                        "not overwrite",
+                        "no overwrite",
+                        "not directly",
+                        "instead of overwriting",
+                        "stop before writing",
+                        "without overwrite",
+                        "conflicts require",
+                        "conflict blocks writing",
+                        "create_new",
+                    ),
                 ),
                 ("confirmation before conflict write", ("confirm", "confirmation", "wait for user", "user decision")),
             ],
@@ -1050,8 +1090,20 @@ def _evaluate_synthetic_verifier_check(
             text,
             failures,
             [
-                ("target path validation", ("target path", "target_path")),
-                ("absolute path rejection", ("absolute", "relative")),
+                (
+                    "target path validation",
+                    (
+                        "target path",
+                        "target_path",
+                        "destination path",
+                        "destination paths",
+                        "destination",
+                        "relative_path",
+                        "planned paths",
+                        "write target",
+                    ),
+                ),
+                ("absolute path rejection", ("absolute", "relative", "destination path")),
                 ("parent traversal rejection", ("parent", "..", "parentdir")),
                 ("unsafe path fixture", ("unsafe", "traversal")),
             ],
@@ -1178,6 +1230,140 @@ def _evaluate_synthetic_verifier_check(
                 ("workspace verification", ("workspace", "skill package root", "package/cargo.toml")),
             ],
         )
+    elif check_id == "codexarium_explicit_wiki_root_contract":
+        text = _read_refs_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/SKILL.md",
+            "package/references/codexarium_reference.md",
+            "package/references/acceptance_coverage.md",
+            "package/references/safety.md",
+            "package/references/schema.md",
+        )
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("explicit wiki root", ("explicit wiki root", "wiki root", "wiki_root")),
+                (
+                    "user supplied root",
+                    (
+                        "user supplied",
+                        "user-supplied",
+                        "supplied by the user",
+                        "provided by the user",
+                        "user must supply",
+                    ),
+                ),
+                ("do not guess root", ("do not guess", "must not guess", "not guess", "infer a wiki location")),
+            ],
+        )
+    elif check_id == "codexarium_synthetic_fixture_boundary":
+        text = _read_refs_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/SKILL.md",
+            "package/references/codexarium_reference.md",
+            "package/references/acceptance_coverage.md",
+            "package/references/safety.md",
+            "package/references/schema.md",
+        )
+        text += "\n" + _read_glob_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/**/fixtures/**/*",
+            "package/tests/fixtures/**/*",
+            "package/examples/**/*",
+        )
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("synthetic examples or fixtures", ("synthetic",)),
+                (
+                    "no existing Codexarium dependency",
+                    ("existing codexarium", "existing local codexarium", "existing codexarium code", "does not rely"),
+                ),
+                ("no real user data", ("real user data", "not real user", "not user data", "user data")),
+            ],
+        )
+        _require_any_glob(workspace, evidence_refs, failures, "synthetic fixture or example file", "package/**/fixtures/**/*")
+    elif check_id == "codexarium_reference_documentation_contract":
+        _require_any_glob(workspace, evidence_refs, failures, "reference documentation file", "package/references/*.md")
+        text = _read_refs_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/SKILL.md",
+            "package/references/codexarium_reference.md",
+            "package/references/acceptance_coverage.md",
+            "package/references/schema.md",
+            "package/references/safety.md",
+        )
+        text += "\n" + _read_glob_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/tests/fixtures/**/*",
+            "package/**/fixtures/**/*",
+            "package/examples/**/*",
+        )
+        _require_text_groups(
+            text,
+            failures,
+            [
+                ("compact evidence or compact notes", ("compact evidence", "compact note", "compact notes")),
+                ("JSON manifest", ("json evidence manifest", "evidence manifest", "manifest")),
+                ("note drafts or markdown notes", ("note draft", "note drafts", "markdown note", "markdown notes")),
+                ("expected write plan or output", ("expected write plan", "write plan", "expected output")),
+                ("safety or error examples", ("safety", "error examples", "validation errors", "errors")),
+            ],
+        )
+    elif check_id == "downstream_verifier_acceptance_gate":
+        _require_verifier_checks(checks, failures, "package_skill_md_present")
+        _require_any_verifier_check(checks, failures, ("package_cargo_test", "sandbox_smoke"), "downstream verifier gate")
+        _require_paths(
+            workspace,
+            evidence_refs,
+            failures,
+            "verifier/verification_result.json",
+            "qa/acceptance_coverage_plan.json",
+        )
+        text = _read_refs_text(
+            workspace,
+            evidence_refs,
+            failures,
+            "package/references/acceptance_coverage.md",
+            "package/references/safety.md",
+            "package/references/schema.md",
+            "qa/acceptance_coverage_plan.json",
+            "verifier/verification_result.json",
+            "evidence/manifest.json",
+        )
+        _require_text_groups(
+            text,
+            failures,
+            [
+                (
+                    "acceptance coverage",
+                    (
+                        "acceptance coverage",
+                        "acceptance criteria",
+                        "coverage",
+                        "coverage_plan",
+                        "acceptance_coverage",
+                        "acceptance_coverage_plan",
+                    ),
+                ),
+                (
+                    "validation or verifier evidence",
+                    ("verifier", "verification_result", "validation", "validation commands", "package_cargo_test"),
+                ),
+            ],
+        )
     elif check_id == "rust_verifier_fixture_coverage":
         _require_verifier_checks(checks, failures, "package_cargo_test")
         valid_fixture_refs = _glob_refs(workspace, "package/**/tests/fixtures/valid/**/*")
@@ -1238,34 +1424,55 @@ def _evaluate_synthetic_verifier_check(
         )
     elif check_id == "no_external_runtime_dependency":
         text = _read_refs_text(workspace, evidence_refs, failures, "package/SKILL.md", "package/docs/security-boundary.md")
-        _require_text_groups(
-            text,
-            failures,
+        mentions_mcp = _text_has_any(text, ("mcp", "model context protocol"))
+        mentions_cloud = _text_has_any(text, ("cloud", "cloud sync", "cloud synchronization", "cloud publishing"))
+        groups: list[tuple[str, tuple[str, ...]]] = []
+        if mentions_mcp:
+            groups.append(("MCP not required", ("no mcp", "not require mcp", "do not require mcp", "without mcp")))
+        groups.extend(
             [
-                ("MCP not required", ("no mcp", "not require mcp", "do not require mcp", "without mcp")),
                 (
                     "database not required",
                     ("no database", "not require database", "do not require database", "without database", "database service"),
                 ),
                 (
                     "network not required",
-                    ("no network", "not require network", "do not require network", "without network", "network access"),
-                ),
-                (
-                    "cloud sync not required",
-                    ("no cloud sync", "not require cloud sync", "do not require cloud sync", "cloud sync"),
-                ),
-                (
-                    "automatic scan not required",
                     (
-                        "no automatic",
-                        "not require automatic",
-                        "do not require automatic",
-                        "automatic filesystem scan",
-                        "full-disk scan",
+                        "no network",
+                        "not require network",
+                        "do not require network",
+                        "without network",
+                        "network access",
+                        "network sync",
+                        "network synchronization",
                     ),
                 ),
-            ],
+            ]
+        )
+        if mentions_cloud:
+            groups.append(
+                (
+                    "cloud sync not required",
+                    ("no cloud sync", "not require cloud sync", "do not require cloud sync", "cloud sync", "cloud synchronization"),
+                )
+            )
+        groups.append(
+            (
+                "automatic scan not required",
+                (
+                    "no automatic",
+                    "not require automatic",
+                    "do not require automatic",
+                    "automatic filesystem scan",
+                    "automatic full-disk",
+                    "full-disk scan",
+                ),
+            )
+        )
+        _require_text_groups(
+            text,
+            failures,
+            groups,
         )
     else:
         failures.append(f"unsupported synthetic verifier check: {check_id}")
@@ -1568,6 +1775,20 @@ def _infer_synthetic_verifier_check_id(criterion: AcceptanceCriterion) -> str | 
         )
     )
     if (
+        "skill.md" in text
+        and ("yaml frontmatter" in text or "valid yaml" in text)
+        and (
+            "overview" in text
+            and "when to use" in text
+            and "when not to use" in text
+            and "inputs" in text
+            and "outputs" in text
+            and "workflow" in text
+            and "safety" in text
+        )
+    ):
+        return "package_skill_md_present"
+    if (
         ("complete local codex skill package" in text or "complete local codex skill" in text)
         and "codexarium" in text
         and ("existing local codexarium" in text or "existing local" in text or "clean-room" in text)
@@ -1609,6 +1830,39 @@ def _infer_synthetic_verifier_check_id(criterion: AcceptanceCriterion) -> str | 
     if "cargo test" in text:
         return "package_cargo_test"
     if (
+        ("rust cargo project" in text or "cargo project" in text)
+        and ("local cli" in text or "cli/helper" in text or "helper" in text)
+    ):
+        return "rust_verifier_package_present"
+    if (
+        "rust helper" in text
+        and ("validates" in text or "validate" in text)
+        and ("taxonomy" in text or "manifest" in text or "compact note" in text or "compact notes" in text)
+    ):
+        return "package_cargo_test"
+    if (
+        ("write plan" in text or "write plans" in text)
+        and ("path traversal" in text or "outside the supplied wiki root" in text or "outside the wiki root" in text)
+    ):
+        return "rust_verifier_path_safety"
+    if (
+        "rust helper" in text
+        and ("planned paths" in text or "path traversal" in text or "write target" in text)
+        and ("wiki root" in text or "authorized wiki root" in text)
+    ):
+        return "rust_verifier_path_safety"
+    if (
+        "rust helper" in text
+        and ("conflict proposal" in text or "conflicts" in text)
+        and ("overwriting" in text or "overwrite" in text)
+    ):
+        return "write_conflict_policy_contract"
+    if (
+        ("markdown atomic notes" in text or "markdown notes" in text)
+        and ("authorized wiki root" in text or "inside the wiki root" in text or "inside the authorized wiki root" in text)
+    ):
+        return "codexarium_explicit_wiki_root_contract"
+    if (
         ("agent interface" in text or "何时使用" in text or "何时不使用" in text)
         and "skill.md" in text
         and ("输入" in text or "input" in text)
@@ -1638,6 +1892,79 @@ def _infer_synthetic_verifier_check_id(criterion: AcceptanceCriterion) -> str | 
         and ("本地工作区" in text or "local workspace" in text or "locally" in text)
     ):
         return "codexarium_local_runtime_contract"
+    if (
+        ("explicit wiki root" in text or "wiki_root" in text or ("wiki root" in text and "user" in text))
+        and ("guess" in text or "infer" in text or "real local path" in text or "local paths" in text)
+    ):
+        return "codexarium_explicit_wiki_root_contract"
+    if (
+        ("chat backup" in text or "chat-history" in text or "chat history" in text or "chat logs" in text)
+        and ("automatic scanner" in text or "automatic scanning" in text or "full-disk" in text or "full disk" in text)
+        and ("network sync" in text or "database service" in text or "background collector" in text)
+    ):
+        return "skill_scope_exclusion_boundary"
+    if (
+        ("synthetic" in text and ("fixtures" in text or "examples" in text))
+        and ("existing codexarium" in text or "existing local codexarium" in text or "real user data" in text)
+    ):
+        return "codexarium_synthetic_fixture_boundary"
+    if (
+        (
+            "references documentation" in text
+            or "reference documentation" in text
+            or "references documentation" in text
+            or "references" in text
+            or "package includes references" in text
+        )
+        and ("example input" in text or "example inputs" in text or "example output" in text or "example outputs" in text)
+        and ("evidence manifest" in text or "evidence manifest example" in text)
+    ):
+        return "codexarium_reference_documentation_contract"
+    if (
+        (
+            "references documentation" in text
+            or "reference documentation" in text
+            or "references documentation" in text
+            or "references" in text
+            or "package includes references" in text
+        )
+        and (
+            "compact evidence" in text
+            or "compact note" in text
+            or "agent interface" in text
+            or "runtime interface" in text
+            or "example input" in text
+            or "example inputs" in text
+            or "example output" in text
+            or "example outputs" in text
+        )
+        and (
+            "json manifest" in text
+            or "evidence manifest" in text
+            or "evidence manifest example" in text
+            or "example outputs" in text
+            or "example output" in text
+        )
+        and (
+            "write plan" in text
+            or "expected output" in text
+            or "safety boundaries" in text
+            or "validation model" in text
+        )
+    ):
+        return "codexarium_reference_documentation_contract"
+    if (
+        ("verifier" in text and "acceptance coverage" in text)
+        and (
+            "registry" in text
+            or "approval" in text
+            or "downstream" in text
+            or "final package" in text
+            or "final registration" in text
+            or "before final registration" in text
+        )
+    ):
+        return "downstream_verifier_acceptance_gate"
     if (
         "fixtures" in text
         and ("成功" in text or "valid" in text or "success" in text)
@@ -1719,13 +2046,19 @@ def _infer_synthetic_verifier_check_id(criterion: AcceptanceCriterion) -> str | 
     ):
         return "evidence_authorization_gate"
     if "write conflict policy" in text or "no overwrite" in text or "no-overwrite" in text or (
-        ("overwrite" in text or "overwritten" in text)
+        ("overwrite" in text or "overwrites" in text or "overwritten" in text)
         and "conflict" in text
         and ("update" in text or "append" in text or "merge" in text)
     ) or (
         "existing target" in text
         and ("update" in text or "append" in text or "merge" in text)
         and ("confirmation" in text or "confirms" in text)
+    ) or (
+        "never overwrite" in text
+        or "never overwrites" in text
+    ) or (
+        "conflict proposal" in text
+        and ("confirmation" in text or "confirm" in text or "before any conflicting write" in text)
     ):
         return "write_conflict_policy_contract"
     if "no mcp" in text or "cloud sync" in text or "database service" in text or "full-disk scan" in text:
