@@ -304,6 +304,37 @@ def test_frontdesk_api_runs_multi_round_loop_with_injected_clients(tmp_path):
     assert fetched["state"]["readiness"] == "frozen"
 
 
+def test_frontdesk_api_cumulative_summary_preserves_multi_turn_task_semantics(tmp_path):
+    api = SkillFoundryAPI(tmp_path / "runs")
+
+    api.create_frontdesk_job(
+        {
+            "job_id": "frontdesk-cumulative-summary",
+            "message": "Build a Codexarium skill for local wiki atomic notes.",
+        }
+    )
+    api.append_frontdesk_message(
+        "frontdesk-cumulative-summary",
+        {
+            "message": (
+                "I confirm the builder may choose Rust data structures, CLI arguments, fixtures, "
+                "and tests as long as the safety boundary is preserved."
+            )
+        },
+    )
+
+    summary = (
+        tmp_path
+        / "runs"
+        / "frontdesk-cumulative-summary"
+        / "frontdesk"
+        / "clarification_summary.md"
+    ).read_text(encoding="utf-8")
+    current = summary.split("## Current User Request", 1)[1].split("## User Request History", 1)[0]
+    assert "Codexarium skill for local wiki atomic notes" in current
+    assert "builder may choose Rust data structures" in current
+
+
 def test_frontdesk_plan_review_revision_feeds_next_planning_round(tmp_path):
     revised = _ready_payload()
     revised["current_understanding"] = "The user wants a skill that explains pasted pytest failures for junior developers."

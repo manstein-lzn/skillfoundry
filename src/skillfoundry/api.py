@@ -3341,7 +3341,7 @@ def _refresh_frontdesk_clarification_summary(frontdesk: FrontDeskWorkspace) -> N
     ]
     if not user_requests:
         return
-    latest_request = user_requests[-1]
+    current_request = _cumulative_frontdesk_request(user_requests)
     lines = [
         "# Clarification Summary",
         "",
@@ -3349,7 +3349,7 @@ def _refresh_frontdesk_clarification_summary(frontdesk: FrontDeskWorkspace) -> N
         "It is derived at the API boundary and is not the raw conversation transcript.",
         "",
         "## Current User Request",
-        latest_request,
+        current_request,
         "",
         "## User Request History",
     ]
@@ -3364,6 +3364,10 @@ def _refresh_frontdesk_clarification_summary(frontdesk: FrontDeskWorkspace) -> N
         ]
     )
     write_frontdesk_artifact(frontdesk, FRONTDESK_CLARIFICATION_SUMMARY_REF, "\n".join(lines).rstrip() + "\n")
+
+
+def _cumulative_frontdesk_request(user_requests: list[str]) -> str:
+    return " ".join(request for request in user_requests if request).strip()
 
 
 _FRONTDESK_SECRETISH_TOKEN_RE = re.compile(r"\b[A-Z0-9_]{12,}\b")
