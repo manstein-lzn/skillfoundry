@@ -19,6 +19,7 @@ from skillfoundry.frontdesk_goal_runtime import (
     FRONTDESK_SPEC_AUDIT_RUNTIME_RESULT_REF,
 )
 from skillfoundry.graph_v2 import GRAPH_V2_STATE_REF, validate_v2_graph_state
+from skillfoundry.frontdesk_schema import AcceptanceCriteriaSet
 from skillfoundry.frontdesk_schema import FrontDeskState
 from skillfoundry.frontdesk_schema import FrontDeskConfig
 from skillfoundry.schema import sha256_file
@@ -333,6 +334,34 @@ def test_frontdesk_api_cumulative_summary_preserves_multi_turn_task_semantics(tm
     current = summary.split("## Current User Request", 1)[1].split("## User Request History", 1)[0]
     assert "Codexarium skill for local wiki atomic notes" in current
     assert "builder may choose Rust data structures" in current
+
+
+def test_frontdesk_api_codexarium_request_gets_granular_acceptance_criteria(tmp_path):
+    api = SkillFoundryAPI(tmp_path / "runs")
+
+    api.create_frontdesk_job(
+        {
+            "job_id": "frontdesk-codexarium-criteria",
+            "message": (
+                "Build Codexarium, a clean-room local wiki atomic notes Codex skill. "
+                "It must use an explicit wiki root, include a Rust Cargo helper, reject path traversal, "
+                "avoid overwrites by emitting conflict proposals, use synthetic fixtures, and include "
+                "reference docs plus evidence manifest examples."
+            ),
+        }
+    )
+
+    criteria = AcceptanceCriteriaSet.read_yaml_file(
+        tmp_path / "runs" / "frontdesk-codexarium-criteria" / "frontdesk" / "acceptance_criteria.yaml"
+    )
+    verifier_ids = {criterion.verifier_check_id for criterion in criteria.criteria}
+    assert "rust_verifier_package_present" in verifier_ids
+    assert "rust_verifier_path_safety" in verifier_ids
+    assert "write_conflict_policy_contract" in verifier_ids
+    assert "codexarium_synthetic_fixture_boundary" in verifier_ids
+    assert "codexarium_reference_documentation_contract" in verifier_ids
+    assert "downstream_verifier_acceptance_gate" in verifier_ids
+    assert len(criteria.criteria) >= 10
 
 
 def test_frontdesk_plan_review_revision_feeds_next_planning_round(tmp_path):

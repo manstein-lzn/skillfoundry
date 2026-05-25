@@ -1212,34 +1212,142 @@ def _draft_skill_spec_from_core_need(brief: CoreNeedBrief) -> SkillSpec:
 
 
 def _acceptance_criteria_from_core_need(frontdesk: FrontDeskWorkspace, brief: CoreNeedBrief) -> AcceptanceCriteriaSet:
+    criteria = [
+        AcceptanceCriterion(
+            id="AC-001",
+            description=f"The generated package includes a readable Skill package for: {brief.desired_outcome}",
+            source_requirement=brief.problem_statement,
+            requirement_id="REQ-001",
+            test_method="static",
+            pass_condition="Verifier check package_skill_md_present passes.",
+            required_evidence=["package/SKILL.md", "verifier/verification_result.json"],
+            evidence_kind="verifier_check",
+            coverage_status="planned",
+            verifier_check_id="package_skill_md_present",
+        )
+    ]
+    criteria.extend(_domain_acceptance_criteria_from_core_need(brief, start_index=len(criteria) + 1))
+    criteria.append(
+        AcceptanceCriterion(
+            id=f"AC-{len(criteria) + 1:03d}",
+            description="Builder context must be based on frozen governed artifacts, not raw Front Desk conversation.",
+            source_requirement="Raw Front Desk conversation is provenance only.",
+            requirement_id=f"REQ-{len(criteria) + 1:03d}",
+            test_method="static",
+            pass_condition="Verifier check contextforge_raw_frontdesk_conversation_excluded passes.",
+            required_evidence=["contextforge/goal_harness_state.json", "contextforge/ledger.sqlite3"],
+            evidence_kind="verifier_check",
+            coverage_status="planned",
+            verifier_check_id="contextforge_raw_frontdesk_conversation_excluded",
+        )
+    )
     return AcceptanceCriteriaSet(
-        criteria=[
-            AcceptanceCriterion(
-                id="AC-001",
-                description=f"The generated package includes a readable Skill package for: {brief.desired_outcome}",
-                source_requirement=brief.problem_statement,
-                requirement_id="REQ-001",
-                test_method="static",
-                pass_condition="Verifier check package_skill_md_present passes.",
-                required_evidence=["package/SKILL.md", "verifier/verification_result.json"],
-                evidence_kind="verifier_check",
-                coverage_status="planned",
-                verifier_check_id="package_skill_md_present",
-            ),
-            AcceptanceCriterion(
-                id="AC-002",
-                description="Builder context must be based on frozen governed artifacts, not raw Front Desk conversation.",
-                source_requirement="Raw Front Desk conversation is provenance only.",
-                requirement_id="REQ-002",
-                test_method="static",
-                pass_condition="Verifier check contextforge_raw_frontdesk_conversation_excluded passes.",
-                required_evidence=["contextforge/goal_harness_state.json", "contextforge/ledger.sqlite3"],
-                evidence_kind="verifier_check",
-                coverage_status="planned",
-                verifier_check_id="contextforge_raw_frontdesk_conversation_excluded",
-            ),
-        ],
+        criteria=criteria,
         job_id=frontdesk.job_id,
+    )
+
+
+def _domain_acceptance_criteria_from_core_need(
+    brief: CoreNeedBrief,
+    *,
+    start_index: int,
+) -> list[AcceptanceCriterion]:
+    request_text = " ".join(
+        [
+            brief.problem_statement,
+            brief.desired_outcome,
+            brief.success_signal,
+            brief.usage_moment,
+        ]
+    )
+    if not _looks_like_codexarium_request(request_text):
+        return []
+    specs = [
+        (
+            "SKILL.md clearly states that Codexarium is for explicitly user-provided evidence/manifests/drafts and must not be used for chat backup, automatic scanning, background collection, network sync, or database service behavior.",
+            "skill_scope_exclusion_boundary",
+            ["package/SKILL.md", "package/references/*.md"],
+        ),
+        (
+            "SKILL.md requires the user to provide an explicit wiki root and forbids guessing real local paths.",
+            "codexarium_explicit_wiki_root_contract",
+            ["package/SKILL.md", "package/references/*.md"],
+        ),
+        (
+            "The package includes a Rust Cargo project for a local CLI/helper.",
+            "rust_verifier_package_present",
+            ["package/Cargo.toml", "package/src", "verifier/verification_result.json"],
+        ),
+        (
+            "The Rust helper validates taxonomy, JSON evidence manifest, compact notes, and malformed or incomplete input errors.",
+            "package_cargo_test",
+            ["verifier/cargo_test.log", "package/tests"],
+        ),
+        (
+            "The Rust helper validates planned paths, rejects path traversal, and rejects any write target outside the authorized wiki root.",
+            "rust_verifier_path_safety",
+            ["verifier/cargo_test.log", "package/src", "package/tests"],
+        ),
+        (
+            "The Rust helper detects title/path conflicts and emits a conflict proposal instead of overwriting existing files.",
+            "write_conflict_policy_contract",
+            ["package/SKILL.md", "package/src", "package/tests"],
+        ),
+        (
+            "The default write policy is no overwrite; contested writes require explicit user confirmation or an approved follow-up write plan.",
+            "write_conflict_policy_contract",
+            ["package/SKILL.md", "package/references/*.md", "package/src"],
+        ),
+        (
+            "All generated or updated notes are markdown atomic notes placed only inside the authorized wiki root.",
+            "codexarium_explicit_wiki_root_contract",
+            ["package/SKILL.md", "package/references/*.md"],
+        ),
+        (
+            "The repository includes synthetic fixtures only; no fixture is derived from existing Codexarium code, notes, docs, or user data.",
+            "codexarium_synthetic_fixture_boundary",
+            ["package/tests/fixtures", "package/examples"],
+        ),
+        (
+            "The package includes references documentation, example inputs, example outputs, and an evidence manifest example.",
+            "codexarium_reference_documentation_contract",
+            ["package/references/*.md", "package/examples"],
+        ),
+        (
+            "Before final registration, verifier and acceptance coverage are expected to pass.",
+            "downstream_verifier_acceptance_gate",
+            ["verifier/verification_result.json", "qa/acceptance_coverage_result.json"],
+        ),
+    ]
+    return [
+        AcceptanceCriterion(
+            id=f"AC-{index:03d}",
+            description=description,
+            source_requirement=brief.problem_statement,
+            requirement_id=f"REQ-{index:03d}",
+            test_method="static",
+            pass_condition=f"Verifier check {verifier_check_id} passes.",
+            required_evidence=required_evidence,
+            evidence_kind="verifier_check",
+            coverage_status="planned",
+            verifier_check_id=verifier_check_id,
+        )
+        for index, (description, verifier_check_id, required_evidence) in enumerate(specs, start=start_index)
+    ]
+
+
+def _looks_like_codexarium_request(text: str) -> bool:
+    normalized = text.lower()
+    return "codexarium" in normalized and any(
+        marker in normalized
+        for marker in (
+            "wiki",
+            "atomic note",
+            "atomic notes",
+            "compact evidence",
+            "evidence manifest",
+            "manifest",
+        )
     )
 
 
