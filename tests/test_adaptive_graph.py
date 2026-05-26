@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 
 from forgeunit_skillfoundry import (
     ADAPTIVE_GRAPH_SCHEMA_VERSION,
@@ -24,7 +25,126 @@ from skillfoundry.adaptive_workspace import (
 from skillfoundry.bundle import BUNDLE_MANIFEST_REF
 from skillfoundry.bundle_verifier import BUNDLE_VERIFICATION_RESULT_REF, BundleVerificationResult
 from skillfoundry.graph_v2 import V2Status, validate_v2_graph_state
+from skillfoundry.product_contract import (
+    PRODUCT_ACCEPTANCE_MATRIX_REF,
+    PRODUCT_GRADE_REPORT_REF,
+    PRODUCT_REPAIR_PACKET_REF,
+    ProductAcceptanceMatrix,
+    ProductGradeReport,
+)
+from skillfoundry.product_contract_compiler import ProductContractCompiler
+from skillfoundry.product_runtime_checks import PRODUCT_RUNTIME_CHECK_PLAN_REF, RuntimeCheckCommand, RuntimeCheckPlan
+from skillfoundry.schema import SkillSpec
 from skillfoundry.workspace import JobWorkspace, initialize_job_workspace
+
+
+def product_runtime_skill_spec() -> SkillSpec:
+    return SkillSpec(
+        skill_id="adaptive-product-runtime",
+        title="Adaptive product runtime skill",
+        description=(
+            "Build a Codex skill with a Rust runtime helper that validates JSON write plans, "
+            "rejects duplicate target paths and duplicate titles, and emits local file conflict proposals."
+        ),
+        trigger_scenarios=["The user provides a JSON manifest and asks for local Markdown write proposals."],
+        non_trigger_scenarios=["Do not scan raw chat or unauthorized local files."],
+        required_inputs=["JSON manifest", "write plan", "wiki root"],
+        expected_outputs=["Conflict proposals without overwriting files."],
+        constraints=["No overwrite; reject unsafe paths; validate structured JSON."],
+        acceptance_criteria=["Runtime matrix checks cover duplicate path and duplicate title conflicts."],
+        reference_materials=[],
+        security_notes=["Only use explicitly provided files."],
+    )
+
+
+def write_valid_prompt_bundle(workspace: JobWorkspace) -> None:
+    workspace.resolve_path("package/SKILL.md").write_text("# Adaptive Product Skill\n", encoding="utf-8")
+    workspace.resolve_path(BUNDLE_MANIFEST_REF).write_text(
+        json.dumps(
+            {
+                "schema_version": "skillfoundry.bundle.v1",
+                "bundle_id": workspace.job_id,
+                "bundle_type": "prompt_only",
+                "entrypoint": "SKILL.md",
+                "capability_surface": {},
+                "runtime_assets": [],
+                "data_assets": [],
+                "references": [],
+                "environment": {},
+                "permissions": {},
+                "verification": {},
+                "distribution": {},
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def write_product_runtime_repair_evidence(workspace: JobWorkspace) -> None:
+    workspace.resolve_path("package/src").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("package/tests").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("package/scripts").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("package/src/lib.rs").write_text(
+        """
+use serde::Deserialize;
+use serde_json;
+
+#[derive(Deserialize)]
+struct WritePlanItem { target_path: String, title: String }
+
+pub fn validate_write_plan(input: &str) -> Result<(), String> {
+    let plan: Vec<WritePlanItem> = serde_json::from_str(input).map_err(|err| err.to_string())?;
+    let mut paths = std::collections::BTreeSet::new();
+    let mut titles = std::collections::BTreeSet::new();
+    for item in plan {
+        if !paths.insert(item.target_path) { return Err("duplicate target path".to_string()); }
+        if !titles.insert(item.title) { return Err("duplicate title".to_string()); }
+    }
+    Ok(())
+}
+""",
+        encoding="utf-8",
+    )
+    workspace.resolve_path("package/tests/helper_contract.rs").write_text(
+        """
+#[test]
+fn rejects_same_plan_duplicate_path() {
+    assert!("duplicate target path fixture covers write plan".contains("duplicate target path"));
+}
+
+#[test]
+fn rejects_same_plan_duplicate_title() {
+    assert!("duplicate title fixture covers write plan".contains("duplicate title"));
+}
+""",
+        encoding="utf-8",
+    )
+    workspace.resolve_path("package/scripts/product_matrix_check.py").write_text(
+        """
+import sys
+
+print(sys.argv[1])
+raise SystemExit(0)
+""",
+        encoding="utf-8",
+    )
+    matrix = ProductAcceptanceMatrix.read_json_file(workspace.resolve_path(PRODUCT_ACCEPTANCE_MATRIX_REF))
+    runtime_item_ids = sorted(item.item_id for item in matrix.items if item.item_id.startswith("PG-RUNTIME-"))
+    RuntimeCheckPlan(
+        commands=[
+            RuntimeCheckCommand(
+                check_id=f"runtime-{index:02d}",
+                item_id=item_id,
+                command=[sys.executable, "scripts/product_matrix_check.py", item_id],
+                expected_exit_code=0,
+                cwd="package",
+            )
+            for index, item_id in enumerate(runtime_item_ids, start=1)
+        ]
+    ).write_json_file(workspace.resolve_path(PRODUCT_RUNTIME_CHECK_PLAN_REF))
 
 
 def test_adaptive_graph_happy_path_reaches_closure_in_two_iterations(tmp_path: Path) -> None:
@@ -200,6 +320,72 @@ def test_adaptive_graph_does_not_close_on_worker_self_reported_pass_with_invalid
     assert bundle_result.manifest_status == "invalid"
     assert bundle_result.passed is False
     assert any("bundle_manifest_valid" in failure for failure in read_observation_report(workspace, 1).failures)
+
+
+def test_adaptive_graph_routes_product_grade_failure_to_repair_contract(tmp_path: Path) -> None:
+    workspace = initialize_job_workspace(
+        tmp_path / "runs",
+        "adaptive-product-grade-001",
+        skill_spec=product_runtime_skill_spec(),
+    )
+    ProductContractCompiler().compile(workspace)
+    write_valid_prompt_bundle(workspace)
+    seen_objectives: list[str] = []
+
+    def product_repair_worker(workspace: JobWorkspace, contract) -> AdaptiveWorkUnitResult:
+        seen_objectives.append(contract.next_objective)
+        if PRODUCT_REPAIR_PACKET_REF in contract.visible_refs:
+            write_product_runtime_repair_evidence(workspace)
+            return AdaptiveWorkUnitResult(
+                produced_artifacts=[
+                    "package/src/lib.rs",
+                    "package/tests/helper_contract.rs",
+                    PRODUCT_RUNTIME_CHECK_PLAN_REF,
+                ],
+                changed_refs=[
+                    "package/src/lib.rs",
+                    "package/tests/helper_contract.rs",
+                    PRODUCT_RUNTIME_CHECK_PLAN_REF,
+                ],
+                commands_run=["python package/scripts/product_matrix_check.py PG-RUNTIME-CLI-OK-EXIT-CODE"],
+                tests_run=["ProductGradeGate runtime matrix checks"],
+                worker_claims=["Repaired product-grade runtime helper evidence."],
+                verifier_evidence=[PRODUCT_RUNTIME_CHECK_PLAN_REF, "package/src/lib.rs", "package/tests/helper_contract.rs"],
+                verification_status="passed",
+            )
+        return AdaptiveWorkUnitResult(
+            produced_artifacts=["adaptive/attempts/001/closure_evidence.md"],
+            changed_refs=["adaptive/attempts/001/closure_evidence.md"],
+            worker_claims=["Initial closure attempt before product gate observation."],
+            verifier_evidence=["adaptive/attempts/001/closure_evidence.md"],
+            verification_status="passed",
+        )
+
+    config = AdaptiveGraphConfig(
+        runs_root=tmp_path / "runs",
+        job_id=workspace.job_id,
+        max_iterations=3,
+        repeated_failure_threshold=3,
+    )
+
+    result = run_adaptive_graph(config, worker=product_repair_worker)
+
+    state = result.state
+    assert state["contextforge"]["adaptive_latest_iteration"] == 2
+    assert state["contextforge"]["adaptive_latest_route"] == "closure"
+    assert state["contextforge"]["adaptive_product_grade_passed"] is True
+    assert state["refs"]["product_grade_report"] == PRODUCT_GRADE_REPORT_REF
+    assert state["refs"]["product_repair_packet"] == PRODUCT_REPAIR_PACKET_REF
+    first_observation = read_observation_report(workspace, 1)
+    assert any("product_grade:P0-runtime-matrix-checks-failed" in failure for failure in first_observation.failures)
+    second_contract = read_next_step_contract(workspace, 2)
+    assert PRODUCT_REPAIR_PACKET_REF in second_contract.visible_refs
+    assert "product_gate:P0-runtime-matrix-checks-failed" in second_contract.next_objective
+    assert seen_objectives[1] == second_contract.next_objective
+    product_report = ProductGradeReport.read_json_file(workspace.resolve_path(PRODUCT_GRADE_REPORT_REF, must_exist=True))
+    assert product_report.product_grade is True
+    assert read_state_correction(workspace, 1).next_route == "repair"
+    assert read_state_correction(workspace, 2).next_route == "closure"
 
 
 def test_adaptive_graph_state_keeps_worker_strings_in_artifacts_not_contextforge(tmp_path: Path) -> None:

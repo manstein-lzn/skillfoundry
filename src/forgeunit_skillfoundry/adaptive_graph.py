@@ -35,6 +35,13 @@ from skillfoundry.adaptive_workspace import (
 from skillfoundry.bundle import BUNDLE_MANIFEST_REF
 from skillfoundry.bundle_verifier import BUNDLE_VERIFICATION_RESULT_REF, BundleVerifier
 from skillfoundry.graph_v2 import SkillFoundryV2State, V2Route, V2Stage, V2Status, validate_v2_graph_state
+from skillfoundry.product_contract import (
+    PRODUCT_ACCEPTANCE_MATRIX_REF,
+    PRODUCT_GRADE_REPORT_REF,
+    PRODUCT_REPAIR_PACKET_REF,
+    ProductRepairPacket,
+)
+from skillfoundry.product_grade_gate import ProductGradeGate
 from skillfoundry.security import PathSecurityError, assert_under_root, validate_relative_path
 from skillfoundry.workspace import JobWorkspace, initialize_job_workspace
 
@@ -350,6 +357,33 @@ def _collect_observation_node(config: AdaptiveGraphConfig) -> Any:
             if bundle_result.manifest_status != "missing" and not bundle_result.passed
             else "not_run"
         )
+        product_grade_ran = _product_acceptance_matrix_exists(workspace)
+        if product_grade_ran:
+            try:
+                product_report = ProductGradeGate().evaluate(workspace)
+            except Exception as exc:
+                failures.append(f"product_grade_gate_error: {exc}")
+                contextforge["adaptive_product_grade_passed"] = False
+                contextforge["adaptive_product_grade_error"] = type(exc).__name__
+                verification_status = "failed"
+            else:
+                verifier_evidence = _dedupe_refs(
+                    [*verifier_evidence, PRODUCT_GRADE_REPORT_REF, PRODUCT_REPAIR_PACKET_REF]
+                )
+                product_finding_ids = [finding.finding_id for finding in product_report.findings]
+                contextforge["adaptive_product_grade_report_ref"] = PRODUCT_GRADE_REPORT_REF
+                contextforge["adaptive_product_repair_packet_ref"] = PRODUCT_REPAIR_PACKET_REF
+                contextforge["adaptive_product_grade_passed"] = product_report.product_grade
+                contextforge["adaptive_product_grade_finding_ids"] = product_finding_ids
+                if product_report.product_grade:
+                    contextforge["adaptive_product_grade_status"] = "passed"
+                else:
+                    contextforge["adaptive_product_grade_status"] = "failed"
+                    verification_status = "failed"
+                    failures.extend(
+                        f"product_grade:{finding.finding_id}: {finding.title}"
+                        for finding in product_report.findings
+                    )
         observation = ObservationReport(
             job_id=config.job_id,
             iteration=iteration,
@@ -368,6 +402,9 @@ def _collect_observation_node(config: AdaptiveGraphConfig) -> Any:
         refs = dict(state.get("refs", {}))
         refs["latest_observation_report"] = adaptive_observation_ref(iteration)
         refs["bundle_verification_result"] = BUNDLE_VERIFICATION_RESULT_REF
+        if product_grade_ran:
+            refs["product_grade_report"] = PRODUCT_GRADE_REPORT_REF
+            refs["product_repair_packet"] = PRODUCT_REPAIR_PACKET_REF
         contextforge["adaptive_current_observation_ref"] = adaptive_observation_ref(iteration)
         contextforge["adaptive_bundle_verification_result_ref"] = BUNDLE_VERIFICATION_RESULT_REF
         contextforge["adaptive_bundle_verification_passed"] = bundle_result.passed
@@ -597,6 +634,14 @@ def _build_next_step_contract(
     route = contextforge.get("adaptive_latest_route") if isinstance(contextforge, dict) else None
     attempt_dir = f"adaptive/attempts/{iteration:03d}"
     if route == "repair":
+        product_repair_contract = _build_product_repair_next_step_contract(
+            workspace,
+            config=config,
+            iteration=iteration,
+            attempt_dir=attempt_dir,
+        )
+        if product_repair_contract is not None:
+            return product_repair_contract
         objective = "Repair the failed adaptive work unit with the smallest evidence-producing change."
         outputs = [f"{attempt_dir}/repair_evidence.md"]
         why_now = "The previous observation reported failures."
@@ -627,6 +672,88 @@ def _build_next_step_contract(
         stop_conditions=["Spec contradiction found.", "Path safety violation detected."],
         estimated_followups=["Observe artifacts and correct the capability state estimate."],
     )
+
+
+def _build_product_repair_next_step_contract(
+    workspace: JobWorkspace,
+    *,
+    config: AdaptiveGraphConfig,
+    iteration: int,
+    attempt_dir: str,
+) -> NextStepContract | None:
+    packet = _read_optional_product_repair_packet(workspace)
+    if packet is None or not packet.repair_required:
+        return None
+    repair_item_ids = [item.finding_id for item in packet.repair_items]
+    if not repair_item_ids:
+        repair_item_ids = [finding.finding_id for finding in packet.findings]
+    repair_summary = _short_repair_summary(repair_item_ids)
+    return NextStepContract(
+        job_id=config.job_id,
+        iteration=iteration,
+        current_state_ref=ADAPTIVE_CAPABILITY_STATE_REF,
+        next_objective=f"Repair product-grade findings: {repair_summary}.",
+        why_now="ProductGradeGate produced a failing repair packet for the latest work-unit observation.",
+        risk_if_too_large="Fixing unrelated package surfaces can hide which product-grade finding was actually repaired.",
+        risk_if_too_small="Changing only documentation or claims may leave ProductGradeGate findings unresolved.",
+        allowed_scope=["package", "qa", attempt_dir],
+        visible_refs=[
+            "skill_spec.yaml",
+            "verification_spec.yaml",
+            ADAPTIVE_CAPABILITY_STATE_REF,
+            PRODUCT_GRADE_REPORT_REF,
+            PRODUCT_REPAIR_PACKET_REF,
+        ],
+        expected_outputs=[
+            "package",
+            PRODUCT_GRADE_REPORT_REF,
+            PRODUCT_REPAIR_PACKET_REF,
+        ],
+        exit_criteria=[
+            "ProductGradeGate is rerun after the work unit.",
+            "qa/product_grade_report.json reports product_grade=true.",
+            "qa/product_repair_packet.json reports repair_required=false.",
+        ],
+        stop_conditions=[
+            "Repair requires changing frozen user requirements.",
+            "Repair would need access outside the allowed package or qa refs.",
+        ],
+        estimated_followups=["Observe ProductGradeGate evidence and correct the adaptive state estimate."],
+        metadata={
+            "product_grade_report_ref": PRODUCT_GRADE_REPORT_REF,
+            "product_repair_packet_ref": PRODUCT_REPAIR_PACKET_REF,
+            "product_repair_item_ids": repair_item_ids[:20],
+            "product_required_tests": packet.required_tests[:20],
+        },
+    )
+
+
+def _read_optional_product_repair_packet(workspace: JobWorkspace) -> ProductRepairPacket | None:
+    path = _optional_workspace_path(workspace, PRODUCT_REPAIR_PACKET_REF)
+    if not path.exists():
+        return None
+    try:
+        return ProductRepairPacket.read_json_file(path)
+    except Exception:
+        return None
+
+
+def _short_repair_summary(repair_item_ids: list[str]) -> str:
+    if not repair_item_ids:
+        return "product repair packet has no item ids"
+    summary = ", ".join(repair_item_ids[:4])
+    if len(repair_item_ids) > 4:
+        summary += f", and {len(repair_item_ids) - 4} more"
+    return summary
+
+
+def _product_acceptance_matrix_exists(workspace: JobWorkspace) -> bool:
+    return _optional_workspace_path(workspace, PRODUCT_ACCEPTANCE_MATRIX_REF).is_file()
+
+
+def _optional_workspace_path(workspace: JobWorkspace, ref: str) -> Path:
+    safe = validate_relative_path(ref)
+    return workspace.root.joinpath(*safe.parts)
 
 
 def _decide_after_observation(
@@ -677,6 +804,9 @@ def _known_good(workspace: JobWorkspace, route: str) -> list[str]:
         result.append("package/SKILL.md exists.")
     if workspace.resolve_path("package/skillfoundry.bundle.json").exists():
         result.append("package/skillfoundry.bundle.json exists.")
+    product_report_path = _optional_workspace_path(workspace, PRODUCT_GRADE_REPORT_REF)
+    if product_report_path.exists():
+        result.append("ProductGradeGate report exists.")
     if route == "closure":
         result.append("Independent bundle verification passed.")
     return result

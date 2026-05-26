@@ -748,6 +748,55 @@ git diff --check
 - 记录哪些 primitives 可能应下沉到底座；
 - commit 完成。
 
+## Phase 8.5: ProductGradeGate Adaptive Repair Wiring
+
+### 目标
+
+把产品级门禁接入 adaptive steering 的真实闭环：
+
+```text
+ProductGradeGate
+  -> ObservationReport
+  -> StateCorrection
+  -> ProductRepairPacket-aware NextStepContract
+  -> work-unit worker
+  -> ProductGradeGate rerun
+```
+
+### 当前 MVP
+
+已在 `src/forgeunit_skillfoundry/adaptive_graph.py` 中完成最小接线：
+
+- 如果 workspace 存在 `product_contract/product_acceptance_matrix.json`，
+  每轮 `collect_observation` 会运行 `ProductGradeGate`；
+- `qa/product_grade_report.json` 和 `qa/product_repair_packet.json`
+  会进入 adaptive refs / verifier evidence；
+- product-grade 失败会作为 observation failure 进入 `StateCorrection`；
+- 下一轮 route 为 `repair` 时，`NextStepContract` 会读取
+  `qa/product_repair_packet.json`，把 repair item IDs、required tests、
+  product report refs 放进下一步 contract；
+- work-unit worker 完成修复后，下一轮 observation 会重新运行
+  `ProductGradeGate`，通过后进入 closure。
+
+### 验证覆盖
+
+新增测试覆盖：
+
+```text
+tests/test_adaptive_graph.py::test_adaptive_graph_routes_product_grade_failure_to_repair_contract
+```
+
+该测试构造一个 ProductGradeGate 失败的 runtime-helper workspace，
+第一轮 observation 记录 product-grade failure，
+第二轮 NextStepContract 读取 product repair packet，
+worker 写入修复证据后 ProductGradeGate 通过并 closure。
+
+### 仍然不是
+
+这一步还不是默认 live Codex 执行路径。
+它把 adaptive graph 和 ProductGradeGate / ProductRepairPacket 接通，
+真实 Codex exec worker 仍应作为 work-unit worker 插入该 contract。
+
 ## Phase 9: Substrate Extraction Assessment
 
 ### 目标
