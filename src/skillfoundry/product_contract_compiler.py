@@ -29,6 +29,8 @@ from .workspace import JobWorkspace
 SOURCE_REFS = (
     "skill_spec.yaml",
     "acceptance_criteria.yaml",
+    "frontdesk/product_semantic_lock.json",
+    "frontdesk/product_semantic_coverage.json",
     "frontdesk/core_need_brief.json",
     "frontdesk/solution_plan.json",
     "frontdesk/draft_skill_spec.yaml",

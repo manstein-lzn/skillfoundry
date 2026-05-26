@@ -88,6 +88,7 @@ FRONTDESK_READINESS = frozenset(
         "failed",
     }
 )
+PRODUCT_SEMANTIC_COVERAGE_STATUSES = frozenset({"not_started", "passed", "failed"})
 FRONTDESK_NEXT_ACTIONS = frozenset(
     {
         "none",
@@ -216,6 +217,98 @@ class ConversationTurn(SchemaModel):
         _require_non_empty_str(self.content, "content")
         _require_non_empty_str(self.created_at, "created_at")
         _require_json_mapping(self.metadata, "metadata")
+
+
+@dataclass
+class ProductSemanticLock(SchemaModel):
+    """Structured, governed product intent extracted from Front Desk turns."""
+
+    job_id: str
+    semantic_summary: str
+    requirement_clauses: list[str]
+    product_identity_terms: list[str] = field(default_factory=list)
+    domain_terms: list[str] = field(default_factory=list)
+    implementation_requirements: list[str] = field(default_factory=list)
+    delivery_requirements: list[str] = field(default_factory=list)
+    must_not: list[str] = field(default_factory=list)
+    source_ref: str = "frontdesk/conversation.jsonl"
+    source_turn_ids: list[str] = field(default_factory=list)
+    source_char_count: int = 0
+    sanitized_char_count: int = 0
+    redaction_applied: bool = False
+    truncated: bool = False
+    compression_strategy: str = "requirement_preserving_distillation"
+    omission_warnings: list[str] = field(default_factory=list)
+    source_trace: list[dict[str, JsonValue]] = field(default_factory=list)
+    schema_version: str = "skillfoundry.product_semantic_lock.v1"
+
+    def validate(self) -> None:
+        super().validate()
+        _require_non_empty_str(self.job_id, "job_id")
+        _require_non_empty_str(self.semantic_summary, "semantic_summary")
+        _require_str_list(self.requirement_clauses, "requirement_clauses")
+        _require_str_list(self.product_identity_terms, "product_identity_terms")
+        _require_str_list(self.domain_terms, "domain_terms")
+        _require_str_list(self.implementation_requirements, "implementation_requirements")
+        _require_str_list(self.delivery_requirements, "delivery_requirements")
+        _require_str_list(self.must_not, "must_not")
+        _require_non_empty_str(self.source_ref, "source_ref")
+        _require_str_list(self.source_turn_ids, "source_turn_ids")
+        _require_non_negative_int(self.source_char_count, "source_char_count")
+        _require_non_negative_int(self.sanitized_char_count, "sanitized_char_count")
+        _require_bool(self.redaction_applied, "redaction_applied")
+        _require_bool(self.truncated, "truncated")
+        _require_non_empty_str(self.compression_strategy, "compression_strategy")
+        _require_str_list(self.omission_warnings, "omission_warnings")
+        if not isinstance(self.source_trace, list):
+            raise SchemaValidationError("source_trace must be a list")
+        for index, item in enumerate(self.source_trace):
+            _require_json_mapping(item, f"source_trace[{index}]")
+
+
+@dataclass
+class ProductSemanticCoverageReport(SchemaModel):
+    """Coverage check proving the semantic lock preserved key request signals."""
+
+    job_id: str
+    status: str
+    semantic_lock_ref: str = "frontdesk/product_semantic_lock.json"
+    source_ref: str = "frontdesk/conversation.jsonl"
+    required_terms: list[str] = field(default_factory=list)
+    matched_terms: list[str] = field(default_factory=list)
+    missing_terms: list[str] = field(default_factory=list)
+    source_turn_ids: list[str] = field(default_factory=list)
+    source_char_count: int = 0
+    semantic_summary_char_count: int = 0
+    truncated: bool = False
+    coverage_ratio: float = 1.0
+    checks: list[dict[str, JsonValue]] = field(default_factory=list)
+    source_sha256: str | None = None
+    semantic_lock_sha256: str | None = None
+    schema_version: str = "skillfoundry.product_semantic_coverage.v1"
+
+    def validate(self) -> None:
+        super().validate()
+        _require_non_empty_str(self.job_id, "job_id")
+        _require_enum(self.status, "status", PRODUCT_SEMANTIC_COVERAGE_STATUSES)
+        _require_non_empty_str(self.semantic_lock_ref, "semantic_lock_ref")
+        _require_non_empty_str(self.source_ref, "source_ref")
+        _require_str_list(self.required_terms, "required_terms")
+        _require_str_list(self.matched_terms, "matched_terms")
+        _require_str_list(self.missing_terms, "missing_terms")
+        _require_str_list(self.source_turn_ids, "source_turn_ids")
+        _require_non_negative_int(self.source_char_count, "source_char_count")
+        _require_non_negative_int(self.semantic_summary_char_count, "semantic_summary_char_count")
+        _require_bool(self.truncated, "truncated")
+        _require_score(self.coverage_ratio, "coverage_ratio")
+        if not isinstance(self.checks, list):
+            raise SchemaValidationError("checks must be a list")
+        for index, item in enumerate(self.checks):
+            _require_json_mapping(item, f"checks[{index}]")
+        if self.source_sha256 is not None:
+            _require_sha256(self.source_sha256, "source_sha256")
+        if self.semantic_lock_sha256 is not None:
+            _require_sha256(self.semantic_lock_sha256, "semantic_lock_sha256")
 
 
 @dataclass

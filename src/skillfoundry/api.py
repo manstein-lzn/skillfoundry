@@ -23,6 +23,12 @@ from .acceptance import MANUAL_ACCEPTANCE_RECORD_REF
 from .contracts import BUILD_NODE_CONTRACT_REF, GOAL_CONTRACT_REF, VERIFICATION_GATE_REF
 from .frontdesk_loop import FrontDeskLoopResult, run_frontdesk_round
 from .frontdesk_schema import ConversationTurn, FrontDeskConfig, FrontDeskState, PlanReviewRecord
+from .frontdesk_semantics import (
+    build_product_semantic_coverage_report,
+    compile_product_semantic_lock,
+    product_semantic_lock_markdown,
+    sanitize_frontdesk_request,
+)
 from .frontdesk_v2 import (
     FRONTDESK_V2_GOAL_CONTRACT_REF,
     FRONTDESK_V2_GOVERNANCE_REPORT_REF,
@@ -32,6 +38,8 @@ from .frontdesk_workspace import (
     FRONTDESK_BUDGET_REF,
     FRONTDESK_CLARIFICATION_SUMMARY_REF,
     FRONTDESK_CONVERSATION_REF,
+    FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF,
+    FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
     FrontDeskWorkspace,
     append_conversation_turn,
     initialize_frontdesk_workspace,
@@ -3334,51 +3342,25 @@ def _plan_revision_message(*, reason: str, requested_changes: list[str]) -> str:
 
 def _refresh_frontdesk_clarification_summary(frontdesk: FrontDeskWorkspace) -> None:
     turns = read_conversation_turns(frontdesk)
-    user_requests = [
-        _sanitized_frontdesk_request(turn.content)
-        for turn in turns
-        if turn.role == "user" and _sanitized_frontdesk_request(turn.content)
-    ]
-    if not user_requests:
+    semantic_lock = compile_product_semantic_lock(job_id=frontdesk.job_id, turns=turns)
+    if semantic_lock is None:
         return
-    current_request = _cumulative_frontdesk_request(user_requests)
-    lines = [
-        "# Clarification Summary",
-        "",
-        "This governed summary preserves the user's task semantics for Front Desk planning.",
-        "It is derived at the API boundary and is not the raw conversation transcript.",
-        "",
-        "## Current User Request",
-        current_request,
-        "",
-        "## User Request History",
-    ]
-    for index, request in enumerate(user_requests, start=1):
-        lines.append(f"- Request {index}: {request}")
-    lines.extend(
-        [
-            "",
-            "## Privacy Boundary",
-            "- Raw conversation turns remain in frontdesk/conversation.jsonl as provenance only.",
-            "- Goal Harness nodes consume this governed summary and refs, not the raw transcript.",
-        ]
+    coverage = build_product_semantic_coverage_report(
+        job_id=frontdesk.job_id,
+        turns=turns,
+        semantic_lock=semantic_lock,
     )
-    write_frontdesk_artifact(frontdesk, FRONTDESK_CLARIFICATION_SUMMARY_REF, "\n".join(lines).rstrip() + "\n")
-
-
-def _cumulative_frontdesk_request(user_requests: list[str]) -> str:
-    return " ".join(request for request in user_requests if request).strip()
-
-
-_FRONTDESK_SECRETISH_TOKEN_RE = re.compile(r"\b[A-Z0-9_]{12,}\b")
+    write_frontdesk_artifact(frontdesk, FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF, semantic_lock)
+    write_frontdesk_artifact(frontdesk, FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF, coverage)
+    write_frontdesk_artifact(
+        frontdesk,
+        FRONTDESK_CLARIFICATION_SUMMARY_REF,
+        product_semantic_lock_markdown(semantic_lock, coverage),
+    )
 
 
 def _sanitized_frontdesk_request(text: str) -> str:
-    normalized = re.sub(r"\s+", " ", text).strip()
-    if not normalized:
-        return ""
-    normalized = _FRONTDESK_SECRETISH_TOKEN_RE.sub("[redacted-token]", normalized)
-    return normalized[:1000].rstrip()
+    return sanitize_frontdesk_request(text)
 
 
 def _frontdesk_review_actions(state: FrontDeskState | None) -> list[dict[str, JsonValue]]:

@@ -485,10 +485,13 @@ def _normalize_marker(value: Any) -> str:
 
 
 def _semantic_fidelity_summary(workspace: Path, scenario: Scenario, *, assess_package: bool) -> dict[str, Any]:
-    markers = scenario.semantic_markers or _semantic_markers_from_payload(None, scenario.scenario_id)
+    raw_markers = scenario.semantic_markers or _semantic_markers_from_payload(None, scenario.scenario_id)
+    markers = tuple(_normalize_marker(marker) for marker in raw_markers if _normalize_marker(marker))[:8]
     source_text = _read_refs_text(
         workspace,
         (
+            "frontdesk/product_semantic_lock.json",
+            "frontdesk/product_semantic_coverage.json",
             "frontdesk/core_need_brief.json",
             "frontdesk/draft_skill_spec.yaml",
             "frontdesk/solution_plan.json",
@@ -530,7 +533,7 @@ def _read_refs_text(workspace: Path, refs: tuple[str, ...]) -> str:
 
 
 def _matched_marker_count(text: str, markers: tuple[str, ...]) -> int:
-    normalized = re.sub(r"[^a-z0-9]+", " ", text.lower())
+    normalized = re.sub(r"[^a-z0-9]+", "", text.lower())
     return sum(1 for marker in markers if marker and marker in normalized)
 
 

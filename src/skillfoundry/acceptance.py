@@ -1201,15 +1201,36 @@ def _evaluate_synthetic_verifier_check(
                     (
                         "target path",
                         "target_path",
+                        "note path",
+                        "note paths",
+                        "note_path",
                         "destination path",
                         "destination paths",
                         "destination",
                         "relative_path",
+                        "relative markdown path",
+                        "relative markdown paths",
+                        "planned note",
+                        "planned notes",
+                        "planned_notes",
                         "planned paths",
+                        "write plan",
                         "write target",
+                        "path safety",
                     ),
                 ),
-                ("absolute path rejection", ("absolute", "relative", "destination path")),
+                (
+                    "absolute path rejection",
+                    (
+                        "absolute",
+                        "relative",
+                        "destination path",
+                        "note path",
+                        "note_path",
+                        "relative markdown path",
+                        "path safety",
+                    ),
+                ),
                 ("parent traversal rejection", ("parent", "..", "parentdir")),
                 ("unsafe path fixture", ("unsafe", "traversal")),
             ],
@@ -1345,6 +1366,7 @@ def _evaluate_synthetic_verifier_check(
             "package/references/codexarium_reference.md",
             "package/references/acceptance_coverage.md",
             "package/references/safety.md",
+            "package/references/safety_boundaries.md",
             "package/references/schema.md",
         )
         _require_text_groups(
@@ -1360,9 +1382,26 @@ def _evaluate_synthetic_verifier_check(
                         "supplied by the user",
                         "provided by the user",
                         "user must supply",
+                        "user must provide",
+                        "user has explicitly named",
+                        "explicitly named",
                     ),
                 ),
-                ("do not guess root", ("do not guess", "must not guess", "not guess", "infer a wiki location")),
+                (
+                    "do not guess root",
+                    (
+                        "do not guess",
+                        "must not guess",
+                        "not guess",
+                        "never guess",
+                        "guessing a real local path",
+                        "infer a wiki location",
+                        "must not infer this path",
+                        "must not infer this root",
+                        "must not infer",
+                        "not infer",
+                    ),
+                ),
             ],
         )
     elif check_id == "codexarium_synthetic_fixture_boundary":
@@ -1393,9 +1432,9 @@ def _evaluate_synthetic_verifier_check(
                     "no existing Codexarium dependency",
                     ("existing codexarium", "existing local codexarium", "existing codexarium code", "does not rely"),
                 ),
-                ("no real user data", ("real user data", "not real user", "not user data", "user data")),
             ],
         )
+        _require_codexarium_no_real_user_data_boundary(text, failures)
         _require_any_glob(workspace, evidence_refs, failures, "synthetic fixture or example file", "package/**/fixtures/**/*")
     elif check_id == "codexarium_reference_documentation_contract":
         _require_any_glob(workspace, evidence_refs, failures, "reference documentation file", "package/references/*.md")
@@ -2445,6 +2484,39 @@ def _require_any_text_group(
     normalized_terms = [_normalized_text(term) for term in alternatives]
     if not any(term in text for term in normalized_terms):
         failures.append(f"{label}: expected one of {', '.join(alternatives)}")
+
+
+def _require_codexarium_no_real_user_data_boundary(text: str, failures: list[str]) -> None:
+    explicit_no_user_data_terms = (
+        "real user data",
+        "not real user",
+        "not user data",
+        "no user data",
+        "without user data",
+    )
+    synthetic_boundary_terms = (
+        "fixtures, examples, and tests in this package are synthetic",
+        "fixtures and examples in this package are synthetic",
+        "all json fixtures in this directory are synthetic data",
+        "synthetic data created for the codexarium skill package",
+        "synthetic fixtures",
+        "synthetic examples",
+    )
+    clean_room_derivation_terms = (
+        "not derived from any existing",
+        "not derived from existing",
+        "not copied from existing",
+        "do not read or copy any existing codexarium",
+        "clean-room boundary",
+    )
+    if _text_has_any(text, explicit_no_user_data_terms):
+        return
+    if _text_has_any(text, synthetic_boundary_terms) and _text_has_any(text, clean_room_derivation_terms):
+        return
+    failures.append(
+        "no real user data: expected an explicit no-user-data statement, or synthetic fixtures/examples "
+        "paired with a clean-room non-derivation statement"
+    )
 
 
 def _text_has_any(text: str, alternatives: tuple[str, ...]) -> bool:

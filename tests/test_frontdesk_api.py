@@ -557,6 +557,81 @@ def test_frontdesk_api_offline_goal_harness_preserves_request_semantics_in_froze
     assert "frontdesk-governed-skill" not in skill_spec_text
 
 
+def test_frontdesk_api_semantic_lock_preserves_requirements_after_1000_chars(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    api = SkillFoundryAPI(tmp_path / "runs")
+
+    prefix = (
+        "Build Codexarium, a clean-room Codex skill for turning explicit evidence bundles into "
+        "compact local wiki knowledge. "
+        + (
+            "The requester wants careful product judgment, clean provenance, synthetic examples, "
+            "and a practical workflow that avoids treating raw chat logs as the product. "
+        )
+        * 9
+    )
+    tail = (
+        "The skill must write Obsidian-friendly Markdown pages; handle conflicts, stale claims, "
+        "and thin evidence; include practical install/use guidance; include a small Rust/Cargo "
+        "helper layer without telling the builder exactly how to implement it."
+    )
+    message = prefix + tail
+    assert message.index("Obsidian-friendly") > 1000
+
+    created = api.handle(
+        "POST",
+        "/frontdesk/jobs",
+        body={"job_id": "frontdesk-long-semantic-request", "message": message},
+    ).json()
+    assert created["status"] == "await_user_plan_review"
+
+    run_root = tmp_path / "runs" / "frontdesk-long-semantic-request"
+    semantic_lock = json.loads((run_root / "frontdesk" / "product_semantic_lock.json").read_text(encoding="utf-8"))
+    semantic_coverage = json.loads(
+        (run_root / "frontdesk" / "product_semantic_coverage.json").read_text(encoding="utf-8")
+    )
+    summary = (run_root / "frontdesk" / "clarification_summary.md").read_text(encoding="utf-8")
+    brief = json.loads((run_root / "frontdesk" / "core_need_brief.json").read_text(encoding="utf-8"))
+    draft_spec_text = (run_root / "frontdesk" / "draft_skill_spec.yaml").read_text(encoding="utf-8")
+    solution_plan_text = (run_root / "frontdesk" / "solution_plan.json").read_text(encoding="utf-8")
+
+    assert semantic_lock["truncated"] is False
+    assert semantic_lock["source_char_count"] == len(message)
+    assert semantic_coverage["status"] == "passed"
+    assert semantic_coverage["truncated"] is False
+    assert semantic_coverage["missing_terms"] == []
+    assert "No fixed character truncation" in summary
+    assert "## Semantic Coverage" in summary
+    pre_freeze_artifacts = "\n".join(
+        [
+            semantic_lock["semantic_summary"],
+            summary,
+            brief["problem_statement"],
+            brief["desired_outcome"],
+            draft_spec_text,
+            solution_plan_text,
+        ]
+    ).lower()
+    for term in ("obsidian-friendly", "rust", "cargo", "install/use guidance", "conflicts", "stale claims"):
+        assert term in pre_freeze_artifacts
+
+    approved = api.handle(
+        "POST",
+        "/frontdesk/jobs/frontdesk-long-semantic-request/plan-review",
+        body={"decision": "approve", "reason": "The long semantic request was preserved."},
+    ).json()
+    assert approved["status"] == "route_to_build"
+
+    skill_spec_text = (run_root / "skill_spec.yaml").read_text(encoding="utf-8").lower()
+    worker_input = (run_root / "worker_input.md").read_text(encoding="utf-8").lower()
+    freeze_manifest = json.loads((run_root / "frontdesk" / "freeze_manifest.json").read_text(encoding="utf-8"))
+    assert "frontdesk/product_semantic_lock.json" in freeze_manifest["artifact_hashes"]
+    assert "frontdesk/product_semantic_coverage.json" in freeze_manifest["artifact_hashes"]
+    for term in ("obsidian-friendly", "rust", "cargo", "thin evidence"):
+        assert term in skill_spec_text
+        assert term in worker_input
+
+
 def test_frontdesk_api_rejects_build_before_freeze(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     api = SkillFoundryAPI(tmp_path / "runs")

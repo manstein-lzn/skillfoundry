@@ -27,11 +27,15 @@ FRONTDESK_DIR = "frontdesk"
 FRONTDESK_CREATED_BY = "skillfoundry.frontdesk_workspace"
 FRONTDESK_CONVERSATION_REF = "frontdesk/conversation.jsonl"
 FRONTDESK_CLARIFICATION_SUMMARY_REF = "frontdesk/clarification_summary.md"
+FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF = "frontdesk/product_semantic_lock.json"
+FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF = "frontdesk/product_semantic_coverage.json"
 FRONTDESK_BUDGET_REF = "frontdesk/budget.json"
 FRONTDESK_RISK_REPORT_REF = "frontdesk/risk_report.json"
 DEFAULT_FRONTDESK_REFS = (
     FRONTDESK_CONVERSATION_REF,
     FRONTDESK_CLARIFICATION_SUMMARY_REF,
+    FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
+    FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF,
     FRONTDESK_BUDGET_REF,
     FRONTDESK_RISK_REPORT_REF,
 )
@@ -179,6 +183,14 @@ def initialize_frontdesk_workspace(
             "# Clarification Summary\n\n"
             "No Front Desk clarification summary has been generated for this workspace yet.\n"
         ),
+        FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF: {
+            "schema_version": "skillfoundry.product_semantic_lock.placeholder.v1",
+            "status": "not_started",
+        },
+        FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF: {
+            "schema_version": "skillfoundry.product_semantic_coverage.placeholder.v1",
+            "status": "not_started",
+        },
         FRONTDESK_BUDGET_REF: config,
         FRONTDESK_RISK_REPORT_REF: {
             "schema_version": "skillfoundry.frontdesk_risk_report.v1",

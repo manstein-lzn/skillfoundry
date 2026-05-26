@@ -29,6 +29,7 @@ from .frontdesk_schema import (
     CoreNeedDiscoveryReport,
     FeasibilityReport,
     PlanReviewRecord,
+    ProductSemanticLock,
     SolutionPlan,
     SpecAuditReport,
 )
@@ -44,6 +45,8 @@ from .frontdesk_workspace import (
     FRONTDESK_BUDGET_REF,
     FRONTDESK_CLARIFICATION_SUMMARY_REF,
     FRONTDESK_CONVERSATION_REF,
+    FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF,
+    FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
     FRONTDESK_RISK_REPORT_REF,
     FrontDeskWorkspace,
     write_frontdesk_artifact,
@@ -773,6 +776,18 @@ def _seed_frontdesk_context(
     legacy_item_ids: bool = False,
 ) -> list[str]:
     refs = [
+        (
+            FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
+            "artifact",
+            "frontdesk_product_semantic_lock",
+            ["governed_frontdesk", "product_semantic_lock"],
+        ),
+        (
+            FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF,
+            "artifact",
+            "frontdesk_product_semantic_coverage",
+            ["governed_frontdesk", "product_semantic_coverage"],
+        ),
         (FRONTDESK_CLARIFICATION_SUMMARY_REF, "artifact", "frontdesk_clarification_summary", ["governed_frontdesk"]),
         (FRONTDESK_RISK_REPORT_REF, "constraint", "frontdesk_risk_report", ["governed_frontdesk"]),
         (FRONTDESK_BUDGET_REF, "constraint", "frontdesk_budget", ["governed_frontdesk"]),
@@ -1058,6 +1073,34 @@ def _plan_review_failure(
 
 
 def _core_need_brief_from_clarification_summary(frontdesk: FrontDeskWorkspace) -> CoreNeedBrief:
+    semantic_lock = _read_product_semantic_lock(frontdesk)
+    if semantic_lock is not None:
+        request = _request_from_semantic_lock(semantic_lock)
+        objective = _objective_from_request(request)
+        if not objective:
+            objective = "preparing a governed Codex Skill requirement before build execution"
+        problem = f"The user needs a Codex Skill for {objective}."
+        outcome = f"A governed Codex Skill that supports {objective}."
+        assumptions = [
+            "Derived from governed Front Desk product_semantic_lock.json, not raw conversation.",
+            "The semantic lock is a requirement-preserving distillation; raw turns remain provenance only.",
+        ]
+        if semantic_lock.truncated:
+            assumptions.append("The semantic lock reports truncation and should be reviewed before build.")
+        return CoreNeedBrief(
+            problem_statement=problem,
+            target_user="SkillFoundry requester",
+            usage_moment=f"When the requester needs help with {objective}.",
+            desired_outcome=outcome,
+            success_signal=f"The generated Skill explicitly supports {objective} without exposing raw conversation.",
+            current_workaround="Manual interpretation of request details and handoff notes.",
+            non_goals=["Do not read raw Front Desk conversation during build."],
+            assumptions=assumptions,
+            risk_flags=list(semantic_lock.omission_warnings),
+            confidence_score=0.84 if not semantic_lock.omission_warnings else 0.68,
+            source_turn_ids=list(semantic_lock.source_turn_ids),
+        )
+
     summary = _read_optional_text(frontdesk, FRONTDESK_CLARIFICATION_SUMMARY_REF)
     request = _current_request_from_summary(summary)
     objective = _objective_from_request(request)
@@ -1078,6 +1121,27 @@ def _core_need_brief_from_clarification_summary(frontdesk: FrontDeskWorkspace) -
         confidence_score=0.78,
         source_turn_ids=[],
     )
+
+
+def _read_product_semantic_lock(frontdesk: FrontDeskWorkspace) -> ProductSemanticLock | None:
+    try:
+        path = frontdesk.workspace.resolve_path(FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF, must_exist=True)
+        return ProductSemanticLock.from_json(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _request_from_semantic_lock(lock: ProductSemanticLock) -> str:
+    parts: list[str] = []
+    if lock.semantic_summary.strip():
+        parts.append(lock.semantic_summary.strip())
+    if lock.implementation_requirements:
+        parts.append("Implementation requirements: " + "; ".join(lock.implementation_requirements))
+    if lock.delivery_requirements:
+        parts.append("Delivery requirements: " + "; ".join(lock.delivery_requirements))
+    if lock.must_not:
+        parts.append("Must not: " + "; ".join(lock.must_not))
+    return " ".join(parts).strip()
 
 
 def _read_optional_text(frontdesk: FrontDeskWorkspace, ref: str) -> str:

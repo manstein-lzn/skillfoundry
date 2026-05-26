@@ -1144,6 +1144,198 @@ Validation statuses include ok, conflict, and error.
     assert result.must_passed == 9
 
 
+def test_codexarium_accepts_generated_wiki_root_no_infer_wording(tmp_path):
+    workspace = make_workspace(
+        tmp_path,
+        job_id="acceptance-codexarium-generated-root-wording",
+        skill_md="""---
+name: codexarium
+description: "Clean-room local wiki skill."
+---
+
+# Codexarium
+
+## Overview
+Codexarium maintains notes under a specific wiki root that the user has explicitly named.
+
+## Inputs
+The user must provide an explicit absolute local wiki root before planning writes.
+
+## Safety
+Never guess real local paths.
+""",
+        criteria=[
+            criterion(
+                "AC-001",
+                verifier_check_id="codexarium_explicit_wiki_root_contract",
+                description="Codexarium must require an explicit wiki root and must not infer one.",
+                pass_condition="The package documents the explicit wiki root boundary.",
+                required_evidence=[],
+                evidence_kind="verifier_check",
+            )
+        ],
+    )
+    write_workspace_text(
+        workspace,
+        "package/references/safety_boundaries.md",
+        """
+# Safety Boundaries
+
+The user must provide an absolute local wiki root before Codexarium plans or writes notes.
+The skill must not infer this root from the current repository, home directory, recent shell
+commands, environment variables, common wiki names, or any default path.
+""".strip(),
+    )
+    write_fake_codexarium_verification_result(workspace)
+
+    plan, result = plan_and_evaluate(workspace)
+
+    assert {item.criterion_id: item.verifier_check_id for item in plan.items} == {
+        "AC-001": "codexarium_explicit_wiki_root_contract",
+    }
+    assert result.passed is True
+    assert result.must_passed == 1
+
+
+def test_rust_path_safety_accepts_note_path_and_write_plan_wording(tmp_path):
+    workspace = make_workspace(
+        tmp_path,
+        job_id="acceptance-codexarium-generated-path-wording",
+        criteria=[
+            criterion(
+                "AC-001",
+                verifier_check_id="rust_verifier_path_safety",
+                description="The Rust helper validates note paths and write plans.",
+                pass_condition="The package rejects unsafe note paths.",
+                required_evidence=[],
+                evidence_kind="verifier_check",
+            )
+        ],
+    )
+    write_workspace_text(workspace, "package/Cargo.toml", "[package]\nname = \"codexarium-helper\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+    write_workspace_text(
+        workspace,
+        "package/src/lib.rs",
+        """
+pub struct PlannedNote {
+    pub note_path: String,
+}
+
+pub fn validate_write_plan() {
+    // Path safety for planned_notes requires relative Markdown paths.
+    // Reject absolute note paths, parent traversal with .., and unsafe traversal.
+}
+""".strip(),
+    )
+    write_workspace_text(
+        workspace,
+        "package/tests/integration.rs",
+        "path_safety_rejects_absolute_note_path parent_traversal unsafe_traversal\n",
+    )
+    write_fake_codexarium_verification_result(workspace)
+
+    plan, result = plan_and_evaluate(workspace)
+
+    assert {item.criterion_id: item.verifier_check_id for item in plan.items} == {
+        "AC-001": "rust_verifier_path_safety",
+    }
+    assert result.passed is True
+    assert result.must_passed == 1
+
+
+def test_codexarium_synthetic_boundary_accepts_generated_synthetic_wording(tmp_path):
+    workspace = make_workspace(
+        tmp_path,
+        job_id="acceptance-codexarium-generated-synthetic-wording",
+        skill_md="""---
+name: codexarium
+description: "Clean-room local wiki skill."
+---
+
+# Codexarium
+
+## Overview
+Codexarium is a clean-room local Codex skill.
+
+## Safety
+Fixtures, examples, and tests in this package are synthetic. They are not
+derived from existing Codexarium code, notes, documents, databases, fixtures,
+or implementation details.
+""",
+        criteria=[
+            criterion(
+                "AC-001",
+                verifier_check_id="codexarium_synthetic_fixture_boundary",
+                description="Codexarium examples and fixtures must stay synthetic and clean-room.",
+                pass_condition="The package documents synthetic fixture boundaries.",
+                required_evidence=[],
+                evidence_kind="verifier_check",
+            )
+        ],
+    )
+    write_workspace_text(workspace, "package/tests/fixtures/valid_manifest.json", "{\"schema\":\"synthetic\"}\n")
+    write_fake_codexarium_verification_result(workspace)
+
+    plan, result = plan_and_evaluate(workspace)
+
+    assert {item.criterion_id: item.verifier_check_id for item in plan.items} == {
+        "AC-001": "codexarium_synthetic_fixture_boundary",
+    }
+    assert result.passed is True
+    assert result.must_passed == 1
+
+
+def test_codexarium_synthetic_boundary_accepts_fixture_statement_file_wording(tmp_path):
+    workspace = make_workspace(
+        tmp_path,
+        job_id="acceptance-codexarium-generated-fixture-statement",
+        skill_md="""---
+name: codexarium
+description: "Clean-room local wiki skill."
+---
+
+# Codexarium
+
+## Overview
+Codexarium is a clean-room local Codex skill.
+
+## Safety
+Do not read or copy any existing Codexarium code, notes, documents, databases,
+fixtures, or implementation details.
+""",
+        criteria=[
+            criterion(
+                "AC-001",
+                verifier_check_id="codexarium_synthetic_fixture_boundary",
+                description="Codexarium fixture data must be synthetic and clean-room.",
+                pass_condition="The package documents synthetic fixture boundaries.",
+                required_evidence=[],
+                evidence_kind="verifier_check",
+            )
+        ],
+    )
+    write_workspace_text(
+        workspace,
+        "package/tests/fixtures/synthetic_fixture_statement.md",
+        """
+# Synthetic Fixture Boundary
+
+All JSON fixtures in this directory are synthetic data created for the Codexarium skill package.
+They are not derived from any existing Codexarium code, notes, documents, databases, fixtures,
+or implementation details.
+""".strip(),
+    )
+    write_fake_codexarium_verification_result(workspace)
+
+    plan, result = plan_and_evaluate(workspace)
+
+    assert {item.criterion_id: item.verifier_check_id for item in plan.items} == {
+        "AC-001": "codexarium_synthetic_fixture_boundary",
+    }
+    assert result.passed is True
+    assert result.must_passed == 1
+
+
 def test_scope_exclusion_accepts_whole_disk_scan_wording(tmp_path):
     criteria_texts = [
         (

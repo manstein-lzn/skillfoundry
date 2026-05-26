@@ -26,6 +26,8 @@ from .frontdesk_workspace import (
     FRONTDESK_BUDGET_REF,
     FRONTDESK_CLARIFICATION_SUMMARY_REF,
     FRONTDESK_CONVERSATION_REF,
+    FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF,
+    FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
     FRONTDESK_RISK_REPORT_REF,
     FrontDeskWorkspace,
     write_frontdesk_artifact,
@@ -172,6 +174,8 @@ def evaluate_frontdesk_v2_governance(
         "status": status,
         "blocking_reasons": blocking_reasons,
         "frontdesk_refs": {
+            "product_semantic_lock": FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
+            "product_semantic_coverage": FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF,
             "clarification_summary": FRONTDESK_CLARIFICATION_SUMMARY_REF,
             "risk_report": FRONTDESK_RISK_REPORT_REF,
             "budget": FRONTDESK_BUDGET_REF,
@@ -341,6 +345,8 @@ def _node_spec(node_id: str) -> dict[str, Any]:
 
 def _visible_context(node_id: str) -> list[dict[str, JsonValue]]:
     refs = [
+        FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
+        FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF,
         FRONTDESK_CLARIFICATION_SUMMARY_REF,
         FRONTDESK_RISK_REPORT_REF,
         FRONTDESK_BUDGET_REF,
@@ -357,6 +363,8 @@ def _visible_context(node_id: str) -> list[dict[str, JsonValue]]:
             "value": ref,
             "required": ref
             in {
+                FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
+                FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF,
                 FRONTDESK_CLARIFICATION_SUMMARY_REF,
                 FRONTDESK_RISK_REPORT_REF,
                 FRONTDESK_BUDGET_REF,
@@ -520,6 +528,8 @@ def _provider_usage_payload(provider_usage: Any) -> dict[str, JsonValue]:
 
 def _frontdesk_source_hashes(frontdesk: FrontDeskWorkspace) -> dict[str, JsonValue]:
     refs = [
+        FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
+        FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF,
         FRONTDESK_CLARIFICATION_SUMMARY_REF,
         FRONTDESK_RISK_REPORT_REF,
         FRONTDESK_BUDGET_REF,

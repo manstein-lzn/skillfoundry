@@ -6,6 +6,13 @@ from pathlib import Path
 import subprocess
 import sys
 
+from scripts.run_frontdesk_live_codex_eval import (
+    Scenario,
+    _matched_marker_count,
+    _semantic_fidelity_summary,
+    _semantic_markers_from_payload,
+)
+
 
 SCRIPT = Path("scripts/run_frontdesk_live_codex_eval.py")
 
@@ -153,6 +160,44 @@ def test_frontdesk_live_codex_eval_refuses_existing_workspace_without_overwrite(
     assert result.returncode == 2
     assert "eval workspace already exists" in result.stderr
     assert not result.stdout.strip()
+
+
+def test_semantic_fidelity_marker_matching_handles_phrase_markers() -> None:
+    markers = _semantic_markers_from_payload(
+        ["wiki root", "compact evidence", "conflict proposal"],
+        "codexarium",
+    )
+
+    assert markers == ("wikiroot", "compactevidence", "conflictproposal")
+    assert (
+        _matched_marker_count(
+            "The skill requires an explicit wiki root, compact evidence, and a conflict proposal.",
+            markers,
+        )
+        == 3
+    )
+
+
+def test_semantic_fidelity_summary_normalizes_raw_phrase_markers(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / "package").mkdir(parents=True)
+    source_text = "Codexarium uses Rust, explicit wiki root, compact evidence, and conflict proposal."
+    (workspace / "worker_input.md").write_text(source_text, encoding="utf-8")
+    (workspace / "package" / "SKILL.md").write_text(source_text, encoding="utf-8")
+
+    summary = _semantic_fidelity_summary(
+        workspace,
+        Scenario(
+            "codexarium",
+            "",
+            semantic_markers=("Codexarium", "Rust", "wiki root", "compact evidence", "conflict proposal"),
+        ),
+        assess_package=True,
+    )
+
+    assert summary["passed"] is True
+    assert summary["source_matched_marker_count"] == 5
+    assert summary["package_matched_marker_count"] == 5
 
 
 def _run_eval(tmp_path: Path, *args: str, expect_success: bool = True) -> subprocess.CompletedProcess[str]:
