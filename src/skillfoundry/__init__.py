@@ -255,6 +255,9 @@ from .product_contract import (
     PRODUCT_GRADE_GATE_VERSION,
     PRODUCT_GRADE_REPORT_REF,
     PRODUCT_REPAIR_PACKET_REF,
+    PRODUCT_REPAIR_PLANNER_VERSION,
+    PRODUCT_REPAIR_SOURCE_KINDS,
+    PRODUCT_REVIEWER_REPORT_REF,
     RISK_DOMAINS,
     RISK_PROFILE_REF,
     DeliveryProfileContract,
@@ -264,11 +267,18 @@ from .product_contract import (
     ProductContractCompilerReport,
     ProductGradeFinding,
     ProductGradeReport,
+    ProductRepairItem,
     ProductRepairPacket,
+    ProductReviewerReport,
     RiskProfile,
 )
 from .product_contract_compiler import ProductContractCompiler, compile_product_contract
 from .product_grade_gate import ProductGradeGate, run_product_grade_gate
+from .product_repair_loop import (
+    PRODUCT_REPAIR_TRUST_BOUNDARIES,
+    ProductRepairPlanner,
+    plan_product_repair,
+)
 from .product_runtime_checks import (
     DEFAULT_RUNTIME_CHECK_TIMEOUT_SECONDS,
     MAX_RUNTIME_CHECK_TIMEOUT_SECONDS,
@@ -531,6 +541,10 @@ __all__ = [
     "PRODUCT_GRADE_GATE_VERSION",
     "PRODUCT_GRADE_REPORT_REF",
     "PRODUCT_REPAIR_PACKET_REF",
+    "PRODUCT_REPAIR_PLANNER_VERSION",
+    "PRODUCT_REPAIR_SOURCE_KINDS",
+    "PRODUCT_REPAIR_TRUST_BOUNDARIES",
+    "PRODUCT_REVIEWER_REPORT_REF",
     "PRODUCT_RUNTIME_CHECK_OUTPUT_DIR",
     "PRODUCT_RUNTIME_CHECK_PLAN_REF",
     "PRODUCT_RUNTIME_CHECK_RESULT_REF",
@@ -543,7 +557,10 @@ __all__ = [
     "ProductGradeFinding",
     "ProductGradeGate",
     "ProductGradeReport",
+    "ProductRepairItem",
     "ProductRepairPacket",
+    "ProductRepairPlanner",
+    "ProductReviewerReport",
     "ProductRuntimeCheckResult",
     "ProductRuntimeCheckRunner",
     "QUARANTINE_NONE",
@@ -668,6 +685,7 @@ __all__ = [
     "run_forgeunit_command_bridge_pilot_graph",
     "run_forgeunit_pilot_graph",
     "run_forgeunit_repair_pilot_graph",
+    "plan_product_repair",
     "run_product_grade_gate",
     "run_product_runtime_checks",
     "write_forgeunit_repair_packet",

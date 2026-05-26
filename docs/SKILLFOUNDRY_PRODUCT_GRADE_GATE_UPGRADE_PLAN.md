@@ -562,6 +562,52 @@ tests/test_product_grade_gate.py
 - repair worker 不需要原始 reviewer 长文本；
 - repair 后重新走 ProductGradeGate。
 
+当前 MVP 已实现：
+
+```text
+src/skillfoundry/product_repair_loop.py
+tests/test_product_repair_loop.py
+```
+
+新增结构化输入：
+
+```text
+qa/product_reviewer_report.json
+```
+
+新增/扩展 schema：
+
+```text
+ProductReviewerReport
+ProductRepairItem
+ProductRepairPacket.repair_items
+ProductRepairPacket.source_refs
+ProductRepairPacket.trust_boundaries
+```
+
+`ProductRepairPlanner` 会读取：
+
+```text
+qa/product_grade_report.json
+qa/product_reviewer_report.json   # optional
+```
+
+并输出：
+
+```text
+qa/product_repair_packet.json
+```
+
+关键约束：
+
+- product gate finding 和 reviewer finding 会被 namespace：
+  `product_gate:<finding_id>` / `reviewer_report:<finding_id>`；
+- 只把 `major` / `blocking` finding 编译为 repair item；
+- reviewer report 只接受结构化短 finding，不允许 `raw_prompt`、`raw_transcript`、`messages` 等原始上下文字段；
+- repair packet 明确声明：
+  `raw_prompt_included=false`、`raw_transcript_included=false`、`raw_reviewer_text_included=false`；
+- 如果缺少 `qa/product_grade_report.json`，planner fail-closed，生成 blocking repair item，要求先运行 ProductGradeGate。
+
 ## 实施顺序
 
 推荐短期顺序：
@@ -592,9 +638,9 @@ Implemented:
   - WP4 Evidence Mode Refactor 的 acceptance result MVP
   - WP5 ProductGradeGate MVP
   - WP6 Registry Promotion Split 的 MVP
+  - WP7 Reviewer Repair Loop 的 deterministic MVP
 
 Not implemented yet:
-  - WP7 Reviewer Repair Loop
   - 针对 reference_heavy / knowledge_db / service_bundle 等 profile 的真实执行门禁
 ```
 

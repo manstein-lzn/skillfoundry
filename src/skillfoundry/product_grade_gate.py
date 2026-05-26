@@ -11,12 +11,11 @@ from .product_contract import (
     PRODUCT_GRADE_FAILING_SEVERITIES,
     PRODUCT_GRADE_GATE_VERSION,
     PRODUCT_GRADE_REPORT_REF,
-    PRODUCT_REPAIR_PACKET_REF,
     ProductAcceptanceMatrix,
     ProductGradeFinding,
     ProductGradeReport,
-    ProductRepairPacket,
 )
+from .product_repair_loop import ProductRepairPlanner
 from .product_runtime_checks import PRODUCT_RUNTIME_CHECK_RESULT_REF, ProductRuntimeCheckRunner
 from .security import validate_relative_path
 from .workspace import JobWorkspace
@@ -163,8 +162,7 @@ class ProductGradeGate:
             gate_version=PRODUCT_GRADE_GATE_VERSION,
         )
         report.write_json_file(workspace.resolve_path(PRODUCT_GRADE_REPORT_REF))
-        repair_packet = _build_repair_packet(workspace, report)
-        repair_packet.write_json_file(workspace.resolve_path(PRODUCT_REPAIR_PACKET_REF))
+        ProductRepairPlanner().plan(workspace, product_grade_report=report)
         return report
 
 
@@ -322,36 +320,9 @@ def _optional_workspace_path(workspace: JobWorkspace, ref: str) -> Path:
     return workspace.root.joinpath(*safe.parts)
 
 
-def _build_repair_packet(workspace: JobWorkspace, report: ProductGradeReport) -> ProductRepairPacket:
-    actionable_findings = [finding for finding in report.findings if finding.severity in PRODUCT_GRADE_FAILING_SEVERITIES]
-    instructions = [
-        f"{finding.finding_id}: {finding.required_fix}"
-        for finding in actionable_findings
-    ]
-    required_tests = _dedupe_strings(
-        [test for finding in actionable_findings for test in finding.required_tests]
-    )
-    return ProductRepairPacket(
-        job_id=workspace.job_id,
-        repair_required=bool(actionable_findings),
-        source_report_ref=PRODUCT_GRADE_REPORT_REF,
-        findings=actionable_findings,
-        repair_instructions=instructions,
-        required_tests=required_tests,
-    )
-
-
 def _dedupe_refs(refs: list[str]) -> list[str]:
     result: list[str] = []
     for ref in refs:
         if ref and ref not in result:
             result.append(ref)
-    return result
-
-
-def _dedupe_strings(items: list[str]) -> list[str]:
-    result: list[str] = []
-    for item in items:
-        if item and item not in result:
-            result.append(item)
     return result

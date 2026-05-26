@@ -5,12 +5,15 @@ from skillfoundry import (
     PRODUCT_ACCEPTANCE_MATRIX_REF,
     PRODUCT_GRADE_REPORT_REF,
     PRODUCT_REPAIR_PACKET_REF,
+    PRODUCT_REVIEWER_REPORT_REF,
     DeliveryProfileContract,
     ProductAcceptanceItem,
     ProductAcceptanceMatrix,
     ProductGradeFinding,
     ProductGradeReport,
+    ProductRepairItem,
     ProductRepairPacket,
+    ProductReviewerReport,
     RiskProfile,
     SchemaValidationError,
     sha256_json,
@@ -48,6 +51,7 @@ def test_product_contract_constants_are_stable():
     assert DELIVERY_PROFILE_CONTRACT_REF == "product_contract/delivery_profile.json"
     assert PRODUCT_ACCEPTANCE_MATRIX_REF == "product_contract/product_acceptance_matrix.json"
     assert PRODUCT_GRADE_REPORT_REF == "qa/product_grade_report.json"
+    assert PRODUCT_REVIEWER_REPORT_REF == "qa/product_reviewer_report.json"
     assert PRODUCT_REPAIR_PACKET_REF == "qa/product_repair_packet.json"
 
 
@@ -96,10 +100,38 @@ def test_product_grade_report_and_repair_packet_round_trip():
         findings=[finding],
         repair_instructions=["Add duplicate path/title conflict handling."],
         required_tests=["duplicate path fixture"],
+        repair_items=[
+            ProductRepairItem(
+                finding_id="product_gate:P0-runtime-same-plan-conflict-coverage-missing",
+                severity="blocking",
+                title=finding.title,
+                affected_profiles=finding.affected_profiles,
+                affected_risk_domains=finding.affected_risk_domains,
+                required_fix=finding.required_fix,
+                required_tests=finding.required_tests,
+                evidence_refs=finding.evidence_refs,
+                source_kind="product_gate",
+                source_ref=PRODUCT_GRADE_REPORT_REF,
+                source_finding_id=finding.finding_id,
+            )
+        ],
+        source_refs=[PRODUCT_GRADE_REPORT_REF],
     )
 
     assert ProductGradeReport.from_json(report.to_json()).to_dict() == report.to_dict()
     assert ProductRepairPacket.from_json(repair.to_json()).to_dict() == repair.to_dict()
+
+
+def test_product_reviewer_report_round_trip():
+    report = ProductReviewerReport(
+        job_id="product-contract-001",
+        reviewer_id="gpt-5.5-xhigh",
+        summary_score=66,
+        findings=[sample_finding()],
+        evidence_refs=["qa/reviewer_evidence/runtime_duplicate_conflict.json"],
+    )
+
+    assert ProductReviewerReport.from_json(report.to_json()).to_dict() == report.to_dict()
 
 
 def test_product_contract_unknown_fields_fail():
@@ -132,3 +164,15 @@ def test_product_contract_rejects_raw_prompt_fields_in_metadata():
 
     with pytest.raises(SchemaValidationError):
         item.to_dict()
+
+
+def test_product_reviewer_report_rejects_raw_transcript_fields():
+    payload = ProductReviewerReport(
+        job_id="product-contract-001",
+        reviewer_id="gpt-5.5-xhigh",
+        findings=[sample_finding()],
+    ).to_dict()
+    payload["findings"][0]["metadata"] = {"messages": [{"role": "reviewer"}]}
+
+    with pytest.raises(SchemaValidationError):
+        ProductReviewerReport.from_dict(payload)
