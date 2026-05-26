@@ -11,6 +11,7 @@ from .adaptive import (
     DecisionRecord,
     NextStepContract,
     ObservationReport,
+    RoutePlan,
     StateCorrection,
 )
 from .schema import ArtifactRecord, SchemaModel, sha256_file, utc_now
@@ -58,6 +59,11 @@ def _validate_iteration(iteration: int) -> None:
 def adaptive_contract_ref(iteration: int) -> str:
     _validate_iteration(iteration)
     return f"{ADAPTIVE_DIR}/next_step_contract_{iteration:03d}.json"
+
+
+def adaptive_route_plan_ref(iteration: int) -> str:
+    _validate_iteration(iteration)
+    return f"{ADAPTIVE_DIR}/route_plan_{iteration:03d}.json"
 
 
 def adaptive_observation_ref(iteration: int) -> str:
@@ -163,6 +169,20 @@ def write_capability_state_estimate(
 def read_capability_state_estimate(workspace: AdaptiveWorkspace | JobWorkspace) -> CapabilityStateEstimate:
     adaptive = _as_adaptive_workspace(workspace)
     return CapabilityStateEstimate.read_json_file(adaptive.workspace.resolve_path(ADAPTIVE_CAPABILITY_STATE_REF, must_exist=True))
+
+
+def write_route_plan(
+    workspace: AdaptiveWorkspace | JobWorkspace,
+    plan: RoutePlan,
+) -> ArtifactRecord:
+    """Write a route plan under its stable iteration ref."""
+
+    return _write_schema_artifact(workspace, adaptive_route_plan_ref(plan.iteration), plan)
+
+
+def read_route_plan(workspace: AdaptiveWorkspace | JobWorkspace, iteration: int) -> RoutePlan:
+    adaptive = _as_adaptive_workspace(workspace)
+    return RoutePlan.read_json_file(adaptive.workspace.resolve_path(adaptive_route_plan_ref(iteration), must_exist=True))
 
 
 def write_next_step_contract(

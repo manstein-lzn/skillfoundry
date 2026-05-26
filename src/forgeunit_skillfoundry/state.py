@@ -27,6 +27,7 @@ PRODUCT_TRUST_BOUNDARIES: dict[str, bool] = {
 ADAPTIVE_PRODUCT_REF_KEYS = frozenset(
     {
         "adaptive_state",
+        "latest_route_plan",
         "latest_next_step_contract",
         "latest_observation_report",
         "latest_state_correction",
@@ -38,6 +39,8 @@ ADAPTIVE_CONTEXT_SUMMARY_KEYS = {
     "adaptive_latest_route": "latest_route",
     "adaptive_latest_decision": "latest_decision",
     "adaptive_latest_verification_status": "latest_verification_status",
+    "adaptive_current_route_plan_ref": "current_route_plan_ref",
+    "adaptive_latest_route_plan_iteration": "latest_route_plan_iteration",
 }
 
 
@@ -136,6 +139,8 @@ def build_adaptive_summary(contextforge: Mapping[str, Any]) -> dict[str, JsonVal
         "latest_route": None,
         "latest_decision": None,
         "latest_verification_status": None,
+        "current_route_plan_ref": None,
+        "latest_route_plan_iteration": None,
     }
     if not isinstance(contextforge, Mapping):
         return result

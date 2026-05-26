@@ -93,6 +93,7 @@ def test_product_state_payload_is_refs_only_and_selective(tmp_path: Path) -> Non
                 "adaptive_state": "adaptive/capability_state.json",
                 "decision_ledger": "adaptive/decision_ledger.json",
                 "final_report": "final_report.json",
+                "latest_route_plan": "adaptive/route_plan_001.json",
                 "latest_next_step_contract": "adaptive/next_step_contract_001.json",
                 "latest_observation_report": "adaptive/observation_report_001.json",
                 "latest_state_correction": "adaptive/state_correction_001.json",
@@ -102,8 +103,10 @@ def test_product_state_payload_is_refs_only_and_selective(tmp_path: Path) -> Non
             "hashes": {},
             "contextforge": {
                 "adaptive_latest_decision": "continue",
+                "adaptive_current_route_plan_ref": "adaptive/route_plan_001.json",
                 "adaptive_latest_iteration": 1,
                 "adaptive_latest_route": "final_verify",
+                "adaptive_latest_route_plan_iteration": 1,
                 "adaptive_latest_verification_status": "passed",
                 "last_verification_status": "passed",
                 "registry_approved": True,
@@ -123,15 +126,18 @@ def test_product_state_payload_is_refs_only_and_selective(tmp_path: Path) -> Non
         "adaptive_state": "adaptive/capability_state.json",
         "decision_ledger": "adaptive/decision_ledger.json",
         "final_report": "final_report.json",
+        "latest_route_plan": "adaptive/route_plan_001.json",
         "latest_next_step_contract": "adaptive/next_step_contract_001.json",
         "latest_observation_report": "adaptive/observation_report_001.json",
         "latest_state_correction": "adaptive/state_correction_001.json",
         "registry_entry": "registry/entry.json",
     }
     assert payload["adaptive_summary"] == {
+        "current_route_plan_ref": "adaptive/route_plan_001.json",
         "latest_decision": "continue",
         "latest_iteration": 1,
         "latest_route": "final_verify",
+        "latest_route_plan_iteration": 1,
         "latest_verification_status": "passed",
     }
     assert payload["contextforge"] == {
@@ -166,6 +172,7 @@ def test_evidence_summary_payload_is_refs_only_and_attempt_aware(tmp_path: Path)
                 "adaptive_state": "adaptive/capability_state.json",
                 "decision_ledger": "adaptive/decision_ledger.json",
                 "final_report": "final_report.json",
+                "latest_route_plan": "adaptive/route_plan_002.json",
                 "latest_next_step_contract": "adaptive/next_step_contract_001.json",
                 "latest_observation_report": "adaptive/observation_report_001.json",
                 "latest_state_correction": "adaptive/state_correction_001.json",
@@ -177,8 +184,10 @@ def test_evidence_summary_payload_is_refs_only_and_attempt_aware(tmp_path: Path)
             "hashes": {},
             "contextforge": {
                 "adaptive_latest_decision": "continue",
+                "adaptive_current_route_plan_ref": "adaptive/route_plan_002.json",
                 "adaptive_latest_iteration": 2,
                 "adaptive_latest_route": "closure",
+                "adaptive_latest_route_plan_iteration": 2,
                 "adaptive_latest_verification_status": "passed",
                 "last_verification_status": "passed",
                 "registry_approved": True,
@@ -199,14 +208,17 @@ def test_evidence_summary_payload_is_refs_only_and_attempt_aware(tmp_path: Path)
     assert payload["verification"]["status"] == "passed"
     assert payload["verification"]["passed"] is True
     assert payload["adaptive_summary"] == {
+        "current_route_plan_ref": "adaptive/route_plan_002.json",
         "latest_decision": "continue",
         "latest_iteration": 2,
         "latest_route": "closure",
+        "latest_route_plan_iteration": 2,
         "latest_verification_status": "passed",
     }
     assert payload["registry"]["approved"] is True
     assert payload["registry"]["skill_id"] == "summary-demo-001-skill"
     assert payload["refs"]["adaptive_state"] == "adaptive/capability_state.json"
+    assert payload["refs"]["latest_route_plan"] == "adaptive/route_plan_002.json"
     assert payload["refs"]["latest_next_step_contract"] == "adaptive/next_step_contract_001.json"
     assert payload["refs"]["latest_observation_report"] == "adaptive/observation_report_001.json"
     assert payload["refs"]["latest_state_correction"] == "adaptive/state_correction_001.json"

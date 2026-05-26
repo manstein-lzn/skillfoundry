@@ -6,6 +6,7 @@ from skillfoundry.adaptive import (
     DecisionRecord,
     NextStepContract,
     ObservationReport,
+    RoutePlan,
     StateCorrection,
 )
 from skillfoundry.schema import SchemaValidationError
@@ -40,6 +41,7 @@ def sample_contract() -> NextStepContract:
         expected_outputs=["package/skillfoundry.bundle.json", "adaptive/attempts/001/notes.md"],
         exit_criteria=["Manifest validates against the MVP schema."],
         stop_conditions=["The spec contradicts the selected bundle profile."],
+        route_plan_ref="adaptive/route_plan_000.json",
         estimated_followups=["Connect manifest checks to the verifier."],
         risk_if_too_large="Combining manifest and verifier work hides contract errors.",
         risk_if_too_small="Only naming fields without path checks would not reduce risk.",
@@ -62,6 +64,27 @@ def sample_observation() -> ObservationReport:
         new_unknowns=["Verifier integration is not implemented."],
         recommended_next_steps=["Add bundle verifier checks."],
         metadata={"attempt_id": "001"},
+    )
+
+
+def sample_route_plan() -> RoutePlan:
+    return RoutePlan(
+        job_id="job-1",
+        iteration=1,
+        mission="Build a verified capability bundle.",
+        current_strategy="Plan first, execute one bounded step, then revise from observation.",
+        phase_plan=["Create entrypoint.", "Create bundle manifest.", "Verify closure."],
+        plan_b=["Shrink to repair on failure.", "Escalate after repeated failure."],
+        assumptions=["Refs are the durable handoff surface."],
+        pivot_triggers=["Verifier failure.", "New unknown.", "Worker recommendation."],
+        risk_register=["Worker self-report is not acceptance."],
+        evidence_strategy=["Use verifier evidence refs."],
+        authority_boundary=["Worker tactics stay inside allowed scope."],
+        next_step_policy=["Issue one artifact-producing next-step contract."],
+        based_on_observation_ref="adaptive/observation_report_001.json",
+        previous_route_plan_ref="adaptive/route_plan_000.json",
+        revision_reason="Observation changed the next-step policy.",
+        metadata={"source": "test"},
     )
 
 
@@ -103,6 +126,7 @@ def sample_ledger() -> DecisionLedger:
     "obj",
     [
         sample_state(),
+        sample_route_plan(),
         sample_contract(),
         sample_observation(),
         sample_correction(),
@@ -120,6 +144,7 @@ def test_adaptive_schema_json_round_trip(obj):
     "obj",
     [
         sample_state(),
+        sample_route_plan(),
         sample_contract(),
         sample_observation(),
         sample_correction(),
@@ -152,10 +177,27 @@ def test_adaptive_schema_forbidden_raw_fields_fail(payload):
 
 
 @pytest.mark.parametrize(
+    "payload",
+    [
+        {"metadata": {"prompt": "raw prompt must not be persisted"}},
+        {"metadata": {"nested": {"messages": []}}},
+        {"metadata": {"nested": [{"raw_model_output": "done"}]}},
+    ],
+)
+def test_route_plan_forbidden_raw_fields_fail(payload):
+    data = sample_route_plan().to_dict()
+    data.update(payload)
+
+    with pytest.raises(SchemaValidationError):
+        RoutePlan.from_dict(data)
+
+
+@pytest.mark.parametrize(
     "field_name,value",
     [
         ("current_state_ref", "../adaptive/state.json"),
         ("current_state_ref", "/tmp/state.json"),
+        ("route_plan_ref", "adaptive/../route_plan.json"),
         ("allowed_scope", ["package", "../outside"]),
         ("visible_refs", ["C:\\temp\\secret.txt"]),
         ("expected_outputs", ["package//bundle.json"]),
@@ -184,6 +226,21 @@ def test_observation_report_rejects_unsafe_refs(field_name, value):
 
     with pytest.raises(SchemaValidationError):
         ObservationReport.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    "field_name,value",
+    [
+        ("based_on_observation_ref", "../adaptive/observation.json"),
+        ("previous_route_plan_ref", "/tmp/route_plan.json"),
+    ],
+)
+def test_route_plan_rejects_unsafe_optional_refs(field_name, value):
+    payload = sample_route_plan().to_dict()
+    payload[field_name] = value
+
+    with pytest.raises(SchemaValidationError):
+        RoutePlan.from_dict(payload)
 
 
 @pytest.mark.parametrize(
@@ -237,6 +294,20 @@ def test_observation_report_rejects_unsafe_refs(field_name, value):
             expected_outputs=["package/skillfoundry.bundle.json"],
             exit_criteria=["Manifest exists."],
             stop_conditions=["Spec contradiction found."],
+        ),
+        RoutePlan(
+            job_id="job-1",
+            iteration=1,
+            mission="Build.",
+            current_strategy="",
+            phase_plan=["Create entrypoint."],
+            plan_b=["Repair on failure."],
+            assumptions=["Refs are durable."],
+            pivot_triggers=["Failure."],
+            risk_register=["Scope drift."],
+            evidence_strategy=["Verifier refs."],
+            authority_boundary=["Stay in scope."],
+            next_step_policy=["One step."],
         ),
     ],
 )

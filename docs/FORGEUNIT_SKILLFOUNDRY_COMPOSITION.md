@@ -1,8 +1,8 @@
 # ForgeUnit SkillFoundry Composition Layer
 
-Last updated: 2026-05-23
+Last updated: 2026-05-26
 
-Status: clean vNext assembly slice with Phase 7 configurable FrontDesk worker command boundary
+Status: clean vNext assembly slice with verified adaptive steering and configurable FrontDesk worker command boundary
 
 ## Purpose
 
@@ -88,6 +88,10 @@ The old graph v2 path remains available only by explicit compatibility request:
 ```json
 {"build_mode": "graph_v2"}
 ```
+
+The adaptive steering loop now sits alongside this composition layer as a
+verified product-layer control primitive. Its stable fields are substrate
+candidates, not just pilot-only state.
 
 ## Public Entry Points
 

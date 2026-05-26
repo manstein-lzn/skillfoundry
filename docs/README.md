@@ -15,9 +15,10 @@ Read these first, in order:
 - [Legacy Compatibility](LEGACY_COMPATIBILITY.md): compatibility islands that remain for fixtures, maintenance, or history.
 - [Test Ownership](../tests/README.md): which tests protect current mainline, compatibility, legacy fixtures, scripts, and live opt-in support.
 - [Development Workflow](DEVELOPMENT_WORKFLOW.md): local commands and validation gates.
+- [Git Worktree Workflow](WORKTREE_WORKFLOW.md): parallel upgrade branches and sibling worktree discipline.
 - [Fresh Clone Gate](FRESH_CLONE_GATE.md): new-user reproducibility check.
 - [SkillFoundry Cleanup Completion Plan](SKILLFOUNDRY_CLEANUP_COMPLETION_PLAN.md): completed short-term cleanup plan; product validation remains later.
-- [Product-Grade Gate Upgrade Plan](SKILLFOUNDRY_PRODUCT_GRADE_GATE_UPGRADE_PLAN.md): planned upgrade from candidate generation to product-grade delivery gates.
+- [Product-Grade Gate Upgrade Plan](SKILLFOUNDRY_PRODUCT_GRADE_GATE_UPGRADE_PLAN.md): completed upgrade path for candidate generation to product-grade delivery gates.
 
 ## Current Mainline
 
@@ -32,7 +33,7 @@ FrontDesk
   -> Registry
 ```
 
-Implementation docs:
+Implementation and verification docs:
 
 - [Codex Goal Adaptive Steering Execution Plan](CODEX_GOAL_ADAPTIVE_STEERING_EXECUTION_PLAN.md)
 - [Adaptive Steering Implementation Plan](ADAPTIVE_STEERING_IMPLEMENTATION_PLAN.md)
@@ -41,6 +42,7 @@ Implementation docs:
 - [ForgeUnit SkillFoundry Composition](FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md)
 - [ForgeUnit Product Adapter Slice](FORGEUNIT_PRODUCT_ADAPTER_SLICE.md)
 - [Development Workflow](DEVELOPMENT_WORKFLOW.md)
+- [Git Worktree Workflow](WORKTREE_WORKFLOW.md)
 - [Fresh Clone Gate](FRESH_CLONE_GATE.md)
 - [SkillFoundry Cleanup Completion Plan](SKILLFOUNDRY_CLEANUP_COMPLETION_PLAN.md)
 - [Product-Grade Gate Upgrade Plan](SKILLFOUNDRY_PRODUCT_GRADE_GATE_UPGRADE_PLAN.md)

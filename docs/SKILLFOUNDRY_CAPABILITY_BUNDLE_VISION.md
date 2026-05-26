@@ -1342,6 +1342,17 @@ domain reviewer blocks -> 不能 registry
 
 复杂任务的主观能动性不是靠 prompt 祈祷出来的，而是靠持续观测、修正和决策账本 scaffold 出来的。
 
+### 当前结论
+
+这套 adaptive steering 叙事已经不只是愿景。
+
+已验证的最小事实是：
+
+- `CapabilityStateEstimate`、`NextStepContract`、`ObservationReport`、`StateCorrection`、`DecisionLedger` 形成了稳定的 product-layer control loop；
+- baseline/upgraded benchmark 证明了 route plan steering 可以被确定性比较，而不是只靠叙述；
+- `worker self-report is not acceptance` 已经体现在实现和验证边界里；
+- 下一步应把稳定字段冻结为 substrate 候选，再判断哪些下沉到 ContextForge / ForgeUnit。
+
 ## 下一步最小落点
 
 为了让本愿景进入代码，推荐下一步先做小而硬的 contract，不做大型平台。
@@ -1365,6 +1376,8 @@ domain reviewer blocks -> 不能 registry
 这两组落点足以让 SkillFoundry 从“Codex Skill 工厂”升级为“卡尔曼式 Capability Bundle 工厂”的第一版。
 
 不需要立刻实现完整 MCP 平台、服务部署平台或知识库构建平台。
+
+当前已经完成第一版升级，所以后续重点不是继续扩充落点，而是把这些落点收敛成更稳定的底座边界。
 
 ## 宪法级结论
 

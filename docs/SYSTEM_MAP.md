@@ -10,6 +10,7 @@ WP documents.
 FrontDesk
   -> ContextForge Goal Runtime
   -> ForgeUnit SkillFoundry vNext
+     -> validated adaptive steering loop
   -> Codex exec / deterministic fake command boundary
   -> SkillFoundry Verifier
   -> Registry
@@ -18,6 +19,10 @@ FrontDesk
 The current mainline is not the old WP0-WP17 prototype path. Historical modules
 and docs remain for compatibility, fixtures, and product memory, but new
 product behavior should start from the mainline above.
+
+The adaptive steering loop is now a verified product-layer control primitive,
+not a temporary experiment. Its stable artifacts are candidates for future
+substate extraction into ContextForge / ForgeUnit.
 
 ## 10-Minute Reading Path
 
@@ -47,6 +52,11 @@ Current composition:
 
 - `src/forgeunit_skillfoundry/`
   Current clean product composition layer.
+- `src/skillfoundry/adaptive.py`, `src/skillfoundry/adaptive_workspace.py`
+  Verified adaptive schema and workspace artifact helpers.
+- `src/forgeunit_skillfoundry/adaptive_graph.py`,
+  `src/forgeunit_skillfoundry/adaptive_benchmark.py`
+  Deterministic adaptive steering loop and baseline/upgraded pressure benchmark.
 - `src/skillfoundry/api.py`
   FrontDesk API and product read models.
 - `src/skillfoundry/frontdesk*.py`
@@ -83,6 +93,17 @@ Read `docs/LEGACY_COMPATIBILITY.md` before building on any of those modules.
 
 Default validation uses deterministic fake command boundaries. It must not call
 live Codex.
+
+Adaptive steering has its own locked regression gate:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/test_adaptive_schema.py \
+  tests/test_adaptive_workspace.py \
+  tests/test_adaptive_graph.py \
+  tests/test_forgeunit_skillfoundry_composition.py \
+  tests/test_adaptive_steering_benchmark.py -q
+```
 
 Live Codex is explicit and manual:
 

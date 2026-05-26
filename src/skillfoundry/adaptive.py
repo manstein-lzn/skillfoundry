@@ -136,6 +136,51 @@ class CapabilityStateEstimate(SchemaModel):
 
 
 @dataclass
+class RoutePlan(SchemaModel):
+    job_id: str
+    iteration: int
+    mission: str
+    current_strategy: str
+    phase_plan: list[str]
+    plan_b: list[str]
+    assumptions: list[str]
+    pivot_triggers: list[str]
+    risk_register: list[str]
+    evidence_strategy: list[str]
+    authority_boundary: list[str]
+    next_step_policy: list[str]
+    based_on_observation_ref: str | None = None
+    previous_route_plan_ref: str | None = None
+    revision_reason: str = ""
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
+    schema_version: str = "skillfoundry.route_plan.v1"
+
+    def validate(self) -> None:
+        super().validate()
+        for name in ("job_id", "mission", "current_strategy"):
+            _require_non_empty_str(getattr(self, name), name)
+        _require_non_negative_int(self.iteration, "iteration")
+        for name in (
+            "phase_plan",
+            "plan_b",
+            "assumptions",
+            "pivot_triggers",
+            "risk_register",
+            "evidence_strategy",
+            "authority_boundary",
+            "next_step_policy",
+        ):
+            _require_str_list(getattr(self, name), name)
+        if self.based_on_observation_ref is not None:
+            _require_ref(self.based_on_observation_ref, "based_on_observation_ref")
+        if self.previous_route_plan_ref is not None:
+            _require_ref(self.previous_route_plan_ref, "previous_route_plan_ref")
+        if self.revision_reason:
+            _require_non_empty_str(self.revision_reason, "revision_reason")
+        _require_safe_metadata(self.metadata, "metadata")
+
+
+@dataclass
 class NextStepContract(SchemaModel):
     job_id: str
     iteration: int
@@ -149,6 +194,7 @@ class NextStepContract(SchemaModel):
     expected_outputs: list[str]
     exit_criteria: list[str]
     stop_conditions: list[str]
+    route_plan_ref: str | None = None
     estimated_followups: list[str] = field(default_factory=list)
     metadata: dict[str, JsonValue] = field(default_factory=dict)
     schema_version: str = "skillfoundry.next_step_contract.v1"
@@ -166,6 +212,8 @@ class NextStepContract(SchemaModel):
             _require_non_empty_str(getattr(self, name), name)
         _require_non_negative_int(self.iteration, "iteration")
         _require_ref(self.current_state_ref, "current_state_ref")
+        if self.route_plan_ref is not None:
+            _require_ref(self.route_plan_ref, "route_plan_ref")
         for name in ("allowed_scope", "visible_refs", "expected_outputs"):
             _require_ref_list(getattr(self, name), name)
         for name in ("exit_criteria", "stop_conditions", "estimated_followups"):

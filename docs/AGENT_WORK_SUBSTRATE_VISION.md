@@ -507,7 +507,7 @@ Verification Gate
 
 ## 泛化路径
 
-短期不应直接在底座层过度抽象。
+短期不应直接在底座层过度抽象；但已验证的 adaptive primitives 也不应继续被当成临时实现。
 
 推荐路径：
 
@@ -535,6 +535,13 @@ LangGraph 保持薄。
 - 真实任务会暴露字段、证据、步长和 review gate 的实际需要；
 - SkillFoundry 足够复杂，适合作为底座试验场；
 - 成熟后再抽象，复用价值更高。
+
+当前结论：
+
+- adaptive steering MVP 已在 SkillFoundry 层验证成立；
+- baseline/upgraded benchmark 已证明它是可比较、可收敛的控制循环；
+- 下一步重点是收敛稳定 primitives，而不是扩大试验半径；
+- 具体领域实例保留在 SkillFoundry，通用骨架再考虑下沉到 ContextForge / ForgeUnit。
 
 ## 可复用应用
 

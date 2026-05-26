@@ -17,9 +17,11 @@ from skillfoundry.adaptive_workspace import (
     adaptive_contract_ref,
     adaptive_correction_ref,
     adaptive_observation_ref,
+    adaptive_route_plan_ref,
     read_decision_ledger,
     read_next_step_contract,
     read_observation_report,
+    read_route_plan,
     read_state_correction,
 )
 from skillfoundry.bundle import BUNDLE_MANIFEST_REF
@@ -163,6 +165,7 @@ def test_adaptive_graph_happy_path_reaches_closure_in_two_iterations(tmp_path: P
     assert state["contextforge"]["adaptive_latest_decision"] == "close"
     assert state["refs"]["adaptive_state"] == ADAPTIVE_CAPABILITY_STATE_REF
     assert state["refs"]["decision_ledger"] == ADAPTIVE_DECISION_LEDGER_REF
+    assert state["refs"]["latest_route_plan"] == adaptive_route_plan_ref(2)
     assert state["refs"]["latest_next_step_contract"] == adaptive_contract_ref(2)
     assert state["refs"]["latest_work_unit_result"] == adaptive_work_unit_result_ref(2)
     assert state["refs"]["latest_observation_report"] == adaptive_observation_ref(2)
@@ -178,6 +181,18 @@ def test_adaptive_graph_happy_path_reaches_closure_in_two_iterations(tmp_path: P
 
     first_contract = read_next_step_contract(workspace, 1)
     second_contract = read_next_step_contract(workspace, 2)
+    initial_route_plan = read_route_plan(workspace, 0)
+    revised_route_plan = read_route_plan(workspace, 1)
+    final_route_plan = read_route_plan(workspace, 2)
+    assert first_contract.route_plan_ref == adaptive_route_plan_ref(0)
+    assert second_contract.route_plan_ref == adaptive_route_plan_ref(1)
+    assert adaptive_route_plan_ref(0) in first_contract.visible_refs
+    assert adaptive_route_plan_ref(1) in second_contract.visible_refs
+    assert initial_route_plan.plan_b
+    assert initial_route_plan.authority_boundary
+    assert initial_route_plan.phase_plan
+    assert revised_route_plan.previous_route_plan_ref == adaptive_route_plan_ref(0)
+    assert final_route_plan.based_on_observation_ref == adaptive_observation_ref(2)
     assert first_contract.expected_outputs == ["package/SKILL.md"]
     assert second_contract.expected_outputs == ["package/skillfoundry.bundle.json"]
     assert read_observation_report(workspace, 2).produced_artifacts == ["package/skillfoundry.bundle.json"]
@@ -204,6 +219,68 @@ def test_adaptive_graph_missing_manifest_generates_manifest_contract(tmp_path: P
     assert contract.expected_outputs == ["package/skillfoundry.bundle.json"]
     assert result.state["contextforge"]["adaptive_latest_iteration"] == 1
     assert workspace.resolve_path("package/skillfoundry.bundle.json", must_exist=True).is_file()
+
+
+def test_adaptive_graph_revises_route_plan_from_worker_recommendation(tmp_path: Path) -> None:
+    recommendation = "Use route plan recommendation to prioritize the manifest."
+
+    def recommending_worker(workspace: JobWorkspace, contract) -> AdaptiveWorkUnitResult:
+        if "package/SKILL.md" in contract.expected_outputs:
+            workspace.resolve_path("package/SKILL.md").write_text("# Recommended Skill\n", encoding="utf-8")
+            return AdaptiveWorkUnitResult(
+                produced_artifacts=["package/SKILL.md"],
+                changed_refs=["package/SKILL.md"],
+                worker_claims=["Wrote skill entrypoint."],
+                verifier_evidence=["package/SKILL.md"],
+                recommended_next_steps=[recommendation],
+                verification_status="passed",
+            )
+        workspace.resolve_path(BUNDLE_MANIFEST_REF).write_text(
+            json.dumps(
+                {
+                    "schema_version": "skillfoundry.bundle.v1",
+                    "bundle_id": workspace.job_id,
+                    "bundle_type": "prompt_only",
+                    "entrypoint": "SKILL.md",
+                    "capability_surface": {},
+                    "runtime_assets": [],
+                    "data_assets": [],
+                    "references": [],
+                    "environment": {},
+                    "permissions": {},
+                    "verification": {},
+                    "distribution": {},
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return AdaptiveWorkUnitResult(
+            produced_artifacts=[BUNDLE_MANIFEST_REF],
+            changed_refs=[BUNDLE_MANIFEST_REF],
+            worker_claims=["Wrote bundle manifest."],
+            verifier_evidence=[BUNDLE_MANIFEST_REF],
+            verification_status="passed",
+        )
+
+    config = AdaptiveGraphConfig(
+        runs_root=tmp_path / "runs",
+        job_id="adaptive-route-plan-recommendation-001",
+        max_iterations=2,
+    )
+
+    result = run_adaptive_graph(config, worker=recommending_worker)
+
+    workspace = JobWorkspace(root=result.workspace_root, job_id=result.job_id)
+    revised_route_plan = read_route_plan(workspace, 1)
+    second_contract = read_next_step_contract(workspace, 2)
+    serialized_state = json.dumps(result.state)
+    assert second_contract.route_plan_ref == adaptive_route_plan_ref(1)
+    assert recommendation in "\n".join([*revised_route_plan.phase_plan, *revised_route_plan.next_step_policy])
+    assert result.state["contextforge"]["adaptive_current_route_plan_ref"] == adaptive_route_plan_ref(1)
+    assert recommendation not in serialized_state
 
 
 def test_adaptive_graph_failed_verification_routes_to_repair(tmp_path: Path) -> None:
@@ -241,7 +318,9 @@ def test_adaptive_graph_failed_verification_routes_to_repair(tmp_path: Path) -> 
     workspace = JobWorkspace(root=result.workspace_root, job_id=result.job_id)
     assert calls == 2
     assert read_state_correction(workspace, 1).next_route == "repair"
-    assert read_next_step_contract(workspace, 2).expected_outputs == ["adaptive/attempts/002/repair_evidence.md"]
+    second_contract = read_next_step_contract(workspace, 2)
+    assert second_contract.expected_outputs == ["adaptive/attempts/002/repair_evidence.md"]
+    assert second_contract.route_plan_ref == adaptive_route_plan_ref(1)
     assert result.state["contextforge"]["adaptive_latest_route"] == "continue"
     assert result.state["contextforge"]["adaptive_failure_count"] == 0
 
@@ -379,6 +458,8 @@ def test_adaptive_graph_routes_product_grade_failure_to_repair_contract(tmp_path
     first_observation = read_observation_report(workspace, 1)
     assert any("product_grade:P0-runtime-matrix-checks-failed" in failure for failure in first_observation.failures)
     second_contract = read_next_step_contract(workspace, 2)
+    assert second_contract.route_plan_ref == adaptive_route_plan_ref(1)
+    assert adaptive_route_plan_ref(1) in second_contract.visible_refs
     assert PRODUCT_REPAIR_PACKET_REF in second_contract.visible_refs
     assert "product_gate:P0-runtime-matrix-checks-failed" in second_contract.next_objective
     assert seen_objectives[1] == second_contract.next_objective
@@ -417,10 +498,12 @@ def test_adaptive_graph_state_keeps_worker_strings_in_artifacts_not_contextforge
     assert marker not in serialized_state
     assert "adaptive_last_worker_claims" not in serialized_state
     assert result.state["refs"]["latest_work_unit_result"] == adaptive_work_unit_result_ref(1)
+    assert result.state["refs"]["latest_route_plan"] == adaptive_route_plan_ref(1)
     assert marker in workspace.resolve_path(adaptive_work_unit_result_ref(1), must_exist=True).read_text(
         encoding="utf-8"
     )
     assert marker in read_observation_report(workspace, 1).worker_claims
+    assert marker in "\n".join(read_route_plan(workspace, 1).next_step_policy)
 
 
 def test_adaptive_graph_does_not_require_live_codex_by_default(tmp_path: Path) -> None:

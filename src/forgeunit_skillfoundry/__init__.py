@@ -14,6 +14,16 @@ from .adaptive_graph import (
     default_adaptive_worker,
     run_adaptive_graph,
 )
+from .adaptive_benchmark import (
+    AdaptiveBenchmarkComparison,
+    AdaptiveBenchmarkMetrics,
+    AdaptiveBenchmarkScenario,
+    benchmark_report,
+    benchmark_scenarios,
+    run_adaptive_steering_benchmark,
+    run_adaptive_steering_scenario,
+    write_benchmark_report,
+)
 from .engine import ForgeUnitSkillFactoryEngine, ForgeUnitSkillFactoryEngineResult
 from .graph import (
     FORGEUNIT_SKILLFOUNDRY_GRAPH_STATE_REF,
@@ -62,8 +72,13 @@ __all__ = [
     "PRODUCT_TRUST_BOUNDARIES",
     "AdaptiveGraphConfig",
     "AdaptiveGraphResult",
+    "AdaptiveBenchmarkComparison",
+    "AdaptiveBenchmarkMetrics",
+    "AdaptiveBenchmarkScenario",
     "AdaptiveWorkUnitResult",
     "adaptive_work_unit_result_ref",
+    "benchmark_report",
+    "benchmark_scenarios",
     "ForgeUnitSkillFactoryEngine",
     "ForgeUnitSkillFactoryEngineResult",
     "ForgeUnitSkillFoundryError",
@@ -79,10 +94,13 @@ __all__ = [
     "prepare_skill_factory_workspace",
     "read_evidence_summary",
     "run_adaptive_graph",
+    "run_adaptive_steering_benchmark",
+    "run_adaptive_steering_scenario",
     "run_codex_skill_factory",
     "run_existing_workspace_skill_factory",
     "run_frozen_frontdesk_skill_factory",
     "run_skill_factory_graph",
     "write_evidence_summary",
+    "write_benchmark_report",
     "write_product_state",
 ]

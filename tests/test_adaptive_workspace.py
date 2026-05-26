@@ -5,6 +5,7 @@ from skillfoundry.adaptive import (
     DecisionRecord,
     NextStepContract,
     ObservationReport,
+    RoutePlan,
     StateCorrection,
 )
 from skillfoundry.adaptive_workspace import (
@@ -15,16 +16,19 @@ from skillfoundry.adaptive_workspace import (
     adaptive_contract_ref,
     adaptive_correction_ref,
     adaptive_observation_ref,
+    adaptive_route_plan_ref,
     append_decision_record,
     initialize_adaptive_workspace,
     read_capability_state_estimate,
     read_decision_ledger,
     read_next_step_contract,
     read_observation_report,
+    read_route_plan,
     read_state_correction,
     write_capability_state_estimate,
     write_next_step_contract,
     write_observation_report,
+    write_route_plan,
     write_state_correction,
 )
 from skillfoundry.schema import SchemaValidationError
@@ -66,7 +70,28 @@ def sample_contract(iteration: int = 1) -> NextStepContract:
         expected_outputs=["package/skillfoundry.bundle.json"],
         exit_criteria=["Manifest file exists and can be parsed."],
         stop_conditions=["Spec contradiction found."],
+        route_plan_ref=adaptive_route_plan_ref(max(iteration - 1, 0)),
         estimated_followups=["Connect manifest validation to verifier."],
+    )
+
+
+def sample_route_plan(iteration: int = 0) -> RoutePlan:
+    return RoutePlan(
+        job_id="demo-001",
+        iteration=iteration,
+        mission="Build a verified capability bundle.",
+        current_strategy="Plan first, run one bounded contract, then revise from observation.",
+        phase_plan=["Create package entrypoint.", "Create bundle manifest.", "Verify closure."],
+        plan_b=["Shrink to repair if observation fails.", "Escalate on repeated failure."],
+        assumptions=["Worker self-report is not acceptance."],
+        pivot_triggers=["Verifier failure.", "New unknown.", "Worker recommendation."],
+        risk_register=["Contracts that are too broad can hide causality."],
+        evidence_strategy=["Use manifest-tracked adaptive refs."],
+        authority_boundary=["Worker tactics stay inside allowed scope."],
+        next_step_policy=["Issue one artifact-producing next-step contract."],
+        based_on_observation_ref=adaptive_observation_ref(iteration) if iteration else None,
+        previous_route_plan_ref=adaptive_route_plan_ref(iteration - 1) if iteration else None,
+        revision_reason="Initial route plan." if iteration == 0 else "Observation changed the tactical plan.",
     )
 
 
@@ -134,6 +159,8 @@ def test_initialize_adaptive_workspace_creates_directory_and_empty_ledger(tmp_pa
 
 def test_adaptive_iteration_refs_are_stable_and_validate_input():
     assert adaptive_contract_ref(1) == "adaptive/next_step_contract_001.json"
+    assert adaptive_route_plan_ref(0) == "adaptive/route_plan_000.json"
+    assert adaptive_route_plan_ref(12) == "adaptive/route_plan_012.json"
     assert adaptive_observation_ref(12) == "adaptive/observation_report_012.json"
     assert adaptive_correction_ref(123) == "adaptive/state_correction_123.json"
 
@@ -148,16 +175,19 @@ def test_write_and_read_adaptive_artifacts_update_manifest(tmp_path):
     adaptive = initialize_adaptive_workspace(workspace)
 
     state_record = write_capability_state_estimate(adaptive, sample_state())
+    route_plan_record = write_route_plan(workspace, sample_route_plan())
     contract_record = write_next_step_contract(workspace, sample_contract())
     observation_record = write_observation_report(adaptive, sample_observation())
     correction_record = write_state_correction(workspace, sample_correction())
 
     assert state_record.path == ADAPTIVE_CAPABILITY_STATE_REF
+    assert route_plan_record.path == adaptive_route_plan_ref(0)
     assert contract_record.path == adaptive_contract_ref(1)
     assert observation_record.path == adaptive_observation_ref(1)
     assert correction_record.path == adaptive_correction_ref(1)
 
     assert read_capability_state_estimate(workspace).to_dict() == sample_state().to_dict()
+    assert read_route_plan(adaptive, 0).to_dict() == sample_route_plan().to_dict()
     assert read_next_step_contract(adaptive, 1).to_dict() == sample_contract().to_dict()
     assert read_observation_report(workspace, 1).to_dict() == sample_observation().to_dict()
     assert read_state_correction(adaptive, 1).to_dict() == sample_correction().to_dict()
@@ -165,6 +195,7 @@ def test_write_and_read_adaptive_artifacts_update_manifest(tmp_path):
     manifest_paths = {record.path for record in workspace.read_manifest().artifacts}
     assert {
         ADAPTIVE_CAPABILITY_STATE_REF,
+        adaptive_route_plan_ref(0),
         adaptive_contract_ref(1),
         adaptive_observation_ref(1),
         adaptive_correction_ref(1),

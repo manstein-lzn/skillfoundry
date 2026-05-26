@@ -15,6 +15,7 @@ from skillfoundry.adaptive import (
     DecisionRecord,
     NextStepContract,
     ObservationReport,
+    RoutePlan,
     StateCorrection,
 )
 from skillfoundry.adaptive_workspace import (
@@ -23,6 +24,7 @@ from skillfoundry.adaptive_workspace import (
     adaptive_contract_ref,
     adaptive_correction_ref,
     adaptive_observation_ref,
+    adaptive_route_plan_ref,
     append_decision_record,
     initialize_adaptive_workspace,
     read_next_step_contract,
@@ -30,6 +32,7 @@ from skillfoundry.adaptive_workspace import (
     write_capability_state_estimate,
     write_next_step_contract,
     write_observation_report,
+    write_route_plan,
     write_state_correction,
 )
 from skillfoundry.bundle import BUNDLE_MANIFEST_REF
@@ -62,6 +65,7 @@ class AdaptiveGraphConfig:
     job_id: str
     max_iterations: int = DEFAULT_ADAPTIVE_MAX_ITERATIONS
     repeated_failure_threshold: int = DEFAULT_REPEATED_FAILURE_THRESHOLD
+    route_plan_steering: bool = True
     overwrite_workspace: bool = False
 
     def __post_init__(self) -> None:
@@ -75,6 +79,8 @@ class AdaptiveGraphConfig:
             or self.repeated_failure_threshold <= 0
         ):
             raise ForgeUnitSkillFoundryError("repeated_failure_threshold must be a positive integer")
+        if not isinstance(self.route_plan_steering, bool):
+            raise ForgeUnitSkillFoundryError("route_plan_steering must be a boolean")
 
 
 @dataclass(frozen=True)
@@ -247,6 +253,20 @@ def _initialize_adaptive_state_node(config: AdaptiveGraphConfig) -> Any:
             confidence=0.4,
         )
         write_capability_state_estimate(workspace, initial_state)
+        if config.route_plan_steering:
+            initial_route_plan = _build_initial_route_plan(config)
+            write_route_plan(workspace, initial_route_plan)
+            route_plan_refs = {"latest_route_plan": adaptive_route_plan_ref(0)}
+            route_plan_context: dict[str, Any] = {
+                "adaptive_current_route_plan_ref": adaptive_route_plan_ref(0),
+                "adaptive_latest_route_plan_iteration": 0,
+            }
+        else:
+            route_plan_refs = {}
+            route_plan_context = {
+                "adaptive_route_plan_steering_enabled": False,
+                "adaptive_latest_route_plan_iteration": 0,
+            }
         next_state: SkillFoundryV2State = {
             "schema_version": "skillfoundry.graph_v2_state.v1",
             "job_id": config.job_id,
@@ -257,6 +277,7 @@ def _initialize_adaptive_state_node(config: AdaptiveGraphConfig) -> Any:
             "refs": {
                 "adaptive_state": ADAPTIVE_CAPABILITY_STATE_REF,
                 "decision_ledger": ADAPTIVE_DECISION_LEDGER_REF,
+                **route_plan_refs,
             },
             "hashes": {},
             "contextforge": {
@@ -266,6 +287,7 @@ def _initialize_adaptive_state_node(config: AdaptiveGraphConfig) -> Any:
                 "adaptive_latest_decision": "continue",
                 "adaptive_latest_verification_status": "not_run",
                 "worker_self_report_is_not_acceptance": True,
+                **route_plan_context,
             },
             "human_review_required": False,
             "next_route": V2Route.CONTINUE.value,
@@ -425,6 +447,7 @@ def _correct_state_node(config: AdaptiveGraphConfig) -> Any:
         contextforge = dict(state.get("contextforge", {}))
         iteration = _latest_iteration(state)
         observation = read_observation_report(workspace, iteration)
+        previous_route_plan_ref = _current_route_plan_ref(state) if config.route_plan_steering else None
         route, decision, failure_count, status = _decide_after_observation(
             workspace,
             state=state,
@@ -471,6 +494,16 @@ def _correct_state_node(config: AdaptiveGraphConfig) -> Any:
                 reviewer="deterministic-adaptive-policy",
             ),
         )
+        route_plan_ref = previous_route_plan_ref
+        if config.route_plan_steering and previous_route_plan_ref is not None and _observation_requires_route_plan_revision(observation):
+            revised_route_plan = _build_revised_route_plan(
+                config,
+                route=route,
+                observation=observation,
+                previous_route_plan_ref=previous_route_plan_ref,
+            )
+            write_route_plan(workspace, revised_route_plan)
+            route_plan_ref = adaptive_route_plan_ref(iteration)
         refs = dict(state.get("refs", {}))
         refs.update(
             {
@@ -479,14 +512,21 @@ def _correct_state_node(config: AdaptiveGraphConfig) -> Any:
                 "decision_ledger": ADAPTIVE_DECISION_LEDGER_REF,
             }
         )
+        if route_plan_ref is not None:
+            refs["latest_route_plan"] = route_plan_ref
         contextforge.update(
             {
                 "adaptive_failure_count": failure_count,
                 "adaptive_latest_decision": decision,
                 "adaptive_latest_route": route,
                 "adaptive_latest_verification_status": corrected_state.latest_verification_status,
+                "adaptive_latest_route_plan_iteration": iteration
+                if route_plan_ref is not None and route_plan_ref == adaptive_route_plan_ref(iteration)
+                else int(contextforge.get("adaptive_latest_route_plan_iteration", 0)),
             }
         )
+        if route_plan_ref is not None:
+            contextforge["adaptive_current_route_plan_ref"] = route_plan_ref
         next_state: SkillFoundryV2State = dict(state)
         next_state.update(
             {
@@ -633,12 +673,14 @@ def _build_next_step_contract(
     contextforge = state.get("contextforge", {})
     route = contextforge.get("adaptive_latest_route") if isinstance(contextforge, dict) else None
     attempt_dir = f"adaptive/attempts/{iteration:03d}"
+    route_plan_ref = _current_route_plan_ref(state) if config.route_plan_steering else None
     if route == "repair":
         product_repair_contract = _build_product_repair_next_step_contract(
             workspace,
             config=config,
             iteration=iteration,
             attempt_dir=attempt_dir,
+            route_plan_ref=route_plan_ref,
         )
         if product_repair_contract is not None:
             return product_repair_contract
@@ -666,10 +708,16 @@ def _build_next_step_contract(
         risk_if_too_large="Combining unrelated assets in one work unit can hide the failing boundary.",
         risk_if_too_small="A non-evidence-producing step does not reduce adaptive uncertainty.",
         allowed_scope=["package", attempt_dir],
-        visible_refs=["skill_spec.yaml", "verification_spec.yaml", ADAPTIVE_CAPABILITY_STATE_REF],
+        visible_refs=[
+            "skill_spec.yaml",
+            "verification_spec.yaml",
+            ADAPTIVE_CAPABILITY_STATE_REF,
+            *([route_plan_ref] if route_plan_ref is not None else []),
+        ],
         expected_outputs=outputs,
         exit_criteria=["Expected refs exist or an explicit failure is recorded."],
         stop_conditions=["Spec contradiction found.", "Path safety violation detected."],
+        route_plan_ref=route_plan_ref,
         estimated_followups=["Observe artifacts and correct the capability state estimate."],
     )
 
@@ -680,6 +728,7 @@ def _build_product_repair_next_step_contract(
     config: AdaptiveGraphConfig,
     iteration: int,
     attempt_dir: str,
+    route_plan_ref: str | None,
 ) -> NextStepContract | None:
     packet = _read_optional_product_repair_packet(workspace)
     if packet is None or not packet.repair_required:
@@ -701,6 +750,7 @@ def _build_product_repair_next_step_contract(
             "skill_spec.yaml",
             "verification_spec.yaml",
             ADAPTIVE_CAPABILITY_STATE_REF,
+            *([route_plan_ref] if route_plan_ref is not None else []),
             PRODUCT_GRADE_REPORT_REF,
             PRODUCT_REPAIR_PACKET_REF,
         ],
@@ -718,6 +768,7 @@ def _build_product_repair_next_step_contract(
             "Repair requires changing frozen user requirements.",
             "Repair would need access outside the allowed package or qa refs.",
         ],
+        route_plan_ref=route_plan_ref,
         estimated_followups=["Observe ProductGradeGate evidence and correct the adaptive state estimate."],
         metadata={
             "product_grade_report_ref": PRODUCT_GRADE_REPORT_REF,
@@ -754,6 +805,257 @@ def _product_acceptance_matrix_exists(workspace: JobWorkspace) -> bool:
 def _optional_workspace_path(workspace: JobWorkspace, ref: str) -> Path:
     safe = validate_relative_path(ref)
     return workspace.root.joinpath(*safe.parts)
+
+
+def _current_route_plan_ref(state: SkillFoundryV2State) -> str:
+    refs = state.get("refs", {})
+    if isinstance(refs, dict):
+        value = refs.get("latest_route_plan")
+        if isinstance(value, str) and value:
+            validate_relative_path(value)
+            return value
+    contextforge = state.get("contextforge", {})
+    if isinstance(contextforge, dict):
+        value = contextforge.get("adaptive_current_route_plan_ref")
+        if isinstance(value, str) and value:
+            validate_relative_path(value)
+            return value
+    return adaptive_route_plan_ref(0)
+
+
+def _build_initial_route_plan(config: AdaptiveGraphConfig) -> RoutePlan:
+    return RoutePlan(
+        job_id=config.job_id,
+        iteration=0,
+        mission="Build a verified capability bundle through adaptive steering.",
+        current_strategy=(
+            "Use a mission-command loop: maintain a route plan and Plan B, issue one bounded "
+            "next-step contract, observe real artifacts, then correct state before choosing the next contract."
+        ),
+        phase_plan=[
+            "Inspect the workspace and create the smallest missing package boundary artifact.",
+            "Create or repair the bundle manifest once the entrypoint exists.",
+            "Run independent bundle and product-grade verification before closure.",
+            "Close only when verifier evidence, not worker claims, proves the bundle boundary.",
+        ],
+        plan_b=[
+            "If a work unit fails, shrink the next contract to one evidence-producing repair.",
+            "If failures repeat, route to independent review instead of continuing tactical execution.",
+            "If product-grade checks emit a repair packet, prioritize the packet over generic closure work.",
+        ],
+        assumptions=[
+            "The frozen skill and verification specs are the mission boundary.",
+            "The worker may choose tactics inside allowed_scope, but acceptance depends on verifier evidence.",
+            "The first reliable progress signal is creation of refs, not narrative self-report.",
+        ],
+        pivot_triggers=[
+            "Observation reports failures.",
+            "Observation reports new unknowns.",
+            "Observation recommends a next step that changes the current tactical order.",
+            "Verifier evidence contradicts worker-reported status.",
+        ],
+        risk_register=[
+            "Over-broad contracts can make it unclear which change fixed or broke the bundle.",
+            "Over-narrow contracts can create busywork without reducing verification uncertainty.",
+            "Accepting worker claims as truth can hide invalid bundle manifests.",
+        ],
+        evidence_strategy=[
+            "Persist every contract, observation, state correction, and route plan as adaptive refs.",
+            "Use BundleVerifier and ProductGradeGate outputs as independent observations.",
+            "Keep graph state refs-only and store detailed worker recommendations in artifacts.",
+        ],
+        authority_boundary=_route_plan_authority_boundary(),
+        next_step_policy=[
+            "Before each work unit, use the latest route plan ref plus current package state to choose the next contract.",
+            "Prefer the smallest contract that produces a durable artifact or a clear failure observation.",
+            "After each observation, revise the plan when reality changes the assumptions, risks, or tactical order.",
+        ],
+        revision_reason="Initial route plan from current mission prior.",
+    )
+
+
+def _observation_requires_route_plan_revision(observation: ObservationReport) -> bool:
+    return bool(observation.failures or observation.new_unknowns or observation.recommended_next_steps)
+
+
+def _build_revised_route_plan(
+    config: AdaptiveGraphConfig,
+    *,
+    route: str,
+    observation: ObservationReport,
+    previous_route_plan_ref: str,
+) -> RoutePlan:
+    return RoutePlan(
+        job_id=config.job_id,
+        iteration=observation.iteration,
+        mission="Build a verified capability bundle through adaptive steering.",
+        current_strategy=_route_plan_current_strategy(route, observation),
+        phase_plan=_route_plan_phase_plan(route, observation),
+        plan_b=_route_plan_plan_b(route, observation),
+        assumptions=_route_plan_assumptions(observation),
+        pivot_triggers=_route_plan_pivot_triggers(route),
+        risk_register=_route_plan_risk_register(route, observation),
+        evidence_strategy=_route_plan_evidence_strategy(route, observation),
+        authority_boundary=_route_plan_authority_boundary(),
+        next_step_policy=_route_plan_next_step_policy(route, observation),
+        based_on_observation_ref=adaptive_observation_ref(observation.iteration),
+        previous_route_plan_ref=previous_route_plan_ref,
+        revision_reason=_route_plan_revision_reason(route, observation),
+    )
+
+
+def _route_plan_current_strategy(route: str, observation: ObservationReport) -> str:
+    if route == "repair":
+        return "The prior contract produced a failing observation; issue a smaller repair contract and demand verifier evidence."
+    if route == "review_required":
+        return "Repeated failures exceeded local steering authority; stop tactical execution and request independent review."
+    if route == "closure":
+        return "Verifier evidence supports closure; preserve final evidence refs and stop generating new tactical work."
+    if observation.recommended_next_steps:
+        return "The latest observation changed tactical knowledge; use the recommendation as advisory input for the next bounded contract."
+    return "Continue the planned build sequence with one bounded artifact-producing contract."
+
+
+def _route_plan_phase_plan(route: str, observation: ObservationReport) -> list[str]:
+    if route == "repair":
+        return [
+            "Read the latest observation and isolate one failing boundary.",
+            "Repair only the affected package, qa, or adaptive attempt refs.",
+            "Rerun independent verification and update the state correction.",
+        ]
+    if route == "review_required":
+        return [
+            "Freeze local execution after recording the latest observation.",
+            "Provide decision ledger, observation, correction, and route plan refs to a reviewer.",
+            "Resume only with reviewer-approved direction or a revised mission boundary.",
+        ]
+    if route == "closure":
+        return [
+            "Keep closure evidence refs durable.",
+            "Emit final product-facing summary from refs.",
+            "Avoid further package mutation after closure evidence passes.",
+        ]
+    phase_plan = [
+        "Apply the latest observation to choose the next missing or weak bundle boundary.",
+        "Issue one next-step contract with route_plan_ref and explicit evidence expectations.",
+        "Observe produced refs and correct the capability estimate before the next contract.",
+    ]
+    phase_plan.extend(_prefixed_items("Worker recommendation", observation.recommended_next_steps[:3]))
+    return phase_plan
+
+
+def _route_plan_plan_b(route: str, observation: ObservationReport) -> list[str]:
+    plan_b = [
+        "If the next observation fails, convert the route to repair and shrink allowed_scope.",
+        "If the same failure repeats, request independent review.",
+    ]
+    if route == "repair":
+        plan_b.insert(0, "If repair cannot produce verifier evidence, escalate instead of widening scope.")
+    if route == "closure":
+        plan_b.insert(0, "If final summary generation fails, preserve verifier refs and repair the reporting path only.")
+    plan_b.extend(_prefixed_items("Fallback from recommendation", observation.recommended_next_steps[:2]))
+    return plan_b
+
+
+def _route_plan_assumptions(observation: ObservationReport) -> list[str]:
+    assumptions = [
+        "Artifact refs and verifier outputs are more reliable than worker claims.",
+        "Allowed scope remains the authority boundary for the next work unit.",
+    ]
+    if observation.produced_artifacts:
+        assumptions.append("Latest produced refs are available for verifier inspection.")
+    if observation.new_unknowns:
+        assumptions.extend(_prefixed_items("Open unknown", observation.new_unknowns[:5]))
+    if observation.failures:
+        assumptions.append("At least one previous assumption was invalidated by failure evidence.")
+    return assumptions
+
+
+def _route_plan_pivot_triggers(route: str) -> list[str]:
+    triggers = [
+        "Any verifier failure appears in the next observation.",
+        "The worker recommends a materially different next step.",
+        "A required artifact cannot be produced within the allowed scope.",
+    ]
+    if route == "repair":
+        triggers.append("Repair evidence does not remove the previously observed failure.")
+    if route == "review_required":
+        triggers.append("Reviewer rejects the current mission boundary or acceptance evidence.")
+    return triggers
+
+
+def _route_plan_risk_register(route: str, observation: ObservationReport) -> list[str]:
+    risks = [
+        "A plan that is not revised after observation can preserve stale assumptions.",
+        "A contract that is too broad can hide the causal link between work and verification evidence.",
+    ]
+    risks.extend(_prefixed_items("Observed failure", observation.failures[:5]))
+    if route == "review_required":
+        risks.append("Continuing without review would exceed the repeated-failure boundary.")
+    if observation.new_unknowns:
+        risks.append("New unknowns may require narrowing or redesigning the next contract.")
+    return risks
+
+
+def _route_plan_evidence_strategy(route: str, observation: ObservationReport) -> list[str]:
+    strategy = [
+        "Keep the next-step contract, observation, state correction, and route plan as manifest-tracked refs.",
+        "Treat BundleVerifier and ProductGradeGate results as acceptance evidence.",
+    ]
+    if observation.verifier_evidence:
+        strategy.extend(_prefixed_items("Latest evidence ref", observation.verifier_evidence[:5]))
+    if route == "repair":
+        strategy.append("Require repair evidence to reference the failing observation and the repaired refs.")
+    if route == "closure":
+        strategy.append("Use closure only after independent verifier evidence passes.")
+    return strategy
+
+
+def _route_plan_authority_boundary() -> list[str]:
+    return [
+        "The harness sets mission, allowed scope, refs, stop conditions, and acceptance criteria.",
+        "The worker may choose tactics only inside the next-step contract allowed_scope.",
+        "The verifier decides observed status; worker self-report is advisory.",
+        "Repeated failures or frozen-spec contradictions require review rather than autonomous expansion.",
+    ]
+
+
+def _route_plan_next_step_policy(route: str, observation: ObservationReport) -> list[str]:
+    if route == "review_required":
+        return [
+            "Do not issue another worker contract until review completes.",
+            "Present observation, correction, decision ledger, and route plan refs as review evidence.",
+        ]
+    if route == "closure":
+        return [
+            "Do not broaden the mission after closure evidence passes.",
+            "Emit product-facing summaries from refs without embedding artifact bodies.",
+        ]
+    policy = [
+        "Issue the next contract from the latest route plan ref and current workspace facts.",
+        "Prefer one artifact-producing objective over multi-surface work.",
+        "Include stop conditions that force observation when the worker encounters contradiction or unsafe paths.",
+    ]
+    if route == "repair":
+        policy.insert(1, "Narrow the repair contract to the failing evidence boundary.")
+    policy.extend(_prefixed_items("Advisory next step", observation.recommended_next_steps[:5]))
+    return policy
+
+
+def _route_plan_revision_reason(route: str, observation: ObservationReport) -> str:
+    reasons: list[str] = []
+    if observation.failures:
+        reasons.append("failures")
+    if observation.new_unknowns:
+        reasons.append("new_unknowns")
+    if observation.recommended_next_steps:
+        reasons.append("recommended_next_steps")
+    basis = ", ".join(reasons) if reasons else "observation"
+    return f"Revised after observation {observation.iteration} because {basis} changed route plan for {route}."
+
+
+def _prefixed_items(prefix: str, items: list[str]) -> list[str]:
+    return [f"{prefix}: {item}" for item in items if item]
 
 
 def _decide_after_observation(

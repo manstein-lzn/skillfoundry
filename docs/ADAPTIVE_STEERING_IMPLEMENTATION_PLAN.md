@@ -705,15 +705,10 @@ Phase 7-8: pilots
 
 ## 当前下一步
 
-建议立即执行 Phase 0。
+当前不是继续推进 phase，而是维护已验证的 adaptive 资产与其文档边界。
 
-之后进入 Phase 1，先实现：
+建议的后续动作只有三类：
 
-```text
-src/skillfoundry/adaptive.py
-tests/test_adaptive_schema.py
-```
-
-第一版只做 schema，不接 graph、不接 worker、不改 ContextForge / ForgeUnit。
-
-这是把愿景转成可测试 contract 的最小动作。
+1. 保持 `adaptive.py` / `adaptive_workspace.py` / `adaptive_graph.py` / benchmark 的回归稳定；
+2. 只在新的真实需求出现时，再开新的 worktree 主线或新的 phase；
+3. 如果要下沉 primitives，优先基于新的重复证据，而不是基于单次成功。

@@ -32,6 +32,16 @@ scripts/dev_check.sh fresh-clone
 scripts/dev_check.sh live-help
 ```
 
+For substantial upgrade tracks, first create an isolated git worktree:
+
+```bash
+scripts/worktree_task.sh new <task-slug>
+cd ../skillfoundry-worktrees/<task-slug>
+```
+
+See `docs/WORKTREE_WORKFLOW.md` for branch naming, bootstrap, and merge
+discipline.
+
 ## Focused Check
 
 Use this after changes to FrontDesk, ForgeUnit adapter boundaries, eval harness

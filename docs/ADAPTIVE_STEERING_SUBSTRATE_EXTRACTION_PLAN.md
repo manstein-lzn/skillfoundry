@@ -66,6 +66,12 @@ Extract the narrow stable core.
 Avoid substrate rewrites until evidence repeats.
 ```
 
+当前结论已经比文档标题更进一步：
+
+- 这条 adaptive steering 路线已在 SkillFoundry 层验证成立；
+- 现在的主要工作不是继续证明它能跑，而是判断哪些字段 / 约束 / gate 值得成为底座候选；
+- 因此这里的“Extraction Plan”已经从计划变成了稳定化判读记录。
+
 ## Keep / Extract / Defer 总表
 
 | Primitive | 当前落点 | 判断 | 说明 |
@@ -516,4 +522,12 @@ adaptive steering 作为 SkillFoundry product-layer MVP 是可行的。
 Keep product implementation.
 Extract later.
 Use real pilots as the abstraction filter.
+```
+
+换成当前项目状态就是：
+
+```text
+Keep the verified product implementation.
+Treat the stable primitives as substrate candidates.
+Do not freeze the whole product-layer shape into the base API yet.
 ```
