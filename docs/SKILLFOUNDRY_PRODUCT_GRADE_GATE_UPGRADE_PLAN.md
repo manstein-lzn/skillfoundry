@@ -639,9 +639,11 @@ Implemented:
   - WP5 ProductGradeGate MVP
   - WP6 Registry Promotion Split 的 MVP
   - WP7 Reviewer Repair Loop 的 deterministic MVP
+  - reference_heavy / data_conversion / knowledge_db / service_bundle 的静态产品证据门禁 MVP
 
 Not implemented yet:
-  - 针对 reference_heavy / knowledge_db / service_bundle 等 profile 的真实执行门禁
+  - 针对 reference_heavy / knowledge_db / service_bundle 等 profile 的真实执行命令门禁
+  - MCP connector / toolchain 等 profile 的专用产品门禁
 ```
 
 当前 runtime matrix runner 使用候选包声明的：
@@ -705,6 +707,31 @@ add_product_grade
   -> requires product_grade=true
   -> registry_status: product_grade_registered
 ```
+
+ProductGradeGate 现在还会对以下 profile 执行静态证据门禁：
+
+```text
+reference_heavy_skill
+  - PG-REFERENCE-SOURCE-INVENTORY
+  - requires source inventory and source hash evidence
+
+data_conversion_skill
+  - PG-REFERENCE-CONVERSION-PROVENANCE
+  - requires conversion commands, tool versions, and failed-source handling
+
+knowledge_db_skill
+  - PG-REFERENCE-CITATION-MAPPING
+  - requires citation/source mapping and retrieval smoke evidence
+
+service_bundle_skill
+  - PG-SERVICE-STARTUP-CONTRACT
+  - PG-SERVICE-HEALTHCHECK
+  - PG-SERVICE-SHUTDOWN-BOUNDARY
+```
+
+这些检查仍然是 MVP 级 required-evidence gate，不等价于真实启动服务、
+真实构建知识库或真实跑检索评测。它们的作用是让缺少核心证据的候选包
+不能进入 product-grade promotion。
 
 ## 成功标准
 

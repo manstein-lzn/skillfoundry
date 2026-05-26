@@ -72,6 +72,25 @@ def eda_like_spec() -> SkillSpec:
     )
 
 
+def service_like_spec() -> SkillSpec:
+    return SkillSpec(
+        skill_id="local-service-skill",
+        title="Local MCP service skill",
+        description=(
+            "Build a Codex skill that packages a long-running local server daemon with HTTP API startup, "
+            "healthcheck, shutdown, and process cleanup instructions."
+        ),
+        trigger_scenarios=["The user wants to run a local background service from the skill package."],
+        non_trigger_scenarios=["One-shot prompt-only guidance."],
+        required_inputs=["Service config", "local port", "environment variables"],
+        expected_outputs=["A packaged service bundle with startup and healthcheck docs."],
+        constraints=["Document lifecycle boundaries and avoid unmanaged background processes."],
+        acceptance_criteria=["Service startup, healthcheck, and shutdown smoke tests are documented."],
+        reference_materials=[],
+        security_notes=["Do not expose secrets through the service environment."],
+    )
+
+
 def test_compiler_infers_runtime_local_file_and_structured_profiles(tmp_path: Path):
     workspace = make_workspace(tmp_path, codexarium_like_spec())
 
@@ -115,6 +134,19 @@ def test_compiler_infers_reference_heavy_data_conversion_profiles(tmp_path: Path
     assert "PG-REFERENCE-SOURCE-INVENTORY" in item_ids
     assert "PG-REFERENCE-CONVERSION-PROVENANCE" in item_ids
     assert "PG-REFERENCE-CITATION-MAPPING" in item_ids
+
+
+def test_compiler_infers_service_bundle_product_matrix_items(tmp_path: Path):
+    workspace = make_workspace(tmp_path, service_like_spec(), job_id="compiler-service")
+
+    artifacts = ProductContractCompiler().compile(workspace)
+
+    assert "service_bundle_skill" in artifacts.delivery_profile.profiles
+    assert "long_running_service" in artifacts.risk_profile.risk_domains
+    item_ids = {item.item_id for item in artifacts.acceptance_matrix.items}
+    assert "PG-SERVICE-STARTUP-CONTRACT" in item_ids
+    assert "PG-SERVICE-HEALTHCHECK" in item_ids
+    assert "PG-SERVICE-SHUTDOWN-BOUNDARY" in item_ids
 
 
 def test_compiler_outputs_refs_only_artifacts_without_raw_conversation(tmp_path: Path):

@@ -21,7 +21,19 @@ from .security import validate_relative_path
 from .workspace import JobWorkspace
 
 
-SCAN_DIRS = ("package/tests", "package/src", "package/runtime", "package/scripts", "package/fixtures", "package/examples")
+SCAN_DIRS = (
+    "package/SKILL.md",
+    "package/README.md",
+    "package/docs",
+    "package/references",
+    "package/service",
+    "package/tests",
+    "package/src",
+    "package/runtime",
+    "package/scripts",
+    "package/fixtures",
+    "package/examples",
+)
 SOURCE_DIRS = ("package/src", "package/runtime", "package/scripts")
 SKIP_DIR_NAMES = {".git", "__pycache__", "node_modules", "target", "dist", "build", ".pytest_cache", ".mypy_cache"}
 TEXT_SUFFIXES = {
@@ -76,6 +88,74 @@ TYPED_STRUCTURED_PARSER_MARKERS = (
     "ajv",
     "json.parse",
     "json.loads",
+)
+SOURCE_INVENTORY_MARKERS = (
+    "source inventory",
+    "source_inventory",
+    "source manifest",
+    "source_manifest",
+    "document inventory",
+    "source document",
+    "source documents",
+)
+SOURCE_HASH_MARKERS = (
+    "sha256",
+    "source hash",
+    "source_hash",
+    "content hash",
+    "document hash",
+)
+CONVERSION_PROVENANCE_MARKERS = (
+    "conversion provenance",
+    "conversion_provenance",
+    "conversion command",
+    "conversion_command",
+    "tool version",
+    "tool_version",
+    "failed-source handling",
+    "failed source handling",
+    "extract command",
+    "parse command",
+)
+CITATION_MAPPING_MARKERS = (
+    "citation mapping",
+    "citation_mapping",
+    "source_ref",
+    "source ref",
+    "source_chunk",
+    "chunk_id",
+    "source span",
+)
+RETRIEVAL_SMOKE_MARKERS = (
+    "retrieval smoke",
+    "retrieval_smoke",
+    "retrieval smoke test",
+    "factual qa",
+    "citation check",
+)
+SERVICE_STARTUP_MARKERS = (
+    "startup command",
+    "start command",
+    "service startup",
+    "required environment",
+    "environment variable",
+    "port",
+    "listen",
+)
+SERVICE_HEALTHCHECK_MARKERS = (
+    "healthcheck",
+    "health check",
+    "smoke test",
+    "readiness",
+    "ping",
+)
+SERVICE_SHUTDOWN_MARKERS = (
+    "shutdown",
+    "cleanup",
+    "background process",
+    "process boundary",
+    "stop command",
+    "graceful stop",
 )
 
 
@@ -148,6 +228,12 @@ class ProductGradeGate:
                 parser_finding = _evaluate_typed_parser_evidence(scan_files)
                 if parser_finding is not None:
                     findings.append(parser_finding)
+            reference_findings, reference_checked_ids = _evaluate_reference_data_evidence(item_ids, scan_files)
+            checked_item_ids.extend(reference_checked_ids)
+            findings.extend(reference_findings)
+            service_findings, service_checked_ids = _evaluate_service_bundle_evidence(item_ids, scan_files)
+            checked_item_ids.extend(service_checked_ids)
+            findings.extend(service_findings)
 
         package_hash = hash_package_tree(workspace)
         product_grade = not any(finding.severity in PRODUCT_GRADE_FAILING_SEVERITIES for finding in findings)
@@ -246,6 +332,143 @@ def _evaluate_typed_parser_evidence(scan_files: list[ScannedFile]) -> ProductGra
     )
 
 
+def _evaluate_reference_data_evidence(
+    item_ids: set[str],
+    scan_files: list[ScannedFile],
+) -> tuple[list[ProductGradeFinding], list[str]]:
+    findings: list[ProductGradeFinding] = []
+    checked_item_ids: list[str] = []
+
+    if "PG-REFERENCE-SOURCE-INVENTORY" in item_ids:
+        checked_item_ids.append("PG-REFERENCE-SOURCE-INVENTORY")
+        inventory_refs = _refs_matching_markers(scan_files, SOURCE_INVENTORY_MARKERS)
+        hash_refs = _refs_matching_markers(scan_files, SOURCE_HASH_MARKERS)
+        missing: list[str] = []
+        if not inventory_refs:
+            missing.append("source inventory")
+        if not hash_refs:
+            missing.append("source hashes")
+        if missing:
+            findings.append(
+                ProductGradeFinding(
+                    finding_id="P1-reference-source-inventory-missing",
+                    severity="major",
+                    title="Reference source inventory evidence is missing",
+                    message="Reference-heavy skills must identify the source documents used to build reference assets and record source hashes.",
+                    affected_profiles=["reference_heavy_skill"],
+                    affected_risk_domains=["external_document_ingestion"],
+                    required_fix="Add a source inventory with source document identifiers, local refs, and sha256/source-hash evidence.",
+                    required_tests=["source inventory exists", "source hashes are recorded"],
+                    evidence_refs=_dedupe_refs(inventory_refs + hash_refs),
+                    metadata={"missing_evidence": missing},
+                )
+            )
+
+    if "PG-REFERENCE-CONVERSION-PROVENANCE" in item_ids:
+        checked_item_ids.append("PG-REFERENCE-CONVERSION-PROVENANCE")
+        provenance_refs = _refs_matching_markers(scan_files, CONVERSION_PROVENANCE_MARKERS)
+        if not provenance_refs:
+            findings.append(
+                ProductGradeFinding(
+                    finding_id="P1-reference-conversion-provenance-missing",
+                    severity="major",
+                    title="Reference conversion provenance is missing",
+                    message="Data-conversion skills must record conversion commands, tool versions, and failed-source handling.",
+                    affected_profiles=["data_conversion_skill"],
+                    affected_risk_domains=["external_document_ingestion"],
+                    required_fix="Add conversion provenance that records commands, tool versions, input/output refs, and failed-source handling.",
+                    required_tests=["conversion provenance exists", "tool versions are recorded", "failed-source handling is documented"],
+                    evidence_refs=[],
+                )
+            )
+
+    if "PG-REFERENCE-CITATION-MAPPING" in item_ids:
+        checked_item_ids.append("PG-REFERENCE-CITATION-MAPPING")
+        citation_refs = _refs_matching_markers(scan_files, CITATION_MAPPING_MARKERS)
+        retrieval_refs = _refs_matching_markers(scan_files, RETRIEVAL_SMOKE_MARKERS)
+        missing = []
+        if not citation_refs:
+            missing.append("citation/source mapping")
+        if not retrieval_refs:
+            missing.append("retrieval smoke tests")
+        if missing:
+            findings.append(
+                ProductGradeFinding(
+                    finding_id="P1-reference-citation-mapping-missing",
+                    severity="major",
+                    title="Citation mapping or retrieval smoke evidence is missing",
+                    message="Knowledge-db skills must keep generated facts traceable to source chunks and prove retrieval with smoke tests.",
+                    affected_profiles=["knowledge_db_skill"],
+                    affected_risk_domains=["domain_knowledge_reliability"],
+                    required_fix="Add citation/source mapping and retrieval smoke tests that bind generated references back to source chunks.",
+                    required_tests=["citation mapping exists", "retrieval smoke tests pass", "sample factual QA has source refs"],
+                    evidence_refs=_dedupe_refs(citation_refs + retrieval_refs),
+                    metadata={"missing_evidence": missing},
+                )
+            )
+
+    return findings, checked_item_ids
+
+
+def _evaluate_service_bundle_evidence(
+    item_ids: set[str],
+    scan_files: list[ScannedFile],
+) -> tuple[list[ProductGradeFinding], list[str]]:
+    findings: list[ProductGradeFinding] = []
+    checked_item_ids: list[str] = []
+
+    checks = [
+        (
+            "PG-SERVICE-STARTUP-CONTRACT",
+            "P1-service-startup-contract-missing",
+            "Service startup contract is missing",
+            "Service bundles must document startup command, environment, ports, and local process boundaries.",
+            "Document the service startup command, required environment variables, ports, and process boundary.",
+            ["service startup contract exists", "startup command and required environment are documented"],
+            SERVICE_STARTUP_MARKERS,
+        ),
+        (
+            "PG-SERVICE-HEALTHCHECK",
+            "P1-service-healthcheck-missing",
+            "Service healthcheck evidence is missing",
+            "Service bundles must include a healthcheck or smoke test that proves the service is reachable.",
+            "Add a healthcheck or smoke test with command evidence for service readiness.",
+            ["service healthcheck exists", "service smoke test exists"],
+            SERVICE_HEALTHCHECK_MARKERS,
+        ),
+        (
+            "PG-SERVICE-SHUTDOWN-BOUNDARY",
+            "P1-service-shutdown-boundary-missing",
+            "Service shutdown boundary is missing",
+            "Service bundles must document shutdown, cleanup, and background-process ownership boundaries.",
+            "Document shutdown, cleanup, and background-process ownership boundaries.",
+            ["service shutdown boundary exists", "background process cleanup is documented"],
+            SERVICE_SHUTDOWN_MARKERS,
+        ),
+    ]
+    for item_id, finding_id, title, message, required_fix, required_tests, markers in checks:
+        if item_id not in item_ids:
+            continue
+        checked_item_ids.append(item_id)
+        refs = _refs_matching_markers(scan_files, markers)
+        if refs:
+            continue
+        findings.append(
+            ProductGradeFinding(
+                finding_id=finding_id,
+                severity="major",
+                title=title,
+                message=message,
+                affected_profiles=["service_bundle_skill"],
+                affected_risk_domains=["long_running_service"],
+                required_fix=required_fix,
+                required_tests=required_tests,
+                evidence_refs=[],
+            )
+        )
+    return findings, checked_item_ids
+
+
 def _refs_matching_duplicate_path(scan_files: list[ScannedFile]) -> list[str]:
     refs: list[str] = []
     for scanned in scan_files:
@@ -281,8 +504,18 @@ def _refs_matching_typed_parser(scan_files: list[ScannedFile]) -> list[str]:
     return _dedupe_refs(refs)
 
 
+def _refs_matching_markers(scan_files: list[ScannedFile], markers: tuple[str, ...]) -> list[str]:
+    refs: list[str] = []
+    for scanned in scan_files:
+        haystack = f"{scanned.ref}\n{scanned.text}".lower()
+        if any(marker in haystack for marker in markers):
+            refs.append(scanned.ref)
+    return _dedupe_refs(refs)
+
+
 def _scan_package_files(workspace: JobWorkspace) -> list[ScannedFile]:
     result: list[ScannedFile] = []
+    seen_refs: set[str] = set()
     for scan_dir in SCAN_DIRS:
         root = _optional_workspace_path(workspace, scan_dir)
         if not root.exists():
@@ -301,6 +534,9 @@ def _scan_package_files(workspace: JobWorkspace) -> list[ScannedFile]:
             except UnicodeDecodeError:
                 continue
             ref = path.relative_to(workspace.root).as_posix()
+            if ref in seen_refs:
+                continue
+            seen_refs.add(ref)
             result.append(ScannedFile(ref=ref, text=text))
     return result
 

@@ -439,6 +439,8 @@ def _build_acceptance_items(job_id: str, profiles: list[str], risks: list[str]) 
         items.extend(_codex_skill_docs_items())
     if "reference_heavy_skill" in profiles or "data_conversion_skill" in profiles:
         items.extend(_reference_data_items(profiles))
+    if "service_bundle_skill" in profiles:
+        items.extend(_service_bundle_items())
     return [_with_job_metadata(item, job_id, profiles, risks) for item in items]
 
 
@@ -567,6 +569,39 @@ def _reference_data_items(profiles: list[str]) -> list[ProductAcceptanceItem]:
             )
         )
     return items
+
+
+def _service_bundle_items() -> list[ProductAcceptanceItem]:
+    requirements = [
+        (
+            "PG-SERVICE-STARTUP-CONTRACT",
+            "Document service startup command, required environment, ports, and local process boundary.",
+            "service startup contract",
+        ),
+        (
+            "PG-SERVICE-HEALTHCHECK",
+            "Provide a healthcheck or smoke test that proves the service is reachable after startup.",
+            "service healthcheck evidence",
+        ),
+        (
+            "PG-SERVICE-SHUTDOWN-BOUNDARY",
+            "Document shutdown, cleanup, and background-process ownership boundaries.",
+            "service shutdown boundary",
+        ),
+    ]
+    return [
+        _item(
+            item_id,
+            requirement,
+            "service_bundle_skill",
+            "long_running_service",
+            "required_evidence_check",
+            "major",
+            [required_evidence],
+            "service_bundle_mvp",
+        )
+        for item_id, requirement, required_evidence in requirements
+    ]
 
 
 def _item(
