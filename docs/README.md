@@ -9,6 +9,8 @@ Read these first, in order:
 
 - [Agent Work Substrate Vision](AGENT_WORK_SUBSTRATE_VISION.md): cross-application substrate vision for LangGraph + ForgeUnit + ContextForge adaptive agent work.
 - [Recursive Agent Organization Vision](RECURSIVE_AGENT_ORGANIZATION_VISION.md): long-term target for recursively composing agents, teams, departments, and organizations through one control substrate.
+- [Control/System Architecture Health Report](CONTROL_SYSTEM_ARCHITECTURE_HEALTH_REPORT.md): current architecture health check from control-system and systems-theory angles.
+- [Controlled LLM Steering Upgrade Plan](CONTROLLED_LLM_STEERING_UPGRADE_PLAN.md): next upgrade plan for introducing constrained LLM proposal nodes into adaptive steering.
 - [SkillFoundry Capability Bundle Vision](SKILLFOUNDRY_CAPABILITY_BUNDLE_VISION.md): product constitution for the AI-native capability bundle direction.
 - [System Map](SYSTEM_MAP.md): current architecture and 10-minute reading path.
 - [ForgeUnit SkillFoundry Composition](FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md): current product composition layer.
@@ -37,6 +39,7 @@ FrontDesk
 Implementation and verification docs:
 
 - [Codex Goal Adaptive Steering Execution Plan](CODEX_GOAL_ADAPTIVE_STEERING_EXECUTION_PLAN.md)
+- [Controlled LLM Steering Upgrade Plan](CONTROLLED_LLM_STEERING_UPGRADE_PLAN.md)
 - [Adaptive Steering Implementation Plan](ADAPTIVE_STEERING_IMPLEMENTATION_PLAN.md)
 - [Adaptive Steering Substrate Extraction Plan](ADAPTIVE_STEERING_SUBSTRATE_EXTRACTION_PLAN.md)
 - [System Map](SYSTEM_MAP.md)
@@ -53,6 +56,8 @@ Architecture and product direction:
 
 - [Agent Work Substrate Vision](AGENT_WORK_SUBSTRATE_VISION.md)
 - [Recursive Agent Organization Vision](RECURSIVE_AGENT_ORGANIZATION_VISION.md)
+- [Control/System Architecture Health Report](CONTROL_SYSTEM_ARCHITECTURE_HEALTH_REPORT.md)
+- [Controlled LLM Steering Upgrade Plan](CONTROLLED_LLM_STEERING_UPGRADE_PLAN.md)
 - [SkillFoundry Capability Bundle Vision](SKILLFOUNDRY_CAPABILITY_BUNDLE_VISION.md)
 - [Adaptive Steering Substrate Extraction Plan](ADAPTIVE_STEERING_SUBSTRATE_EXTRACTION_PLAN.md)
 - [SkillFoundry v2 Baseline](SKILLFOUNDRY_V2_BASELINE.md)
