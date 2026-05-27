@@ -12,6 +12,7 @@ from skillfoundry.workspace import JobWorkspace
 
 from ..config import ForgeUnitSkillFoundryError
 from ..adaptive_codex import AdaptiveCodexSkillFactoryResult, run_existing_workspace_adaptive_codex_factory
+from ..pi_worker import AdaptivePiWorkerSkillFactoryResult, run_existing_workspace_pi_worker_factory
 from ..engine import ForgeUnitSkillFactoryEngine
 from ..product import ForgeUnitSkillFactoryResult
 from .workspace import run_existing_workspace_skill_factory
@@ -67,6 +68,32 @@ def run_frozen_frontdesk_adaptive_codex_factory(
     state = _read_frontdesk_state(workspace)
     _require_frozen_route_to_build(workspace, state)
     return run_existing_workspace_adaptive_codex_factory(
+        workspace,
+        registry_path=registry_path,
+        command=command,
+        attempt_limit=attempt_limit,
+        version=version,
+        created_at=created_at,
+    )
+
+
+def run_frozen_frontdesk_pi_worker_factory(
+    workspace: JobWorkspace,
+    *,
+    registry_path: str | Path,
+    command: str | list[str] | tuple[str, ...],
+    attempt_limit: int = 2,
+    version: str = DEFAULT_REGISTRY_VERSION,
+    created_at: str | None = None,
+) -> AdaptivePiWorkerSkillFactoryResult:
+    """Run a frozen FrontDesk job through the opt-in adaptive PiWorker path."""
+
+    if not isinstance(workspace, JobWorkspace):
+        raise ForgeUnitSkillFoundryError("workspace must be a JobWorkspace")
+    workspace.check_locked_inputs()
+    state = _read_frontdesk_state(workspace)
+    _require_frozen_route_to_build(workspace, state)
+    return run_existing_workspace_pi_worker_factory(
         workspace,
         registry_path=registry_path,
         command=command,
@@ -137,6 +164,8 @@ def _freeze_manifest_required_refs(freeze_manifest: FreezeManifest) -> tuple[str
         freeze_manifest.worker_input_ref,
         freeze_manifest.build_contract_ref,
     ]
+    if freeze_manifest.task_contract_ref:
+        refs.append(freeze_manifest.task_contract_ref)
     if freeze_manifest.freeze_gate_result_ref:
         refs.append(freeze_manifest.freeze_gate_result_ref)
     return tuple(refs)

@@ -154,6 +154,7 @@ from .frontdesk_schema import (
     SolutionPlan,
     SpecAuditReport,
     StructuredQuestion,
+    TaskContract,
 )
 from .frontdesk_workspace import (
     DEFAULT_FRONTDESK_REFS,
@@ -164,6 +165,7 @@ from .frontdesk_workspace import (
     FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
     FRONTDESK_DIR,
     FRONTDESK_RISK_REPORT_REF,
+    FRONTDESK_TASK_CONTRACT_REF,
     FrontDeskWorkspace,
     append_conversation_turn,
     initialize_frontdesk_workspace,
@@ -174,6 +176,7 @@ from .frontdesk_workspace import (
     write_freeze_manifest,
     write_frontdesk_artifact,
     write_spec_audit_report,
+    write_task_contract,
 )
 from .frontdesk_v2 import (
     CORE_NEED_DISCOVERY_NODE_ID,
@@ -461,6 +464,7 @@ __all__ = [
     "FreezeManifest",
     "FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF",
     "FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF",
+    "FRONTDESK_TASK_CONTRACT_REF",
     "FrontDeskConfig",
     "FrontDeskFreezeGate",
     "FrontDeskFreezeGateResult",
@@ -472,6 +476,7 @@ __all__ = [
     "ProductSemanticCoverageReport",
     "ProductSemanticLock",
     "SolutionPlan",
+    "TaskContract",
     "FrontDeskWorkspace",
     "ExternalAgentSkillBuilderWorker",
     "FRONTDESK_BUDGET_REF",
@@ -688,6 +693,7 @@ __all__ = [
     "write_frontdesk_v2_contract_artifacts",
     "write_contextforge_contract_artifacts",
     "write_spec_audit_report",
+    "write_task_contract",
     "build_forgeunit_boundary_verification_node",
     "build_forgeunit_codex_exec_node",
     "build_forgeunit_registry_gate_node",

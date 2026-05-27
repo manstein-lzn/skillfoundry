@@ -10,7 +10,7 @@ from skillfoundry.registry import DEFAULT_REGISTRY_VERSION
 from skillfoundry.workspace import JOB_ID_RE
 
 
-SkillFactoryMode = Literal["command_bridge", "repair_command_bridge", "adaptive_codex"]
+SkillFactoryMode = Literal["command_bridge", "repair_command_bridge", "adaptive_codex", "adaptive_pi_worker"]
 
 
 class ForgeUnitSkillFoundryError(RuntimeError):

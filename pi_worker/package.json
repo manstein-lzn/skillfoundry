@@ -1,0 +1,13 @@
+{
+  "name": "@skillfoundry/pi-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "SkillFoundry PiWorker sidecar MVP",
+  "scripts": {
+    "smoke": "node src/run_work_unit.mjs"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

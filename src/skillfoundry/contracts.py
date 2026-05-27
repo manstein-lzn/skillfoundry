@@ -482,7 +482,10 @@ def read_contextforge_contract_artifacts(workspace: JobWorkspace) -> ContextForg
 
 def _contextforge_contract_artifacts_exist(workspace: JobWorkspace) -> bool:
     refs = (GOAL_CONTRACT_REF, BUILD_NODE_CONTRACT_REF, VERIFICATION_GATE_REF, CONTRACT_MANIFEST_REF)
-    return all(workspace.resolve_path(ref).is_file() for ref in refs)
+    try:
+        return all(workspace.resolve_path(ref).is_file() for ref in refs)
+    except PathSecurityError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -540,6 +543,11 @@ def _goal_constraints(
         f"Blocked path policies: {', '.join(build_contract.blocked_paths)}",
         f"Timeout seconds: {build_contract.timeout_seconds}",
         f"Attempt limit: {build_contract.attempt_limit}",
+        *(
+            [f"Task contract ref: {build_contract.task_contract_ref}"]
+            if build_contract.task_contract_ref
+            else []
+        ),
         "Builder cannot read raw frontdesk conversation.",
         "Builder cannot self-approve verification or registry acceptance.",
     ]
@@ -602,6 +610,13 @@ def _visible_context_selectors() -> list[dict[str, JsonValue]]:
             True,
             "The builder needs write scope, timeout, and attempt limits.",
             "constraints",
+        ),
+        (
+            "visible-task-contract",
+            {"metadata.skillfoundry_context_type": "task_contract"},
+            False,
+            "The builder should prefer the canonical FrontDesk task contract when present.",
+            "goal",
         ),
         (
             "visible-latest-checkpoint",
@@ -731,13 +746,16 @@ def _safe_relative_path(path: str, field_name: str) -> str:
 
 
 def _source_refs(build_contract: BuildContract) -> dict[str, JsonValue]:
-    return {
+    refs: dict[str, JsonValue] = {
         "skill_spec": build_contract.skill_spec_ref,
         "verification_spec": build_contract.verification_spec_ref,
         "build_contract": "build_contract.yaml",
         "artifact_manifest": "artifact_manifest.json",
         "worker_input": "worker_input.md",
     }
+    if build_contract.task_contract_ref:
+        refs["task_contract"] = build_contract.task_contract_ref
+    return refs
 
 
 def _source_hashes(workspace: JobWorkspace, records: _WorkspaceRecords) -> dict[str, JsonValue]:

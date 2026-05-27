@@ -32,6 +32,7 @@ from skillfoundry import (
     write_spec_audit_report,
 )
 from skillfoundry.context import SkillFoundryContextAdapter
+from skillfoundry.frontdesk_semantics import build_product_semantic_coverage_report, compile_product_semantic_lock
 from skillfoundry.schema import BuildContract, SkillSpec, VerificationSpec
 
 
@@ -74,6 +75,16 @@ def make_freezable_frontdesk_workspace(
             ),
         ),
     )
+    turns = frontdesk.read_conversation_turns()
+    semantic_lock = compile_product_semantic_lock(job_id=workspace.job_id, turns=turns)
+    assert semantic_lock is not None
+    semantic_coverage = build_product_semantic_coverage_report(
+        job_id=workspace.job_id,
+        turns=turns,
+        semantic_lock=semantic_lock,
+    )
+    write_frontdesk_artifact(frontdesk, "product_semantic_lock.json", semantic_lock)
+    write_frontdesk_artifact(frontdesk, "product_semantic_coverage.json", semantic_coverage)
     criterion = criterion or sample_criterion()
     write_elicitation_report(
         frontdesk,
@@ -236,8 +247,18 @@ def reason_codes(result):
 
 
 def root_hashes(workspace):
-    refs = ["skill_spec.yaml", "verification_spec.yaml", "worker_input.md", "build_contract.yaml"]
-    return {ref: sha256_file(workspace.resolve_path(ref, must_exist=True)) for ref in refs}
+    refs = [
+        "skill_spec.yaml",
+        "verification_spec.yaml",
+        "worker_input.md",
+        "frontdesk/task_contract.json",
+        "build_contract.yaml",
+    ]
+    return {
+        ref: sha256_file(path)
+        for ref in refs
+        if (path := workspace.resolve_path(ref)).is_file()
+    }
 
 
 def test_frontdesk_freeze_gate_api_is_exported():
@@ -268,6 +289,7 @@ def test_freeze_gate_freezes_approved_spec_and_writes_manifest_and_locked_record
         "acceptance_criteria.yaml",
         "verification_spec.yaml",
         "worker_input.md",
+        "frontdesk/task_contract.json",
         "build_contract.yaml",
         GOAL_CONTRACT_REF,
         BUILD_NODE_CONTRACT_REF,
@@ -281,6 +303,7 @@ def test_freeze_gate_freezes_approved_spec_and_writes_manifest_and_locked_record
     gate_result = read_json(workspace, "frontdesk/freeze_gate_result.json")
     assert gate_result["decision"] == "freeze"
     assert gate_result["frozen_artifact_refs"]["acceptance_criteria"] == "acceptance_criteria.yaml"
+    assert gate_result["frozen_artifact_refs"]["task_contract"] == "frontdesk/task_contract.json"
     assert gate_result["frozen_artifact_refs"]["goal_contract"] == GOAL_CONTRACT_REF
     assert gate_result["frozen_artifact_refs"]["build_node_contract"] == BUILD_NODE_CONTRACT_REF
     assert gate_result["frozen_artifact_refs"]["verification_gate"] == VERIFICATION_GATE_REF
@@ -300,6 +323,7 @@ def test_freeze_gate_freezes_approved_spec_and_writes_manifest_and_locked_record
         "acceptance_criteria.yaml",
         "verification_spec.yaml",
         "worker_input.md",
+        "frontdesk/task_contract.json",
         "build_contract.yaml",
         GOAL_CONTRACT_REF,
         BUILD_NODE_CONTRACT_REF,
@@ -322,6 +346,7 @@ def test_freeze_gate_freezes_approved_spec_and_writes_manifest_and_locked_record
         "acceptance_criteria.yaml",
         "verification_spec.yaml",
         "worker_input.md",
+        "frontdesk/task_contract.json",
         "build_contract.yaml",
     ):
         record = manifest.record_for_path(ref)
@@ -333,11 +358,20 @@ def test_freeze_gate_freezes_approved_spec_and_writes_manifest_and_locked_record
     skill_spec = SkillSpec.read_yaml_file(workspace.resolve_path("skill_spec.yaml", must_exist=True))
     verification_spec = VerificationSpec.read_yaml_file(workspace.resolve_path("verification_spec.yaml", must_exist=True))
     build_contract = BuildContract.read_yaml_file(workspace.resolve_path("build_contract.yaml", must_exist=True))
+    task_contract = read_json(workspace, "frontdesk/task_contract.json")
     assert skill_spec.skill_id == "weekly-update-writer"
     assert "AC-001" in verification_spec.acceptance_criteria[0]
+    assert build_contract.task_contract_ref == "frontdesk/task_contract.json"
     assert build_contract.locked_input_hashes["acceptance_criteria.yaml"] == sha256_file(
         workspace.resolve_path("acceptance_criteria.yaml", must_exist=True)
     )
+    assert build_contract.locked_input_hashes["frontdesk/task_contract.json"] == sha256_file(
+        workspace.resolve_path("frontdesk/task_contract.json", must_exist=True)
+    )
+    assert task_contract["semantic_lock_available"] is True
+    assert task_contract["semantic_lock_truncated"] is False
+    assert task_contract["build_contract_ref"] == "build_contract.yaml"
+    assert task_contract["execution_boundary"]["locked_input_hashes_ref"] == "build_contract.yaml#locked_input_hashes"
 
     workspace.check_locked_inputs()
     acceptance_path = workspace.resolve_path("acceptance_criteria.yaml", must_exist=True)

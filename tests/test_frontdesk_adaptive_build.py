@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from forgeunit_skillfoundry import FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF
-from skillfoundry.api import BUILD_PATH_ADAPTIVE_CODEX, SkillFoundryAPI
+from skillfoundry.api import BUILD_PATH_ADAPTIVE_CODEX, BUILD_PATH_ADAPTIVE_PI_WORKER, SkillFoundryAPI
 from skillfoundry.adaptive_workspace import adaptive_correction_ref, adaptive_observation_ref
 
 
@@ -89,3 +89,38 @@ def test_frontdesk_api_opt_in_adaptive_codex_routes_verifier_failure_to_repair(t
     assert second_correction["next_route"] == "closure"
     assert "fake_api_adaptive_repair_codex_exec.py" not in response.body.decode("utf-8")
 
+
+def test_frontdesk_api_opt_in_adaptive_pi_worker_happy_path_reaches_registered_closure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PI_WORKER_PROVIDER", "faux")
+    api = SkillFoundryAPI(tmp_path / "runs")
+    job_id = "frontdesk-adaptive-pi-worker-happy"
+    _create_and_approve_frontdesk_job(api, job_id)
+
+    response = api.handle("POST", f"/frontdesk/jobs/{job_id}/build", body={"build_mode": "adaptive_pi_worker"})
+
+    assert response.status == 200
+    payload = response.json()
+    assert payload["status"] == "registered"
+    assert payload["build_path"]["mode"] == BUILD_PATH_ADAPTIVE_PI_WORKER
+    assert payload["build_path"]["canonical"] is True
+    summary = payload["forgeunit_skillfoundry_summary"]
+    assert summary["mode"] == BUILD_PATH_ADAPTIVE_PI_WORKER
+    assert summary["verification"]["passed"] is True
+    assert summary["registry"]["approved"] is True
+    assert summary["adaptive_summary"]["latest_route"] == "closure"
+
+    run_root = tmp_path / "runs" / job_id
+    task_contract = json.loads((run_root / "frontdesk/task_contract.json").read_text(encoding="utf-8"))
+    first_pi_input = json.loads((run_root / "adaptive/attempts/001/pi_worker_input.json").read_text(encoding="utf-8"))
+    assert task_contract["schema_version"] == "skillfoundry.frontdesk_task_contract.v1"
+    assert first_pi_input["contract"]["metadata"]["frontdesk_task_contract_ref"] == "frontdesk/task_contract.json"
+    assert "frontdesk/task_contract.json" in first_pi_input["contract"]["visible_refs"]
+    assert (run_root / "attempts/002/execution_report.json").is_file()
+    assert (run_root / "verifier/verification_result.json").is_file()
+    assert (run_root / "contextforge/verification_result.json").is_file()
+    package_text = (run_root / "package/SKILL.md").read_text(encoding="utf-8")
+    assert "## When To Use" in package_text
+    assert "## Workflow" in package_text

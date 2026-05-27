@@ -31,6 +31,12 @@ from .adaptive_codex import (
     ForgeUnitCodexAdaptiveWorker,
     run_existing_workspace_adaptive_codex_factory,
 )
+from .pi_worker import (
+    ADAPTIVE_PI_WORKER_MODE,
+    AdaptivePiWorker,
+    AdaptivePiWorkerSkillFactoryResult,
+    run_existing_workspace_pi_worker_factory,
+)
 from .engine import ForgeUnitSkillFactoryEngine, ForgeUnitSkillFactoryEngineResult
 from .graph import (
     FORGEUNIT_SKILLFOUNDRY_GRAPH_STATE_REF,
@@ -61,6 +67,7 @@ from .state import (
 from .adapters import (
     FRONTDESK_STATE_REF,
     run_frozen_frontdesk_adaptive_codex_factory,
+    run_frozen_frontdesk_pi_worker_factory,
     run_existing_workspace_skill_factory,
     run_frozen_frontdesk_skill_factory,
 )
@@ -69,6 +76,7 @@ __all__ = [
     "FRONTDESK_STATE_REF",
     "ADAPTIVE_GRAPH_SCHEMA_VERSION",
     "ADAPTIVE_CODEX_MODE",
+    "ADAPTIVE_PI_WORKER_MODE",
     "ADAPTIVE_CODEX_WORKER_INPUT_SCHEMA_VERSION",
     "ADAPTIVE_WORK_UNIT_RESULT_SCHEMA_VERSION",
     "DEFAULT_ADAPTIVE_MAX_ITERATIONS",
@@ -83,6 +91,8 @@ __all__ = [
     "AdaptiveGraphConfig",
     "AdaptiveGraphResult",
     "AdaptiveCodexSkillFactoryResult",
+    "AdaptivePiWorker",
+    "AdaptivePiWorkerSkillFactoryResult",
     "AdaptiveBenchmarkComparison",
     "AdaptiveBenchmarkMetrics",
     "AdaptiveBenchmarkScenario",
@@ -110,8 +120,10 @@ __all__ = [
     "run_adaptive_steering_scenario",
     "run_codex_skill_factory",
     "run_existing_workspace_adaptive_codex_factory",
+    "run_existing_workspace_pi_worker_factory",
     "run_existing_workspace_skill_factory",
     "run_frozen_frontdesk_adaptive_codex_factory",
+    "run_frozen_frontdesk_pi_worker_factory",
     "run_frozen_frontdesk_skill_factory",
     "run_skill_factory_graph",
     "write_evidence_summary",

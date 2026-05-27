@@ -808,6 +808,7 @@ def _worker_invocation_for_registration(
             "adapter_version": payload.get("adapter_version"),
             "build_contract_ref": payload.get("build_contract_ref"),
             "worker_input_ref": payload.get("worker_input_ref"),
+            "task_contract_ref": payload.get("task_contract_ref"),
         }
     )  # type: ignore[return-value]
 

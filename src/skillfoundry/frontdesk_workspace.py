@@ -17,6 +17,7 @@ from .frontdesk_schema import (
     FreezeManifest,
     FrontDeskConfig,
     SpecAuditReport,
+    TaskContract,
 )
 from .schema import ArtifactRecord, JsonValue, SchemaModel, SchemaValidationError, ensure_json_compatible, sha256_file, utc_now
 from .security import PathSecurityError, resolve_under_root, validate_relative_path
@@ -29,6 +30,7 @@ FRONTDESK_CONVERSATION_REF = "frontdesk/conversation.jsonl"
 FRONTDESK_CLARIFICATION_SUMMARY_REF = "frontdesk/clarification_summary.md"
 FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF = "frontdesk/product_semantic_lock.json"
 FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF = "frontdesk/product_semantic_coverage.json"
+FRONTDESK_TASK_CONTRACT_REF = "frontdesk/task_contract.json"
 FRONTDESK_BUDGET_REF = "frontdesk/budget.json"
 FRONTDESK_RISK_REPORT_REF = "frontdesk/risk_report.json"
 DEFAULT_FRONTDESK_REFS = (
@@ -297,6 +299,15 @@ def write_feasibility_report(
     relative_path: str = "feasibility_report.json",
 ) -> ArtifactRecord:
     return write_frontdesk_artifact(workspace, relative_path, report)
+
+
+def write_task_contract(
+    workspace: FrontDeskWorkspace | JobWorkspace,
+    contract: TaskContract,
+    *,
+    relative_path: str = "task_contract.json",
+) -> ArtifactRecord:
+    return write_frontdesk_artifact(workspace, relative_path, contract)
 
 
 def write_freeze_manifest(

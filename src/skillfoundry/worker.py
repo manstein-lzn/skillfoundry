@@ -232,7 +232,12 @@ class WorkerAdapter:
 
         attempt_dir_ref = _attempt_dir_ref(attempt_id)
         attempt_dir = workspace.resolve_path(attempt_dir_ref)
-        attempt_dir.mkdir(parents=False, exist_ok=False)
+        if attempt_dir.exists():
+            existing_names = {child.name for child in attempt_dir.iterdir()}
+            if existing_names - {"execution_report.json"}:
+                raise FileExistsError(f"attempt directory already contains worker artifacts: {attempt_dir}")
+        else:
+            attempt_dir.mkdir(parents=False, exist_ok=False)
 
         invocation_id = _invocation_id(workspace.job_id, attempt_id, self.worker.worker_type, worker_config)
         artifact_refs = _attempt_artifact_refs(attempt_id)
@@ -417,6 +422,7 @@ class WorkerAdapter:
             "skill_spec_ref": contract.skill_spec_ref,
             "verification_spec_ref": contract.verification_spec_ref,
             "worker_input_ref": "worker_input.md",
+            "task_contract_ref": contract.task_contract_ref,
             "artifact_manifest_ref": "artifact_manifest.json",
             "locked_input_hashes": contract.locked_input_hashes,
             "declared_allowed_write_paths": list(contract.allowed_write_paths),

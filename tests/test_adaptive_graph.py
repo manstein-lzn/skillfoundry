@@ -37,6 +37,7 @@ from skillfoundry.product_contract import (
 from skillfoundry.product_contract_compiler import ProductContractCompiler
 from skillfoundry.product_runtime_checks import PRODUCT_RUNTIME_CHECK_PLAN_REF, RuntimeCheckCommand, RuntimeCheckPlan
 from skillfoundry.schema import SkillSpec
+from skillfoundry.frontdesk_schema import AcceptanceCriteriaSet, AcceptanceCriterion
 from skillfoundry.workspace import JobWorkspace, initialize_job_workspace
 
 
@@ -60,7 +61,92 @@ def product_runtime_skill_spec() -> SkillSpec:
 
 
 def write_valid_prompt_bundle(workspace: JobWorkspace) -> None:
-    workspace.resolve_path("package/SKILL.md").write_text("# Adaptive Product Skill\n", encoding="utf-8")
+    workspace.resolve_path("package/SKILL.md").write_text(
+        "\n".join(
+            [
+                "# Adaptive Product Skill",
+                "",
+                "## Overview",
+                "A deterministic product skill fixture.",
+                "",
+                "## When To Use",
+                "Use when validating product-grade adaptive routing.",
+                "",
+                "## When Not To Use",
+                "Do not use as a real user-facing skill.",
+                "",
+                "## Inputs",
+                "- Frozen workspace refs.",
+                "",
+                "## Outputs",
+                "- Verified package artifacts.",
+                "",
+                "## Workflow",
+                "1. Produce package evidence.",
+                "",
+                "## Safety",
+                "- Keep writes under package.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    workspace.resolve_path(BUNDLE_MANIFEST_REF).write_text(
+        json.dumps(
+            {
+                "schema_version": "skillfoundry.bundle.v1",
+                "bundle_id": workspace.job_id,
+                "bundle_type": "prompt_only",
+                "entrypoint": "SKILL.md",
+                "capability_surface": {},
+                "runtime_assets": [],
+                "data_assets": [],
+                "references": [],
+                "environment": {},
+                "permissions": {},
+                "verification": {},
+                "distribution": {},
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def write_rust_declaring_skill_and_bundle_without_cargo(workspace: JobWorkspace) -> None:
+    workspace.resolve_path("package").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("package/SKILL.md").write_text(
+        "\n".join(
+            [
+                "# Adaptive Rust Skill",
+                "",
+                "## Overview",
+                "A skill that declares a Rust Cargo helper.",
+                "",
+                "## When To Use",
+                "Use when a local helper is needed.",
+                "",
+                "## When Not To Use",
+                "Do not use without verifier evidence.",
+                "",
+                "## Inputs",
+                "- Local files.",
+                "",
+                "## Outputs",
+                "- Markdown and Cargo helper checks.",
+                "",
+                "## Workflow",
+                "1. Run cargo test before acceptance.",
+                "",
+                "## Safety",
+                "- Reject unsafe paths.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
     workspace.resolve_path(BUNDLE_MANIFEST_REF).write_text(
         json.dumps(
             {
@@ -89,6 +175,19 @@ def write_product_runtime_repair_evidence(workspace: JobWorkspace) -> None:
     workspace.resolve_path("package/src").mkdir(parents=True, exist_ok=True)
     workspace.resolve_path("package/tests").mkdir(parents=True, exist_ok=True)
     workspace.resolve_path("package/scripts").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("package/Cargo.toml").write_text(
+        """
+[package]
+name = "adaptive-product-runtime"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+""".lstrip(),
+        encoding="utf-8",
+    )
     workspace.resolve_path("package/src/lib.rs").write_text(
         """
 use serde::Deserialize;
@@ -226,7 +325,36 @@ def test_adaptive_graph_revises_route_plan_from_worker_recommendation(tmp_path: 
 
     def recommending_worker(workspace: JobWorkspace, contract) -> AdaptiveWorkUnitResult:
         if "package/SKILL.md" in contract.expected_outputs:
-            workspace.resolve_path("package/SKILL.md").write_text("# Recommended Skill\n", encoding="utf-8")
+            workspace.resolve_path("package/SKILL.md").write_text(
+                "\n".join(
+                    [
+                        "# Recommended Skill",
+                        "",
+                        "## Overview",
+                        "A deterministic skill fixture for route-plan recommendation tests.",
+                        "",
+                        "## When To Use",
+                        "Use when validating adaptive route-plan recommendations.",
+                        "",
+                        "## When Not To Use",
+                        "Do not use as a production skill package.",
+                        "",
+                        "## Inputs",
+                        "- Frozen workspace refs.",
+                        "",
+                        "## Outputs",
+                        "- A verifier-compatible prompt-only package.",
+                        "",
+                        "## Workflow",
+                        "1. Apply the current adaptive next-step contract.",
+                        "",
+                        "## Safety",
+                        "- Keep writes inside the delegated package scope.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
             return AdaptiveWorkUnitResult(
                 produced_artifacts=["package/SKILL.md"],
                 changed_refs=["package/SKILL.md"],
@@ -401,6 +529,155 @@ def test_adaptive_graph_does_not_close_on_worker_self_reported_pass_with_invalid
     assert any("bundle_manifest_valid" in failure for failure in read_observation_report(workspace, 1).failures)
 
 
+def test_adaptive_graph_routes_full_verifier_failure_back_to_repair_contract(tmp_path: Path) -> None:
+    seen_contracts = []
+
+    def rust_missing_cargo_worker(workspace: JobWorkspace, contract) -> AdaptiveWorkUnitResult:
+        seen_contracts.append(contract)
+        if contract.iteration == 1:
+            write_rust_declaring_skill_and_bundle_without_cargo(workspace)
+            return AdaptiveWorkUnitResult(
+                produced_artifacts=["package/SKILL.md", BUNDLE_MANIFEST_REF],
+                changed_refs=["package/SKILL.md", BUNDLE_MANIFEST_REF],
+                worker_claims=["Wrote Rust-declaring skill and bundle manifest."],
+                verifier_evidence=["package/SKILL.md", BUNDLE_MANIFEST_REF],
+                verification_status="passed",
+            )
+        return AdaptiveWorkUnitResult(
+            failures=["stop after repair contract inspection"],
+            worker_claims=["Second iteration intentionally stopped."],
+            verification_status="failed",
+        )
+
+    result = run_adaptive_graph(
+        AdaptiveGraphConfig(
+            runs_root=tmp_path / "runs",
+            job_id="adaptive-full-verifier-repair-001",
+            max_iterations=2,
+            repeated_failure_threshold=3,
+        ),
+        worker=rust_missing_cargo_worker,
+    )
+
+    workspace = JobWorkspace(root=result.workspace_root, job_id=result.job_id)
+    first_observation = read_observation_report(workspace, 1)
+    second_contract = read_next_step_contract(workspace, 2)
+    assert any("package_cargo_toml_present" in failure for failure in first_observation.failures)
+    assert "verifier/verification_result.json" in first_observation.verifier_evidence
+    assert "verifier/verification_result.json" in second_contract.visible_refs
+    assert "package/Cargo.toml" in second_contract.expected_outputs
+    assert "package/src/lib.rs" in second_contract.expected_outputs
+    assert "adaptive/attempts/002/repair_evidence.md" in second_contract.expected_outputs
+    assert read_state_correction(workspace, 1).next_route == "repair"
+    assert seen_contracts[1] == second_contract
+
+
+def test_adaptive_graph_routes_acceptance_coverage_failure_back_to_repair_contract(tmp_path: Path) -> None:
+    workspace = initialize_job_workspace(tmp_path / "runs", "adaptive-acceptance-coverage-repair-001")
+    AcceptanceCriteriaSet(
+        job_id=workspace.job_id,
+        criteria=[
+            AcceptanceCriterion(
+                id="AC-CARGO",
+                description="The package must include a Cargo helper verified by cargo test.",
+                test_method="static",
+                evidence_kind="verifier_check",
+                required_evidence=["package_cargo_test"],
+                verifier_check_id="package_cargo_test",
+                priority="must",
+                coverage_status="planned",
+            )
+        ],
+    ).write_yaml_file(workspace.resolve_path("acceptance_criteria.yaml"))
+    seen_contracts = []
+
+    def prompt_bundle_worker(workspace: JobWorkspace, contract) -> AdaptiveWorkUnitResult:
+        seen_contracts.append(contract)
+        if contract.iteration == 1:
+            write_valid_prompt_bundle(workspace)
+            return AdaptiveWorkUnitResult(
+                produced_artifacts=["package/SKILL.md", BUNDLE_MANIFEST_REF],
+                changed_refs=["package/SKILL.md", BUNDLE_MANIFEST_REF],
+                worker_claims=["Wrote prompt bundle without a Cargo helper."],
+                verifier_evidence=["package/SKILL.md", BUNDLE_MANIFEST_REF],
+                verification_status="passed",
+            )
+        return AdaptiveWorkUnitResult(
+            failures=["stop after acceptance repair contract inspection"],
+            worker_claims=["Second iteration intentionally stopped."],
+            verification_status="failed",
+        )
+
+    result = run_adaptive_graph(
+        AdaptiveGraphConfig(
+            runs_root=tmp_path / "runs",
+            job_id=workspace.job_id,
+            max_iterations=2,
+            repeated_failure_threshold=3,
+        ),
+        worker=prompt_bundle_worker,
+    )
+
+    first_observation = read_observation_report(workspace, 1)
+    second_contract = read_next_step_contract(workspace, 2)
+    validate_v2_graph_state(result.state)
+    assert any(failure.startswith("acceptance_coverage:") for failure in first_observation.failures)
+    assert "qa/acceptance_coverage_result.json" in first_observation.verifier_evidence
+    assert "qa/acceptance_coverage_result.json" in second_contract.visible_refs
+    assert second_contract.metadata["acceptance_coverage_is_acceptance_gate"] is True
+    assert "package/Cargo.toml" in second_contract.expected_outputs
+    assert "package/src/lib.rs" in second_contract.expected_outputs
+    assert read_state_correction(workspace, 1).next_route == "repair"
+    assert seen_contracts[1] == second_contract
+
+
+def test_adaptive_graph_prepares_frontdesk_boundary_before_full_verifier(tmp_path: Path) -> None:
+    workspace = initialize_job_workspace(tmp_path / "runs", "adaptive-frontdesk-boundary-001")
+    workspace.resolve_path("frontdesk").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("frontdesk/conversation.jsonl").write_text(
+        '{"role":"user","content":"RAW_FRONTDESK_PRIVATE_BYTES"}\n',
+        encoding="utf-8",
+    )
+
+    def prompt_bundle_worker(workspace: JobWorkspace, contract) -> AdaptiveWorkUnitResult:
+        write_valid_prompt_bundle(workspace)
+        return AdaptiveWorkUnitResult(
+            produced_artifacts=["package/SKILL.md", BUNDLE_MANIFEST_REF],
+            changed_refs=["package/SKILL.md", BUNDLE_MANIFEST_REF],
+            worker_claims=["Wrote prompt bundle."],
+            verifier_evidence=["package/SKILL.md", BUNDLE_MANIFEST_REF],
+            verification_status="passed",
+        )
+
+    result = run_adaptive_graph(
+        AdaptiveGraphConfig(
+            runs_root=tmp_path / "runs",
+            job_id=workspace.job_id,
+            max_iterations=1,
+        ),
+        worker=prompt_bundle_worker,
+    )
+
+    observation = read_observation_report(workspace, 1)
+    verification_payload = json.loads(
+        workspace.resolve_path("verifier/verification_result.json", must_exist=True).read_text(encoding="utf-8")
+    )
+    raw_boundary_checks = [
+        check
+        for check in verification_payload["checks"]
+        if check["name"] == "contextforge_raw_frontdesk_conversation_excluded"
+    ]
+    assert result.state["contextforge"]["adaptive_latest_route"] == "closure"
+    assert result.state["contextforge"]["adaptive_skillfoundry_verification_passed"] is True
+    assert result.state["contextforge"]["adaptive_contextforge_frontdesk_boundary_evidence_prepared"] is True
+    assert workspace.resolve_path("contextforge/goal_harness_state.json", must_exist=True).is_file()
+    assert workspace.resolve_path("contextforge/ledger.sqlite3", must_exist=True).is_file()
+    assert "contextforge/goal_harness_state.json" in observation.verifier_evidence
+    assert "contextforge/ledger.sqlite3" in observation.verifier_evidence
+    assert raw_boundary_checks and raw_boundary_checks[0]["passed"] is True
+    assert not any("contextforge_raw_frontdesk_conversation_excluded" in failure for failure in observation.failures)
+
+
 def test_adaptive_graph_routes_product_grade_failure_to_repair_contract(tmp_path: Path) -> None:
     workspace = initialize_job_workspace(
         tmp_path / "runs",
@@ -462,6 +739,12 @@ def test_adaptive_graph_routes_product_grade_failure_to_repair_contract(tmp_path
     assert adaptive_route_plan_ref(1) in second_contract.visible_refs
     assert PRODUCT_REPAIR_PACKET_REF in second_contract.visible_refs
     assert "product_gate:P0-runtime-matrix-checks-failed" in second_contract.next_objective
+    assert second_contract.expected_outputs == [
+        "package/SKILL.md",
+        "adaptive/attempts/002/repair_evidence.md",
+    ]
+    assert PRODUCT_GRADE_REPORT_REF not in second_contract.expected_outputs
+    assert PRODUCT_REPAIR_PACKET_REF not in second_contract.expected_outputs
     assert seen_objectives[1] == second_contract.next_objective
     product_report = ProductGradeReport.read_json_file(workspace.resolve_path(PRODUCT_GRADE_REPORT_REF, must_exist=True))
     assert product_report.product_grade is True

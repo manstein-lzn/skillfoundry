@@ -624,12 +624,15 @@ def test_frontdesk_api_semantic_lock_preserves_requirements_after_1000_chars(tmp
 
     skill_spec_text = (run_root / "skill_spec.yaml").read_text(encoding="utf-8").lower()
     worker_input = (run_root / "worker_input.md").read_text(encoding="utf-8").lower()
+    task_contract = json.loads((run_root / "frontdesk" / "task_contract.json").read_text(encoding="utf-8"))
     freeze_manifest = json.loads((run_root / "frontdesk" / "freeze_manifest.json").read_text(encoding="utf-8"))
     assert "frontdesk/product_semantic_lock.json" in freeze_manifest["artifact_hashes"]
     assert "frontdesk/product_semantic_coverage.json" in freeze_manifest["artifact_hashes"]
+    assert "frontdesk/task_contract.json" in freeze_manifest["artifact_hashes"]
     for term in ("obsidian-friendly", "rust", "cargo", "thin evidence"):
         assert term in skill_spec_text
         assert term in worker_input
+        assert term in task_contract["semantic_summary"].lower()
 
 
 def test_frontdesk_api_rejects_build_before_freeze(tmp_path, monkeypatch):

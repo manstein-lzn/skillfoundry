@@ -695,6 +695,7 @@ def _rewrite_build_contract(workspace: JobWorkspace, *, attempt_limit: int, time
         attempt_limit=attempt_limit,
         required_artifacts=contract.required_artifacts,
         locked_input_hashes=contract.locked_input_hashes,
+        task_contract_ref=contract.task_contract_ref,
     )
     updated.write_yaml_file(workspace.resolve_path("build_contract.yaml", must_exist=True))
     _upsert_manifest_records(

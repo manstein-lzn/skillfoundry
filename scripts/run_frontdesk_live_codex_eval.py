@@ -642,7 +642,7 @@ def _is_adaptive_build_mode(value: Any) -> bool:
     if not isinstance(value, str):
         return False
     normalized = value.strip().lower().replace("-", "_")
-    return normalized in {"adaptive", "adaptive_codex", "adaptive_forgeunit", "forgeunit_adaptive"}
+    return normalized in {"adaptive", "adaptive_codex", "adaptive_pi_worker", "adaptive_forgeunit", "forgeunit_adaptive"}
 
 
 def _mapping(value: Any) -> dict[str, Any]:

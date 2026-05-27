@@ -189,6 +189,27 @@ def _require_json_object_list(value: Any, field_name: str) -> None:
             _require_json_mapping(item, f"{field_name}[{index}]")
 
 
+def _require_task_execution_boundary(value: Any, field_name: str) -> None:
+    _require_json_mapping(value, field_name)
+    required = {
+        "allowed_write_paths",
+        "blocked_paths",
+        "required_artifacts",
+        "timeout_seconds",
+        "attempt_limit",
+    }
+    missing = sorted(required - set(value))
+    if missing:
+        raise SchemaValidationError(f"{field_name} missing required field(s): {', '.join(missing)}")
+    _require_str_list(value["allowed_write_paths"], f"{field_name}.allowed_write_paths")
+    _require_str_list(value["blocked_paths"], f"{field_name}.blocked_paths")
+    _require_ref_list(value["required_artifacts"], f"{field_name}.required_artifacts")
+    if "locked_input_hashes" in value:
+        _require_hash_mapping(value["locked_input_hashes"], f"{field_name}.locked_input_hashes")
+    _require_positive_int(value["timeout_seconds"], f"{field_name}.timeout_seconds")
+    _require_positive_int(value["attempt_limit"], f"{field_name}.attempt_limit")
+
+
 def _question_list_from_payload(value: Any, field_name: str) -> list["StructuredQuestion"]:
     if not isinstance(value, list):
         raise SchemaValidationError(f"{field_name} must be a list")
@@ -722,6 +743,73 @@ class SpecAuditReport(SchemaModel):
 
 
 @dataclass
+class TaskContract(SchemaModel):
+    """Canonical Front Desk task contract handed to build workers by ref."""
+
+    job_id: str
+    round_index: int
+    semantic_lock_ref: str
+    semantic_lock_hash: str
+    semantic_summary: str
+    requirement_clauses: list[str]
+    skill_spec_ref: str
+    acceptance_criteria_ref: str
+    verification_spec_ref: str
+    worker_input_ref: str
+    build_contract_ref: str
+    execution_boundary: dict[str, JsonValue]
+    product_identity_terms: list[str] = field(default_factory=list)
+    domain_terms: list[str] = field(default_factory=list)
+    implementation_requirements: list[str] = field(default_factory=list)
+    delivery_requirements: list[str] = field(default_factory=list)
+    must_not: list[str] = field(default_factory=list)
+    semantic_lock_available: bool = True
+    semantic_lock_truncated: bool = False
+    omission_warnings: list[str] = field(default_factory=list)
+    source_turn_ids: list[str] = field(default_factory=list)
+    source_char_count: int = 0
+    sanitized_char_count: int = 0
+    redaction_applied: bool = False
+    source_trace: list[dict[str, JsonValue]] = field(default_factory=list)
+    created_at: str = field(default_factory=utc_now)
+    schema_version: str = "skillfoundry.frontdesk_task_contract.v1"
+
+    def validate(self) -> None:
+        super().validate()
+        _require_non_empty_str(self.job_id, "job_id")
+        _require_positive_int(self.round_index, "round_index")
+        _require_ref(self.semantic_lock_ref, "semantic_lock_ref")
+        _require_sha256(self.semantic_lock_hash, "semantic_lock_hash")
+        _require_non_empty_str(self.semantic_summary, "semantic_summary")
+        _require_str_list(self.requirement_clauses, "requirement_clauses")
+        if not self.requirement_clauses:
+            raise SchemaValidationError("requirement_clauses must not be empty")
+        for field_name in (
+            "skill_spec_ref",
+            "acceptance_criteria_ref",
+            "verification_spec_ref",
+            "worker_input_ref",
+            "build_contract_ref",
+        ):
+            _require_ref(getattr(self, field_name), field_name)
+        _require_task_execution_boundary(self.execution_boundary, "execution_boundary")
+        _require_str_list(self.product_identity_terms, "product_identity_terms")
+        _require_str_list(self.domain_terms, "domain_terms")
+        _require_str_list(self.implementation_requirements, "implementation_requirements")
+        _require_str_list(self.delivery_requirements, "delivery_requirements")
+        _require_str_list(self.must_not, "must_not")
+        _require_bool(self.semantic_lock_available, "semantic_lock_available")
+        _require_bool(self.semantic_lock_truncated, "semantic_lock_truncated")
+        _require_str_list(self.omission_warnings, "omission_warnings")
+        _require_str_list(self.source_turn_ids, "source_turn_ids")
+        _require_non_negative_int(self.source_char_count, "source_char_count")
+        _require_non_negative_int(self.sanitized_char_count, "sanitized_char_count")
+        _require_bool(self.redaction_applied, "redaction_applied")
+        _require_json_object_list(self.source_trace, "source_trace")
+        _require_non_empty_str(self.created_at, "created_at")
+
+
+@dataclass
 class FreezeManifest(SchemaModel):
     conversation_summary_hash: str
     conversation_turn_range: list[int]
@@ -732,6 +820,7 @@ class FreezeManifest(SchemaModel):
     verification_spec_ref: str
     worker_input_ref: str
     build_contract_ref: str
+    task_contract_ref: str | None = None
     artifact_hashes: dict[str, str] = field(default_factory=dict)
     freeze_gate_result_ref: str | None = None
     created_at: str = field(default_factory=utc_now)
@@ -759,6 +848,7 @@ class FreezeManifest(SchemaModel):
             "build_contract_ref",
         ):
             _require_ref(getattr(self, field_name), field_name)
+        _require_optional_ref(self.task_contract_ref, "task_contract_ref")
         _require_hash_mapping(self.artifact_hashes, "artifact_hashes")
         for artifact_ref in self.artifact_hashes:
             _require_ref(artifact_ref, f"artifact_hashes key {artifact_ref}")

@@ -32,8 +32,10 @@ from .frontdesk_schema import (
     FreezeManifest,
     FrontDeskConfig,
     PlanReviewRecord,
+    ProductSemanticLock,
     SolutionPlan,
     SpecAuditReport,
+    TaskContract,
 )
 from .frontdesk_workspace import (
     FRONTDESK_BUDGET_REF,
@@ -42,6 +44,7 @@ from .frontdesk_workspace import (
     FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF,
     FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
     FRONTDESK_RISK_REPORT_REF,
+    FRONTDESK_TASK_CONTRACT_REF,
     FrontDeskWorkspace,
     read_conversation_turns,
     write_elicitation_report,
@@ -103,12 +106,14 @@ ROOT_WORKER_INPUT_REF = "worker_input.md"
 ROOT_BUILD_CONTRACT_REF = "build_contract.yaml"
 FROZEN_INPUT_REFS = (
     ROOT_BUILD_CONTRACT_REF,
+    FRONTDESK_TASK_CONTRACT_REF,
     ROOT_SKILL_SPEC_REF,
     ROOT_ACCEPTANCE_CRITERIA_REF,
     ROOT_VERIFICATION_SPEC_REF,
     ROOT_WORKER_INPUT_REF,
 )
 BUILD_CONTRACT_HASH_INPUT_REFS = (
+    FRONTDESK_TASK_CONTRACT_REF,
     ROOT_SKILL_SPEC_REF,
     ROOT_ACCEPTANCE_CRITERIA_REF,
     ROOT_VERIFICATION_SPEC_REF,
@@ -834,6 +839,7 @@ class FrontDeskFreezeGate:
                     frontdesk=frontdesk,
                     round_index=sequence,
                     conversation_turn_count=len(conversation_turns),
+                    elicitation_report=elicitation_report,
                     elicitation_ref=elicitation_ref,
                     audit_ref=audit_ref,
                     skill_spec=skill_spec,
@@ -847,6 +853,7 @@ class FrontDeskFreezeGate:
                     "acceptance_criteria": ROOT_ACCEPTANCE_CRITERIA_REF,
                     "verification_spec": ROOT_VERIFICATION_SPEC_REF,
                     "worker_input": ROOT_WORKER_INPUT_REF,
+                    "task_contract": FRONTDESK_TASK_CONTRACT_REF,
                     "build_contract": ROOT_BUILD_CONTRACT_REF,
                     "freeze_manifest": FREEZE_MANIFEST_REF,
                     "goal_contract": GOAL_CONTRACT_REF,
@@ -3015,7 +3022,122 @@ def _build_contract_for_freeze(
         attempt_limit=1,
         required_artifacts=list(FROZEN_INPUT_REFS),
         locked_input_hashes=locked_input_hashes,
+        task_contract_ref=FRONTDESK_TASK_CONTRACT_REF,
     )
+
+
+def _task_contract_for_freeze(
+    *,
+    frontdesk: FrontDeskWorkspace,
+    round_index: int,
+    elicitation_report: ElicitationReport,
+    skill_spec: SkillSpec,
+    build_contract: BuildContract,
+) -> TaskContract:
+    semantic = _task_semantics_for_freeze(frontdesk, elicitation_report=elicitation_report, skill_spec=skill_spec)
+    execution_boundary = {
+        "allowed_write_paths": list(build_contract.allowed_write_paths),
+        "blocked_paths": list(build_contract.blocked_paths),
+        "required_artifacts": list(build_contract.required_artifacts),
+        "timeout_seconds": build_contract.timeout_seconds,
+        "attempt_limit": build_contract.attempt_limit,
+        "locked_input_hashes_ref": f"{ROOT_BUILD_CONTRACT_REF}#locked_input_hashes",
+    }
+    task_contract = TaskContract(
+        job_id=frontdesk.job_id,
+        round_index=round_index,
+        semantic_lock_ref=FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
+        semantic_lock_hash=semantic["semantic_lock_hash"],
+        semantic_summary=semantic["semantic_summary"],
+        requirement_clauses=semantic["requirement_clauses"],
+        skill_spec_ref=ROOT_SKILL_SPEC_REF,
+        acceptance_criteria_ref=ROOT_ACCEPTANCE_CRITERIA_REF,
+        verification_spec_ref=ROOT_VERIFICATION_SPEC_REF,
+        worker_input_ref=ROOT_WORKER_INPUT_REF,
+        build_contract_ref=ROOT_BUILD_CONTRACT_REF,
+        execution_boundary=ensure_json_compatible(execution_boundary),  # type: ignore[arg-type]
+        product_identity_terms=semantic["product_identity_terms"],
+        domain_terms=semantic["domain_terms"],
+        implementation_requirements=semantic["implementation_requirements"],
+        delivery_requirements=semantic["delivery_requirements"],
+        must_not=semantic["must_not"],
+        semantic_lock_available=semantic["semantic_lock_available"],
+        semantic_lock_truncated=semantic["semantic_lock_truncated"],
+        omission_warnings=semantic["omission_warnings"],
+        source_turn_ids=semantic["source_turn_ids"],
+        source_char_count=semantic["source_char_count"],
+        sanitized_char_count=semantic["sanitized_char_count"],
+        redaction_applied=semantic["redaction_applied"],
+        source_trace=semantic["source_trace"],
+    )
+    task_contract.validate()
+    return task_contract
+
+
+def _task_semantics_for_freeze(
+    frontdesk: FrontDeskWorkspace,
+    *,
+    elicitation_report: ElicitationReport,
+    skill_spec: SkillSpec,
+) -> dict[str, Any]:
+    path = frontdesk.workspace.resolve_path(FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF)
+    try:
+        semantic_lock = ProductSemanticLock.read_json_file(
+            frontdesk.workspace.resolve_path(FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF, must_exist=True)
+        )
+    except (OSError, ValueError, SchemaValidationError):
+        summary = elicitation_report.current_understanding.strip() or skill_spec.description
+        clauses = _dedupe_normalized_strings(
+            [
+                summary,
+                skill_spec.description,
+                *skill_spec.trigger_scenarios,
+                *skill_spec.required_inputs,
+                *skill_spec.expected_outputs,
+                *skill_spec.constraints,
+                *skill_spec.acceptance_criteria,
+                *skill_spec.security_notes,
+            ]
+        )
+        if not clauses:
+            clauses = [skill_spec.title]
+        return {
+            "semantic_lock_hash": sha256_file(path) if path.is_file() else sha256_json({"missing_ref": FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF}),
+            "semantic_summary": summary or "Frozen FrontDesk task.",
+            "requirement_clauses": clauses,
+            "product_identity_terms": [skill_spec.title],
+            "domain_terms": [],
+            "implementation_requirements": list(skill_spec.constraints),
+            "delivery_requirements": list(skill_spec.expected_outputs),
+            "must_not": list(skill_spec.non_trigger_scenarios),
+            "semantic_lock_available": False,
+            "semantic_lock_truncated": False,
+            "omission_warnings": ["product_semantic_lock_missing_or_invalid"],
+            "source_turn_ids": [],
+            "source_char_count": 0,
+            "sanitized_char_count": 0,
+            "redaction_applied": False,
+            "source_trace": [],
+        }
+    semantic_lock.validate()
+    return {
+        "semantic_lock_hash": sha256_file(path),
+        "semantic_summary": semantic_lock.semantic_summary,
+        "requirement_clauses": list(semantic_lock.requirement_clauses),
+        "product_identity_terms": list(semantic_lock.product_identity_terms),
+        "domain_terms": list(semantic_lock.domain_terms),
+        "implementation_requirements": list(semantic_lock.implementation_requirements),
+        "delivery_requirements": list(semantic_lock.delivery_requirements),
+        "must_not": list(semantic_lock.must_not),
+        "semantic_lock_available": True,
+        "semantic_lock_truncated": semantic_lock.truncated,
+        "omission_warnings": list(semantic_lock.omission_warnings),
+        "source_turn_ids": list(semantic_lock.source_turn_ids),
+        "source_char_count": semantic_lock.source_char_count,
+        "sanitized_char_count": semantic_lock.sanitized_char_count,
+        "redaction_applied": semantic_lock.redaction_applied,
+        "source_trace": list(semantic_lock.source_trace),
+    }
 
 
 def _write_frozen_inputs_and_manifest(
@@ -3023,6 +3145,7 @@ def _write_frozen_inputs_and_manifest(
     frontdesk: FrontDeskWorkspace,
     round_index: int,
     conversation_turn_count: int,
+    elicitation_report: ElicitationReport,
     elicitation_ref: str,
     audit_ref: str,
     skill_spec: SkillSpec,
@@ -3037,6 +3160,17 @@ def _write_frozen_inputs_and_manifest(
     acceptance_criteria.write_yaml_file(workspace.resolve_path(ROOT_ACCEPTANCE_CRITERIA_REF))
     verification_spec.write_yaml_file(workspace.resolve_path(ROOT_VERIFICATION_SPEC_REF, must_exist=True))
     workspace.resolve_path(ROOT_WORKER_INPUT_REF, must_exist=True).write_text(worker_input, encoding="utf-8")
+
+    draft_locked_hashes = {ref: "0" * 64 for ref in BUILD_CONTRACT_HASH_INPUT_REFS}
+    draft_build_contract = _build_contract_for_freeze(workspace, locked_input_hashes=draft_locked_hashes)
+    task_contract = _task_contract_for_freeze(
+        frontdesk=frontdesk,
+        round_index=round_index,
+        elicitation_report=elicitation_report,
+        skill_spec=skill_spec,
+        build_contract=draft_build_contract,
+    )
+    task_contract.write_json_file(workspace.resolve_path(FRONTDESK_TASK_CONTRACT_REF))
 
     locked_input_hashes = {
         ref: sha256_file(workspace.resolve_path(ref, must_exist=True))
@@ -3072,6 +3206,7 @@ def _write_frozen_inputs_and_manifest(
             ROOT_ACCEPTANCE_CRITERIA_REF,
             ROOT_VERIFICATION_SPEC_REF,
             ROOT_WORKER_INPUT_REF,
+            FRONTDESK_TASK_CONTRACT_REF,
             ROOT_BUILD_CONTRACT_REF,
             GOAL_CONTRACT_REF,
             BUILD_NODE_CONTRACT_REF,
@@ -3091,6 +3226,7 @@ def _write_frozen_inputs_and_manifest(
         verification_spec_ref=ROOT_VERIFICATION_SPEC_REF,
         worker_input_ref=ROOT_WORKER_INPUT_REF,
         build_contract_ref=ROOT_BUILD_CONTRACT_REF,
+        task_contract_ref=FRONTDESK_TASK_CONTRACT_REF,
         artifact_hashes=artifact_hashes,
         freeze_gate_result_ref=FREEZE_GATE_RESULT_REF,
     )

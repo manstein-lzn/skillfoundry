@@ -13,6 +13,8 @@ from typing import Any, ClassVar, Mapping, Self
 
 import yaml
 
+from .security import PathSecurityError, validate_relative_path
+
 
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
@@ -132,6 +134,16 @@ def _require_hash_mapping(value: Any, field_name: str) -> None:
     for key, item in value.items():
         _require_non_empty_str(key, f"{field_name} key")
         _require_sha256(item, f"{field_name}.{key}")
+
+
+def _require_optional_ref(value: Any, field_name: str) -> None:
+    if value is None:
+        return
+    _require_non_empty_str(value, field_name)
+    try:
+        validate_relative_path(value)
+    except PathSecurityError as exc:
+        raise SchemaValidationError(f"{field_name} must be a safe relative artifact ref: {exc}") from exc
 
 
 def _reject_unknown_fields(cls: type["SchemaModel"], payload: Mapping[str, Any]) -> None:
@@ -255,6 +267,7 @@ class BuildContract(SchemaModel):
     attempt_limit: int
     required_artifacts: list[str]
     locked_input_hashes: dict[str, str]
+    task_contract_ref: str | None = None
     schema_version: str = "skillfoundry.build_contract.v1"
 
     def validate(self) -> None:
@@ -266,6 +279,7 @@ class BuildContract(SchemaModel):
         _require_positive_int(self.timeout_seconds, "timeout_seconds")
         _require_positive_int(self.attempt_limit, "attempt_limit")
         _require_hash_mapping(self.locked_input_hashes, "locked_input_hashes")
+        _require_optional_ref(self.task_contract_ref, "task_contract_ref")
 
 
 @dataclass

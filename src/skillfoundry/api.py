@@ -77,6 +77,7 @@ FRONTDESK_SOLUTION_PLAN_MARKDOWN_REF = "frontdesk/solution_plan.md"
 PLAN_REVIEW_REF_TEMPLATE = "frontdesk/plan_review_{sequence:03d}.json"
 BUILD_PATH_FORGEUNIT_SKILLFOUNDRY = "forgeunit_skillfoundry_vnext"
 BUILD_PATH_ADAPTIVE_CODEX = "adaptive_codex"
+BUILD_PATH_ADAPTIVE_PI_WORKER = "adaptive_pi_worker"
 BUILD_PATH_GRAPH_V2 = "graph_v2_goal_harness"
 BUILD_PATH_LEGACY_COMPATIBILITY = "legacy_offline_compatibility"
 BUILD_PATH_WORKSPACE_ONLY = "workspace_only"
@@ -85,6 +86,7 @@ FORGEUNIT_SKILLFOUNDRY_PRODUCT_STATE_REF = "contextforge/forgeunit_skillfoundry_
 FORGEUNIT_SKILLFOUNDRY_GRAPH_STATE_REF = "contextforge/forgeunit_skillfoundry_graph_state.json"
 FORGEUNIT_COMMAND_ENV = "SKILLFOUNDRY_FORGEUNIT_COMMAND"
 FORGEUNIT_REPAIR_COMMAND_ENV = "SKILLFOUNDRY_FORGEUNIT_REPAIR_COMMAND"
+PI_WORKER_COMMAND_ENV = "SKILLFOUNDRY_PI_WORKER_COMMAND"
 FrontDeskClientFactory = Callable[[str, str, int], Any]
 
 
@@ -144,6 +146,7 @@ class SkillFoundryAPI:
         frontdesk_model: str | None = None,
         forgeunit_command: str | None = None,
         forgeunit_repair_command: str | None = None,
+        pi_worker_command: str | None = None,
     ) -> None:
         self._command_base_dir = Path.cwd().resolve()
         self.runs_root = Path(runs_root).expanduser()
@@ -157,6 +160,7 @@ class SkillFoundryAPI:
             forgeunit_repair_command,
             FORGEUNIT_REPAIR_COMMAND_ENV,
         )
+        self.pi_worker_command = self._configured_command_value(pi_worker_command, PI_WORKER_COMMAND_ENV)
 
     def _configured_command_value(self, value: str | None, env_name: str) -> str | None:
         if value is not None:
@@ -508,6 +512,14 @@ class SkillFoundryAPI:
                 payload=payload,
                 attempt_limit=attempt_limit,
             )
+        if build_mode == BUILD_PATH_ADAPTIVE_PI_WORKER:
+            return self._build_frontdesk_job_pi_worker(
+                safe_job_id,
+                workspace=workspace,
+                state=state,
+                payload=payload,
+                attempt_limit=attempt_limit,
+            )
 
         command, repair_command = self._frontdesk_forgeunit_commands(workspace, payload)
         version = self._optional_non_empty_str(payload.get("version"), "version")
@@ -639,6 +651,75 @@ class SkillFoundryAPI:
         }
         return ensure_json_compatible(result)  # type: ignore[return-value]
 
+    def _build_frontdesk_job_pi_worker(
+        self,
+        safe_job_id: str,
+        *,
+        workspace: JobWorkspace,
+        state: FrontDeskState,
+        payload: Mapping[str, Any],
+        attempt_limit: int,
+    ) -> dict[str, JsonValue]:
+        command = self._frontdesk_pi_worker_command(workspace, payload)
+        version = self._optional_non_empty_str(payload.get("version"), "version")
+        created_at = self._optional_non_empty_str(payload.get("created_at"), "created_at")
+        try:
+            from forgeunit_skillfoundry import read_evidence_summary, run_frozen_frontdesk_pi_worker_factory
+
+            run_frozen_frontdesk_pi_worker_factory(
+                workspace,
+                registry_path=self.registry_path,
+                command=command,
+                attempt_limit=attempt_limit,
+                version=version or "frontdesk-adaptive-pi-worker",
+                created_at=created_at,
+            )
+        except Exception as exc:
+            raise APIError(
+                500,
+                "frontdesk_pi_worker_build_failed",
+                "frontdesk PiWorker build failed before producing a verified refs-only result",
+            ) from exc
+
+        final_report = self._try_read_report(safe_job_id)
+        if final_report is None:
+            raise APIError(
+                500,
+                "frontdesk_build_missing_report",
+                "frontdesk PiWorker build did not write final_report",
+            )
+        try:
+            summary = read_evidence_summary(workspace)
+        except Exception as exc:
+            raise APIError(
+                500,
+                "frontdesk_build_missing_summary",
+                "frontdesk PiWorker build did not write a valid refs-only summary",
+            ) from exc
+        contextforge_status = self.get_contextforge_status(safe_job_id)
+        result: dict[str, Any] = {
+            "schema_version": "skillfoundry.api.frontdesk_build.v1",
+            "job_id": safe_job_id,
+            "status": str(final_report.get("final_status") or summary.get("status") or "unknown"),
+            "frontdesk_status": state.next_action,
+            "build_path": self._build_path_summary(safe_job_id),
+            "forgeunit_skillfoundry_summary_ref": FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF,
+            "forgeunit_skillfoundry_summary": summary,
+            "forgeunit_skillfoundry_graph_state_ref": FORGEUNIT_SKILLFOUNDRY_GRAPH_STATE_REF,
+            "forgeunit_skillfoundry_product_state_ref": FORGEUNIT_SKILLFOUNDRY_PRODUCT_STATE_REF,
+            "graph_v2_state_ref": None,
+            "final_report": final_report,
+            "contextforge_status": contextforge_status,
+            "links": {
+                "job": f"/jobs/{safe_job_id}",
+                "report": f"/jobs/{safe_job_id}/report",
+                "contextforge": f"/jobs/{safe_job_id}/contextforge",
+                "frontdesk": f"/frontdesk/jobs/{safe_job_id}",
+                "package": f"/jobs/{safe_job_id}/package.zip",
+            },
+        }
+        return ensure_json_compatible(result)  # type: ignore[return-value]
+
     def _build_frontdesk_job_graph_v2(
         self,
         safe_job_id: str,
@@ -691,6 +772,8 @@ class SkillFoundryAPI:
             return BUILD_PATH_FORGEUNIT_SKILLFOUNDRY
         if normalized in {"adaptive", "adaptive_codex", "adaptive_forgeunit", "forgeunit_adaptive"}:
             return BUILD_PATH_ADAPTIVE_CODEX
+        if normalized in {"adaptive_pi_worker", "adaptive_pi", "pi_worker", "pi"}:
+            return BUILD_PATH_ADAPTIVE_PI_WORKER
         if normalized in {"graph_v2", "legacy_graph_v2", "graph_v2_goal_harness"}:
             return BUILD_PATH_GRAPH_V2
         raise APIError(400, "invalid_build_mode", f"unknown build_mode: {value}")
@@ -771,6 +854,19 @@ class SkillFoundryAPI:
             return configured_command
         return self._frontdesk_fake_adaptive_codex_command(workspace, "happy")
 
+    def _frontdesk_pi_worker_command(
+        self,
+        workspace: JobWorkspace,
+        payload: Mapping[str, Any],
+    ) -> str:
+        command = self._optional_non_empty_str(payload.get("command"), "command")
+        configured_command = self._optional_non_empty_str(self.pi_worker_command, "pi_worker_command")
+        if command is not None:
+            return self._normalize_workspace_command(command) or command
+        if configured_command is not None:
+            return configured_command
+        return self._default_pi_worker_command(workspace)
+
     def _frontdesk_fake_adaptive_codex_command(
         self,
         workspace: JobWorkspace,
@@ -800,6 +896,11 @@ class SkillFoundryAPI:
             )
             return f"{sys.executable} {script.name}"
         raise APIError(400, "invalid_fake_mode", "fake_mode must be happy or repair")
+
+    def _default_pi_worker_command(self, workspace: JobWorkspace) -> str:
+        sidecar = Path(__file__).resolve().parents[2] / "pi_worker" / "src" / "run_work_unit.mjs"
+        command = f"node {shlex.quote(sidecar.as_posix())}"
+        return self._normalize_workspace_command(command) or command
 
     def _optional_non_empty_str(self, value: Any, field_name: str) -> str | None:
         if value is None:
@@ -2383,14 +2484,22 @@ class SkillFoundryAPI:
             if isinstance(forgeunit_summary_read.payload, Mapping):
                 raw_summary_mode = forgeunit_summary_read.payload.get("mode")
                 summary_mode = raw_summary_mode if isinstance(raw_summary_mode, str) else None
-            mode = BUILD_PATH_ADAPTIVE_CODEX if summary_mode == BUILD_PATH_ADAPTIVE_CODEX else BUILD_PATH_FORGEUNIT_SKILLFOUNDRY
+            if summary_mode in {BUILD_PATH_ADAPTIVE_CODEX, BUILD_PATH_ADAPTIVE_PI_WORKER}:
+                mode = summary_mode
+            else:
+                mode = BUILD_PATH_FORGEUNIT_SKILLFOUNDRY
         elif graph_v2_state_valid:
             mode = BUILD_PATH_GRAPH_V2
         elif final_report_path.is_file():
             mode = BUILD_PATH_LEGACY_COMPATIBILITY
         else:
             mode = BUILD_PATH_WORKSPACE_ONLY
-        canonical = mode in {BUILD_PATH_FORGEUNIT_SKILLFOUNDRY, BUILD_PATH_ADAPTIVE_CODEX, BUILD_PATH_GRAPH_V2}
+        canonical = mode in {
+            BUILD_PATH_FORGEUNIT_SKILLFOUNDRY,
+            BUILD_PATH_ADAPTIVE_CODEX,
+            BUILD_PATH_ADAPTIVE_PI_WORKER,
+            BUILD_PATH_GRAPH_V2,
+        }
         return ensure_json_compatible(
             {
                 "mode": mode,
@@ -2399,7 +2508,11 @@ class SkillFoundryAPI:
                 "canonical_entrypoint": "POST /frontdesk/jobs/{job_id}/build",
                 "forgeunit_skillfoundry_summary_ref": (
                     FORGEUNIT_SKILLFOUNDRY_SUMMARY_REF
-                    if mode in {BUILD_PATH_FORGEUNIT_SKILLFOUNDRY, BUILD_PATH_ADAPTIVE_CODEX}
+                    if mode in {
+                        BUILD_PATH_FORGEUNIT_SKILLFOUNDRY,
+                        BUILD_PATH_ADAPTIVE_CODEX,
+                        BUILD_PATH_ADAPTIVE_PI_WORKER,
+                    }
                     else None
                 ),
                 "forgeunit_skillfoundry_summary_valid": (

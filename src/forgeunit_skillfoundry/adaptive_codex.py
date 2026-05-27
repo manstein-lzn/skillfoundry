@@ -369,10 +369,10 @@ def _existing_refs(workspace: JobWorkspace, refs: list[str]) -> list[str]:
     existing: list[str] = []
     for ref in refs:
         try:
-            validate_relative_path(ref)
+            path = _optional_workspace_path(workspace, ref)
         except Exception:
             continue
-        if workspace.resolve_path(ref).exists():
+        if path.exists():
             existing.append(ref)
     return _dedupe_strings(existing)
 

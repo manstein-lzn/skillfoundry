@@ -361,7 +361,9 @@ def test_clear_need_materializes_audits_and_freezes(tmp_path):
     assert freeze_result.state.freeze_gate_result_ref == "frontdesk/freeze_gate_result.json"
     assert freeze_result.state.freeze_manifest_ref == "frontdesk/freeze_manifest.json"
     assert freeze_result.frozen_artifact_refs["skill_spec"] == "skill_spec.yaml"
+    assert freeze_result.frozen_artifact_refs["task_contract"] == "frontdesk/task_contract.json"
     assert workspace.resolve_path("frontdesk/spec_audit_report_001.json", must_exist=True).is_file()
+    assert workspace.resolve_path("frontdesk/task_contract.json", must_exist=True).is_file()
     assert workspace.resolve_path("frontdesk/freeze_gate_result.json", must_exist=True).is_file()
     assert workspace.resolve_path("frontdesk/freeze_manifest.json", must_exist=True).is_file()
 

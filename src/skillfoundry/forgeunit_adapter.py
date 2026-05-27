@@ -43,6 +43,7 @@ from .graph_v2 import (
     route_after_verification,
     validate_v2_graph_state,
 )
+from .frontdesk_workspace import FRONTDESK_TASK_CONTRACT_REF
 from .registry import DEFAULT_REGISTRY_VERSION, DuplicatePolicy, LocalSkillRegistry
 from .schema import (
     ArtifactRecord,
@@ -54,7 +55,7 @@ from .schema import (
     sha256_json,
     utc_now,
 )
-from .security import validate_relative_path
+from .security import PathSecurityError, validate_relative_path
 from .verifier import Verifier
 from .verification_bridge import CONTEXTFORGE_VERIFICATION_RESULT_REF, bridge_skillfoundry_verification_result
 from .workspace import JOB_ID_RE, JobWorkspace
@@ -485,6 +486,12 @@ def bridge_forgeunit_success_to_skillfoundry_attempt(
     execution_report_ref = f"attempts/{attempt_id}/execution_report.json"
     transcript_ref = f"attempts/{attempt_id}/worker_transcript.log"
     diff_ref = f"attempts/{attempt_id}/output_diff.patch"
+    task_contract_ref = None
+    try:
+        if workspace.resolve_path(FRONTDESK_TASK_CONTRACT_REF).is_file():
+            task_contract_ref = FRONTDESK_TASK_CONTRACT_REF
+    except PathSecurityError:
+        task_contract_ref = None
 
     input_manifest = {
         "schema_version": "skillfoundry.forgeunit_worker_input_manifest.v1",
@@ -495,6 +502,7 @@ def bridge_forgeunit_success_to_skillfoundry_attempt(
         "adapter_version": FORGEUNIT_ADAPTER_VERSION,
         "build_contract_ref": "build_contract.yaml",
         "worker_input_ref": "worker_input.md",
+        "task_contract_ref": task_contract_ref,
         "task_yaml_ref": FORGEUNIT_TASK_YAML_REF,
         "forgeunit_summary_ref": FORGEUNIT_SUMMARY_REF,
         "forgeunit_run_ref": str(refs.get("forgeunit_run") or ""),
@@ -1203,6 +1211,12 @@ def _bridge_and_verify_forgeunit_attempt_state(
             BUNDLE_VERIFICATION_RESULT_REF,
             ACCEPTANCE_COVERAGE_PLAN_REF,
             ACCEPTANCE_COVERAGE_RESULT_REF,
+            GOAL_CONTRACT_REF,
+            BUILD_NODE_CONTRACT_REF,
+            VERIFICATION_GATE_REF,
+            CONTRACT_MANIFEST_REF,
+            GOAL_RUNTIME_LEDGER_REF,
+            GOAL_RUNTIME_STATE_REF,
         ],
         created_by="skillfoundry.forgeunit_adapter.pre_verifier_refresh",
     )
@@ -1214,6 +1228,12 @@ def _bridge_and_verify_forgeunit_attempt_state(
             "verifier/static_report.json",
             "verifier/sandbox.log",
             BUNDLE_VERIFICATION_RESULT_REF,
+            GOAL_CONTRACT_REF,
+            BUILD_NODE_CONTRACT_REF,
+            VERIFICATION_GATE_REF,
+            CONTRACT_MANIFEST_REF,
+            GOAL_RUNTIME_LEDGER_REF,
+            GOAL_RUNTIME_STATE_REF,
         ],
         created_by="skillfoundry.forgeunit_adapter.post_verifier_refresh",
     )

@@ -29,6 +29,7 @@ from .frontdesk_workspace import (
     FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF,
     FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
     FRONTDESK_RISK_REPORT_REF,
+    FRONTDESK_TASK_CONTRACT_REF,
     FrontDeskWorkspace,
     write_frontdesk_artifact,
 )
@@ -176,6 +177,7 @@ def evaluate_frontdesk_v2_governance(
         "frontdesk_refs": {
             "product_semantic_lock": FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
             "product_semantic_coverage": FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF,
+            "task_contract": FRONTDESK_TASK_CONTRACT_REF,
             "clarification_summary": FRONTDESK_CLARIFICATION_SUMMARY_REF,
             "risk_report": FRONTDESK_RISK_REPORT_REF,
             "budget": FRONTDESK_BUDGET_REF,
@@ -347,6 +349,7 @@ def _visible_context(node_id: str) -> list[dict[str, JsonValue]]:
     refs = [
         FRONTDESK_PRODUCT_SEMANTIC_LOCK_REF,
         FRONTDESK_PRODUCT_SEMANTIC_COVERAGE_REF,
+        FRONTDESK_TASK_CONTRACT_REF,
         FRONTDESK_CLARIFICATION_SUMMARY_REF,
         FRONTDESK_RISK_REPORT_REF,
         FRONTDESK_BUDGET_REF,
