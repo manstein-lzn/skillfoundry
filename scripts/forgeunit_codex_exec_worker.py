@@ -27,6 +27,7 @@ PACKAGE_REF = "package/SKILL.md"
 TRANSCRIPT_REF = "evidence/transcript.md"
 MANIFEST_REF = "evidence/manifest.json"
 CHANGED_FILES = [PACKAGE_REF, TRANSCRIPT_REF, MANIFEST_REF]
+DEFAULT_WRITE_SCOPES = ["package", "evidence"]
 
 
 class WorkerBoundaryError(RuntimeError):
@@ -78,8 +79,15 @@ def _run_boundary(*, env: Mapping[str, str], command: str, timeout_seconds: int)
     (task_dir / "package").mkdir(parents=True, exist_ok=True)
     (task_dir / "evidence").mkdir(parents=True, exist_ok=True)
 
+    allowed_scopes = _unit_write_scope(task_dir=task_dir, unit_id=unit_id)
+    extra_allowed_refs = _protocol_output_refs(task_dir=task_dir, worker_result_path=worker_result_path)
     prompt_text = _read_prompt_from_boundary()
-    augmented_prompt = _augment_prompt(prompt_text=prompt_text, unit_id=unit_id, worker_result_path=worker_result_path)
+    augmented_prompt = _augment_prompt(
+        prompt_text=prompt_text,
+        unit_id=unit_id,
+        worker_result_path=worker_result_path,
+        allowed_scopes=allowed_scopes,
+    )
     _check_command_available(command)
     result = _invoke_codex_command(
         command=command,
@@ -98,14 +106,16 @@ def _run_boundary(*, env: Mapping[str, str], command: str, timeout_seconds: int)
     _validate_skill_frontmatter(package_path)
     _validate_frozen_task_requirements(task_dir)
     transcript_path = _ensure_transcript(task_dir=task_dir, unit_id=unit_id)
-    changed_files = _discover_changed_files(task_dir)
+    changed_files = _discover_changed_files(task_dir, allowed_scopes=allowed_scopes)
     manifest_path = _ensure_manifest(
         task_dir=task_dir,
         unit_id=unit_id,
         command_returncode=result.returncode,
         changed_files=changed_files,
+        allowed_scopes=allowed_scopes,
+        extra_allowed_refs=extra_allowed_refs,
     )
-    _validate_changed_files(changed_files)
+    _validate_changed_files(changed_files, allowed_scopes=allowed_scopes, extra_allowed_refs=extra_allowed_refs)
     _ensure_worker_result(
         worker_result_path=worker_result_path,
         task_dir=task_dir,
@@ -113,6 +123,8 @@ def _run_boundary(*, env: Mapping[str, str], command: str, timeout_seconds: int)
         transcript_path=transcript_path,
         manifest_path=manifest_path,
         changed_files=changed_files,
+        allowed_scopes=allowed_scopes,
+        extra_allowed_refs=extra_allowed_refs,
     )
     print("forgeunit codex exec worker completed")
 
@@ -131,7 +143,68 @@ def _read_prompt_from_boundary() -> str:
     return stdin_text
 
 
-def _augment_prompt(*, prompt_text: str, unit_id: str, worker_result_path: Path) -> str:
+def _unit_write_scope(*, task_dir: Path, unit_id: str) -> list[str]:
+    task_yaml = _resolve_task_ref(task_dir, "task.yaml")
+    if not task_yaml.exists() or not task_yaml.is_file():
+        return _normalize_write_scopes([])
+    try:
+        payload = yaml.safe_load(task_yaml.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise WorkerBoundaryError(f"task.yaml is invalid YAML: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise WorkerBoundaryError("task.yaml must be a YAML mapping")
+    units = payload.get("units")
+    if not isinstance(units, Mapping):
+        return _normalize_write_scopes([])
+    unit = units.get(unit_id)
+    if not isinstance(unit, Mapping):
+        return _normalize_write_scopes([])
+    worker = unit.get("worker")
+    if not isinstance(worker, Mapping):
+        return _normalize_write_scopes([])
+    write_scope = worker.get("write_scope")
+    if write_scope is None:
+        return _normalize_write_scopes([])
+    if not isinstance(write_scope, list):
+        raise WorkerBoundaryError(f"task.yaml units.{unit_id}.worker.write_scope must be a list")
+    return _normalize_write_scopes(_string_list(write_scope))
+
+
+def _protocol_output_refs(*, task_dir: Path, worker_result_path: Path) -> list[str]:
+    try:
+        ref = worker_result_path.resolve().relative_to(task_dir.resolve()).as_posix()
+    except ValueError:
+        return []
+    if not ref or ref.startswith("/") or ".." in Path(ref).parts:
+        return []
+    return [ref]
+
+
+def _normalize_write_scopes(scopes: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in [*DEFAULT_WRITE_SCOPES, *scopes]:
+        if not isinstance(raw, str):
+            continue
+        ref = raw.strip().strip("/")
+        if not ref:
+            continue
+        if ref.startswith("/") or ".." in Path(ref).parts or ref == ".":
+            raise WorkerBoundaryError(f"unsafe ForgeUnit write scope: {raw!r}")
+        if ref not in seen:
+            normalized.append(ref)
+            seen.add(ref)
+    return normalized
+
+
+def _augment_prompt(
+    *,
+    prompt_text: str,
+    unit_id: str,
+    worker_result_path: Path,
+    allowed_scopes: list[str],
+) -> str:
+    allowed_scope_text = ", ".join(f"`{scope}/`" for scope in allowed_scopes)
     boundary_contract = f"""
 
 ForgeUnit Codex Exec Boundary Contract
@@ -143,20 +216,29 @@ You are running inside a ForgeUnit task directory. Follow these hard output rule
 2. Write boundary transcript evidence to: {TRANSCRIPT_REF}
 3. Write worker evidence manifest to: {MANIFEST_REF}
 4. Optionally write ForgeUnit worker_result JSON to: {worker_result_path.as_posix()}
-5. Only change files under package/ and evidence/.
+5. Only change files under the current ForgeUnit write scopes: {allowed_scope_text}.
 6. Do not inline raw prompts, private requirements, or raw model transcripts in graph state.
 7. The worker_result is not acceptance. SkillFoundry Verifier and LocalSkillRegistry decide acceptance.
 8. In worker_result, output_artifacts, boundary_evidence, and changed_files must list files only, not directories.
 
-You must read the frozen task files in this directory before writing output:
-- skill_spec.yaml
-- acceptance_criteria.yaml
-- verification_spec.yaml
-- worker_input.md
+	You must read the frozen task files in this directory before writing output:
+	- skill_spec.yaml
+	- acceptance_criteria.yaml
+	- verification_spec.yaml
+	- worker_input.md
+	- adaptive/attempts/*/codex_worker_input.md when present
+	- adaptive/next_step_contract_*.json when present
 
-Satisfy every must acceptance criterion in acceptance_criteria.yaml. Do not stop
-after writing only package/SKILL.md when the frozen spec asks for executable
-assets, tests, fixtures, docs, or verifier code.
+	Satisfy every must acceptance criterion in acceptance_criteria.yaml. Do not stop
+	after writing only package/SKILL.md when the frozen spec asks for executable
+	assets, tests, fixtures, docs, or verifier code.
+
+	When adaptive steering files are present, treat the latest NextStepContract as
+	the current bounded work unit. Stay inside its allowed_scope plus the required
+	ForgeUnit evidence refs. If the contract asks for package/skillfoundry.bundle.json,
+	write a valid skillfoundry.bundle.v1 manifest with package-relative refs. If you
+	already produced a complete package in an earlier step, writing that manifest is
+	allowed even before the harness explicitly asks for it.
 
 If any frozen task file mentions Rust, Cargo, verifier, tests/fixtures, or
 cargo test, you must also create a local Rust project inside package/:
@@ -202,6 +284,9 @@ Required worker_result shape if you write it:
   "usage": null,
   "usage_unavailable_reason": "external_worker_no_provider_telemetry"
 }}
+
+If you write additional files inside another allowed scope such as an adaptive
+attempt evidence directory, include those file refs in changed_files.
 
 Unit id: {unit_id}
 """
@@ -413,6 +498,8 @@ def _ensure_manifest(
     unit_id: str,
     command_returncode: int,
     changed_files: list[str],
+    allowed_scopes: list[str],
+    extra_allowed_refs: list[str],
 ) -> Path:
     path = _resolve_task_ref(task_dir, MANIFEST_REF)
     if path.exists() and path.is_file():
@@ -422,6 +509,8 @@ def _ensure_manifest(
             unit_id=unit_id,
             command_returncode=command_returncode,
             changed_files=changed_files,
+            allowed_scopes=allowed_scopes,
+            extra_allowed_refs=extra_allowed_refs,
         )
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return path
@@ -430,6 +519,7 @@ def _ensure_manifest(
         command_returncode=command_returncode,
         changed_files=changed_files,
     )
+    _validate_manifest_payload(payload, allowed_scopes=allowed_scopes, extra_allowed_refs=extra_allowed_refs)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
@@ -466,14 +556,23 @@ def _default_manifest_payload(
     }
 
 
-def _validate_manifest_payload(payload: Mapping[str, Any]) -> None:
+def _validate_manifest_payload(
+    payload: Mapping[str, Any],
+    *,
+    allowed_scopes: list[str],
+    extra_allowed_refs: list[str],
+) -> None:
     if payload.get("schema") != "forgeunit.worker_evidence_manifest":
         raise WorkerBoundaryError("evidence/manifest.json has invalid schema")
     if not isinstance(payload.get("unit_id"), str) or not str(payload.get("unit_id")).strip():
         raise WorkerBoundaryError("evidence/manifest.json is missing unit_id")
     if payload.get("status") != "completed":
         raise WorkerBoundaryError("evidence/manifest.json status must be completed")
-    _validate_changed_files(_string_list(payload.get("changed_files")))
+    _validate_changed_files(
+        _string_list(payload.get("changed_files")),
+        allowed_scopes=allowed_scopes,
+        extra_allowed_refs=extra_allowed_refs,
+    )
 
 
 def _normalized_manifest_payload(
@@ -482,6 +581,8 @@ def _normalized_manifest_payload(
     unit_id: str,
     command_returncode: int,
     changed_files: list[str],
+    allowed_scopes: list[str],
+    extra_allowed_refs: list[str],
 ) -> dict[str, Any]:
     if existing.get("schema") not in {None, "forgeunit.worker_evidence_manifest"}:
         raise WorkerBoundaryError("evidence/manifest.json has invalid schema")
@@ -508,7 +609,7 @@ def _normalized_manifest_payload(
         payload["usage"] = None
     if not payload.get("usage_unavailable_reason") and payload.get("usage") is None:
         payload["usage_unavailable_reason"] = "external_worker_no_provider_telemetry"
-    _validate_manifest_payload(payload)
+    _validate_manifest_payload(payload, allowed_scopes=allowed_scopes, extra_allowed_refs=extra_allowed_refs)
     return payload
 
 
@@ -539,6 +640,8 @@ def _ensure_worker_result(
     transcript_path: Path,
     manifest_path: Path,
     changed_files: list[str],
+    allowed_scopes: list[str],
+    extra_allowed_refs: list[str],
 ) -> None:
     _assert_under(task_dir, package_path)
     _assert_under(task_dir, transcript_path)
@@ -549,6 +652,8 @@ def _ensure_worker_result(
             existing=payload,
             task_dir=task_dir,
             changed_files=changed_files,
+            allowed_scopes=allowed_scopes,
+            extra_allowed_refs=extra_allowed_refs,
         )
         worker_result_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return
@@ -565,6 +670,12 @@ def _ensure_worker_result(
         "usage": None,
         "usage_unavailable_reason": "external_worker_no_provider_telemetry",
     }
+    _validate_worker_result_payload(
+        payload,
+        task_dir=task_dir,
+        allowed_scopes=allowed_scopes,
+        extra_allowed_refs=extra_allowed_refs,
+    )
     worker_result_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -573,6 +684,8 @@ def _normalized_worker_result_payload(
     existing: Mapping[str, Any],
     task_dir: Path,
     changed_files: list[str],
+    allowed_scopes: list[str],
+    extra_allowed_refs: list[str],
 ) -> dict[str, Any]:
     if existing.get("status") != "completed":
         raise WorkerBoundaryError("worker_result status must be completed")
@@ -601,7 +714,12 @@ def _normalized_worker_result_payload(
         payload["usage"] = None
     if not payload.get("usage_unavailable_reason") and payload.get("usage") is None:
         payload["usage_unavailable_reason"] = "external_worker_no_provider_telemetry"
-    _validate_worker_result_payload(payload, task_dir=task_dir)
+    _validate_worker_result_payload(
+        payload,
+        task_dir=task_dir,
+        allowed_scopes=allowed_scopes,
+        extra_allowed_refs=extra_allowed_refs,
+    )
     return payload
 
 
@@ -641,7 +759,13 @@ def _normalized_artifacts(
     return artifacts
 
 
-def _validate_worker_result_payload(payload: Mapping[str, Any], *, task_dir: Path) -> None:
+def _validate_worker_result_payload(
+    payload: Mapping[str, Any],
+    *,
+    task_dir: Path,
+    allowed_scopes: list[str],
+    extra_allowed_refs: list[str],
+) -> None:
     if payload.get("status") != "completed":
         raise WorkerBoundaryError("worker_result status must be completed")
     output_paths = _artifact_paths(payload.get("output_artifacts"))
@@ -654,8 +778,15 @@ def _validate_worker_result_payload(payload: Mapping[str, Any], *, task_dir: Pat
     for ref in [*output_paths, *evidence_paths]:
         if not _is_existing_file_ref(task_dir, ref):
             raise WorkerBoundaryError(f"worker_result artifact is missing or not a file: {ref}")
-    changed_files = _merged_changed_files(_string_list(payload.get("changed_files")), _discover_changed_files(task_dir))
-    _validate_changed_files(changed_files)
+    changed_files = _merged_changed_files(
+        _string_list(payload.get("changed_files")),
+        _discover_changed_files(task_dir, allowed_scopes=allowed_scopes),
+    )
+    _validate_changed_files(
+        changed_files,
+        allowed_scopes=allowed_scopes,
+        extra_allowed_refs=extra_allowed_refs,
+    )
 
 
 def _read_json_object(path: Path, label: str) -> dict[str, Any]:
@@ -684,11 +815,15 @@ def _string_list(value: Any) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
-def _discover_changed_files(task_dir: Path) -> list[str]:
+def _discover_changed_files(task_dir: Path, *, allowed_scopes: list[str] | None = None) -> list[str]:
     discovered: list[str] = []
-    for root_name in ("package", "evidence"):
-        root = task_dir / root_name
+    scopes = _normalize_write_scopes(allowed_scopes or [])
+    for scope in scopes:
+        root = _resolve_task_ref(task_dir, scope)
         if not root.exists():
+            continue
+        if root.is_file():
+            discovered.append(root.relative_to(task_dir).as_posix())
             continue
         for path in sorted(root.rglob("*")):
             if path.is_file():
@@ -722,14 +857,40 @@ def _is_existing_file_ref(task_dir: Path, ref: str) -> bool:
     return path.is_file()
 
 
-def _validate_changed_files(changed_files: list[str]) -> None:
+def _validate_changed_files(
+    changed_files: list[str],
+    *,
+    allowed_scopes: list[str] | None = None,
+    extra_allowed_refs: list[str] | None = None,
+) -> None:
+    scopes = _normalize_write_scopes(allowed_scopes or [])
+    extra_refs = set(_safe_extra_allowed_refs(extra_allowed_refs or []))
     if not changed_files:
-        raise WorkerBoundaryError("changed_files must list package/evidence outputs")
+        raise WorkerBoundaryError("changed_files must list outputs inside the ForgeUnit write scope")
     for ref in changed_files:
         if not isinstance(ref, str) or ref.startswith("/") or ".." in Path(ref).parts:
             raise WorkerBoundaryError(f"unsafe changed file ref: {ref!r}")
-        if not (ref == "package" or ref.startswith("package/") or ref == "evidence" or ref.startswith("evidence/")):
-            raise WorkerBoundaryError(f"changed file outside package/evidence write scope: {ref}")
+        if ref in extra_refs:
+            continue
+        if not _ref_is_under_scope(ref, scopes):
+            allowed = ", ".join(f"{scope}/" for scope in scopes)
+            raise WorkerBoundaryError(f"changed file outside ForgeUnit write scope ({allowed}): {ref}")
+
+
+def _safe_extra_allowed_refs(refs: list[str]) -> list[str]:
+    result: list[str] = []
+    for ref in refs:
+        if not isinstance(ref, str) or not ref.strip():
+            continue
+        text = ref.strip()
+        if text.startswith("/") or ".." in Path(text).parts:
+            continue
+        result.append(text)
+    return result
+
+
+def _ref_is_under_scope(ref: str, scopes: list[str]) -> bool:
+    return any(ref == scope or ref.startswith(scope + "/") for scope in scopes)
 
 
 def _resolve_task_ref(task_dir: Path, ref: str) -> Path:

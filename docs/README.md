@@ -8,6 +8,7 @@ design assets.
 Read these first, in order:
 
 - [Agent Work Substrate Vision](AGENT_WORK_SUBSTRATE_VISION.md): cross-application substrate vision for LangGraph + ForgeUnit + ContextForge adaptive agent work.
+- [Recursive Agent Organization Vision](RECURSIVE_AGENT_ORGANIZATION_VISION.md): long-term target for recursively composing agents, teams, departments, and organizations through one control substrate.
 - [SkillFoundry Capability Bundle Vision](SKILLFOUNDRY_CAPABILITY_BUNDLE_VISION.md): product constitution for the AI-native capability bundle direction.
 - [System Map](SYSTEM_MAP.md): current architecture and 10-minute reading path.
 - [ForgeUnit SkillFoundry Composition](FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md): current product composition layer.
@@ -51,6 +52,7 @@ Implementation and verification docs:
 Architecture and product direction:
 
 - [Agent Work Substrate Vision](AGENT_WORK_SUBSTRATE_VISION.md)
+- [Recursive Agent Organization Vision](RECURSIVE_AGENT_ORGANIZATION_VISION.md)
 - [SkillFoundry Capability Bundle Vision](SKILLFOUNDRY_CAPABILITY_BUNDLE_VISION.md)
 - [Adaptive Steering Substrate Extraction Plan](ADAPTIVE_STEERING_SUBSTRATE_EXTRACTION_PLAN.md)
 - [SkillFoundry v2 Baseline](SKILLFOUNDRY_V2_BASELINE.md)

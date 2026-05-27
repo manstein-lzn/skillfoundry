@@ -64,6 +64,7 @@ def test_frontdesk_live_codex_eval_fake_mode_runs_scenarios_refs_only(tmp_path: 
     assert payload["schema_version"] == "skillfoundry.frontdesk_live_codex_eval.v1"
     assert payload["eval_id"] == "frontdesk-live-eval-test"
     assert payload["mode"] == "fake"
+    assert payload["build_mode"] == "api_default"
     assert payload["live_codex_requested"] is False
     assert payload["totals"]["total"] == 2
     assert payload["totals"]["registered"] == 2
@@ -121,6 +122,65 @@ def test_frontdesk_live_codex_eval_fake_mode_runs_scenarios_refs_only(tmp_path: 
     assert "package_content" not in serialized
     assert "raw prompt body" not in serialized
     assert "raw transcript body" not in serialized
+
+
+def test_frontdesk_live_codex_eval_fake_mode_can_use_adaptive_codex(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    scenario_file = tmp_path / "scenarios.json"
+    scenario_file.write_text(
+        json.dumps(
+            {
+                "scenarios": [
+                    {
+                        "id": "adaptive-status",
+                        "message": "Build an adaptive status skill.",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_eval(
+        tmp_path,
+        "--runs-root",
+        str(runs_root),
+        "--eval-id",
+        "frontdesk-live-eval-adaptive",
+        "--registry-path",
+        "registry.json",
+        "--scenario-file",
+        str(scenario_file),
+        "--version-prefix",
+        "frontdesk-live-eval-adaptive",
+        "--created-at",
+        "2026-05-23T00:00:00Z",
+        "--fake-mode",
+        "happy",
+        "--build-mode",
+        "adaptive_codex",
+        "--attempt-limit",
+        "2",
+        "--overwrite",
+    )
+
+    payload = json.loads(result.stdout)
+    eval_root = runs_root / "frontdesk-live-eval-adaptive"
+    scenario = payload["scenarios"][0]
+    workspace = eval_root / scenario["job_id"]
+
+    assert payload["build_mode"] == "adaptive_codex"
+    assert payload["totals"]["registered"] == 1
+    assert scenario["status"] == "registered"
+    assert scenario["build_path"]["mode"] == "adaptive_codex"
+    assert scenario["forgeunit_skillfoundry"]["mode"] == "adaptive_codex"
+    assert scenario["forgeunit_skillfoundry"]["verification_passed"] is True
+    assert scenario["forgeunit_skillfoundry"]["registry_approved"] is True
+    assert (workspace / "adaptive/attempts/001/codex_worker_input.md").is_file()
+    assert (workspace / "adaptive/attempts/001/work_unit_result.json").is_file()
+    assert (workspace / "adaptive/state_correction_001.json").is_file()
+    assert (workspace / "package/skillfoundry.bundle.json").is_file()
+    assert "frontdesk_eval_fake_codex_exec.py" not in result.stdout
 
 
 def test_frontdesk_live_codex_eval_requires_explicit_mode(tmp_path: Path) -> None:

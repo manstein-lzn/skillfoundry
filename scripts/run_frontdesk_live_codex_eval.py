@@ -107,6 +107,7 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
         shutil.rmtree(eval_root)
     eval_root.mkdir(parents=True, exist_ok=True)
 
+    build_mode = _optional_non_empty(args.build_mode)
     command = _resolve_command(args=args, eval_root=eval_root)
     registry_path = Path(args.registry_path)
     api = SkillFoundryAPI(
@@ -128,6 +129,8 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
                 version_prefix=args.version_prefix,
                 created_at=created_at,
                 assess_package=bool(args.command),
+                build_mode=build_mode,
+                attempt_limit=args.attempt_limit,
             )
         )
     duration_seconds = round(time.monotonic() - started, 3)
@@ -136,6 +139,7 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
         eval_id=eval_id,
         eval_root=eval_root,
         mode="fake" if args.fake_mode else "command",
+        build_mode=build_mode,
         live_codex_requested=bool(args.command),
         scenario_summaries=scenario_summaries,
         duration_seconds=duration_seconds,
@@ -170,6 +174,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--created-at", help="Optional deterministic timestamp for build artifacts.")
     parser.add_argument("--command", help="Explicit ForgeUnit/Codex command boundary for live/manual eval.")
     parser.add_argument("--fake-mode", choices=("happy",), help="Run deterministic offline eval instead of live Codex.")
+    parser.add_argument(
+        "--build-mode",
+        help="Optional FrontDesk build mode, for example adaptive_codex. Defaults to the API default path.",
+    )
+    parser.add_argument("--attempt-limit", type=int, help="Optional FrontDesk build attempt limit.")
     parser.add_argument("--overwrite", action="store_true", help="Delete an existing eval workspace first.")
     return parser
 
@@ -187,6 +196,7 @@ def _resolve_command(*, args: argparse.Namespace, eval_root: Path) -> str:
         worker_dir.mkdir(parents=True, exist_ok=True)
         script = write_fake_codex_exec_command(
             worker_dir,
+            write_bundle_manifest=_is_adaptive_build_mode(args.build_mode),
             script_name="frontdesk_eval_fake_codex_exec.py",
         ).resolve()
         return f"{shlex.quote(sys.executable)} {shlex.quote(script.as_posix())}"
@@ -241,6 +251,8 @@ def _run_scenario(
     version_prefix: str,
     created_at: str | None,
     assess_package: bool,
+    build_mode: str | None,
+    attempt_limit: int | None,
 ) -> dict[str, Any]:
     job_id = f"{eval_id}-{scenario.scenario_id}"
     version = scenario.version or f"{version_prefix}-{scenario.scenario_id}"
@@ -259,6 +271,10 @@ def _run_scenario(
             f"approve FrontDesk plan for {scenario.scenario_id}",
         )
         build_body: dict[str, Any] = {"version": version}
+        if build_mode:
+            build_body["build_mode"] = build_mode
+        if attempt_limit is not None:
+            build_body["attempt_limit"] = attempt_limit
         if created_at:
             build_body["created_at"] = created_at
         build = _require_success(
@@ -357,6 +373,7 @@ def _build_eval_summary(
     eval_id: str,
     eval_root: Path,
     mode: str,
+    build_mode: str | None,
     live_codex_requested: bool,
     scenario_summaries: list[dict[str, Any]],
     duration_seconds: float,
@@ -368,6 +385,7 @@ def _build_eval_summary(
         "eval_id": eval_id,
         "created_at": created_at,
         "mode": mode,
+        "build_mode": build_mode or "api_default",
         "live_codex_requested": live_codex_requested,
         "runs_root_ref": eval_root.as_posix(),
         "totals": totals,
@@ -618,6 +636,13 @@ def _optional_non_empty(value: Any) -> str | None:
         raise EvalError("expected a string value")
     stripped = value.strip()
     return stripped or None
+
+
+def _is_adaptive_build_mode(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip().lower().replace("-", "_")
+    return normalized in {"adaptive", "adaptive_codex", "adaptive_forgeunit", "forgeunit_adaptive"}
 
 
 def _mapping(value: Any) -> dict[str, Any]:

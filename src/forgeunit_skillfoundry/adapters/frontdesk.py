@@ -11,6 +11,7 @@ from skillfoundry.security import PathSecurityError
 from skillfoundry.workspace import JobWorkspace
 
 from ..config import ForgeUnitSkillFoundryError
+from ..adaptive_codex import AdaptiveCodexSkillFactoryResult, run_existing_workspace_adaptive_codex_factory
 from ..engine import ForgeUnitSkillFactoryEngine
 from ..product import ForgeUnitSkillFactoryResult
 from .workspace import run_existing_workspace_skill_factory
@@ -46,6 +47,32 @@ def run_frozen_frontdesk_skill_factory(
         version=version,
         created_at=created_at,
         engine=engine,
+    )
+
+
+def run_frozen_frontdesk_adaptive_codex_factory(
+    workspace: JobWorkspace,
+    *,
+    registry_path: str | Path,
+    command: str,
+    attempt_limit: int = 2,
+    version: str = DEFAULT_REGISTRY_VERSION,
+    created_at: str | None = None,
+) -> AdaptiveCodexSkillFactoryResult:
+    """Run a frozen FrontDesk job through the opt-in adaptive Codex path."""
+
+    if not isinstance(workspace, JobWorkspace):
+        raise ForgeUnitSkillFoundryError("workspace must be a JobWorkspace")
+    workspace.check_locked_inputs()
+    state = _read_frontdesk_state(workspace)
+    _require_frozen_route_to_build(workspace, state)
+    return run_existing_workspace_adaptive_codex_factory(
+        workspace,
+        registry_path=registry_path,
+        command=command,
+        attempt_limit=attempt_limit,
+        version=version,
+        created_at=created_at,
     )
 
 

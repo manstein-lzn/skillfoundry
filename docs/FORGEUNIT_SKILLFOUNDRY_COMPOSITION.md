@@ -93,6 +93,28 @@ The adaptive steering loop now sits alongside this composition layer as a
 verified product-layer control primitive. Its stable fields are substrate
 candidates, not just pilot-only state.
 
+It also has an opt-in FrontDesk build mode:
+
+```json
+{"build_mode": "adaptive_codex"}
+```
+
+Aliases `adaptive_forgeunit` and `forgeunit_adaptive` resolve to the same path.
+This mode wraps the existing ForgeUnit Codex command boundary as an
+`AdaptiveWorkUnit`:
+
+```text
+NextStepContract
+  -> adaptive Codex worker input
+  -> ForgeUnit command boundary
+  -> SkillFoundry verifier / acceptance coverage / ProductGradeGate evidence
+  -> ObservationReport
+  -> StateCorrection
+  -> repair / review_required / closure
+```
+
+The default FrontDesk build path remains `forgeunit_skillfoundry_vnext`.
+
 ## Public Entry Points
 
 ```python
@@ -105,6 +127,8 @@ from forgeunit_skillfoundry import (
     read_evidence_summary,
     run_codex_skill_factory,
     run_existing_workspace_skill_factory,
+    run_existing_workspace_adaptive_codex_factory,
+    run_frozen_frontdesk_adaptive_codex_factory,
     run_frozen_frontdesk_skill_factory,
     run_skill_factory_graph,
 )
@@ -117,7 +141,7 @@ SkillFoundry `JobWorkspace`.
 `run_codex_skill_factory(...)` is the public product convenience entry and now
 uses that graph path.
 
-Both entries support two modes:
+The default product convenience entry supports two non-adaptive modes:
 
 ```text
 command_bridge
@@ -132,6 +156,19 @@ repair_command_bridge
   -> second explicit ForgeUnit command bridge
   -> verifier pass
   -> registry
+```
+
+The opt-in FrontDesk adaptive entry supports:
+
+```text
+adaptive_codex
+  -> CapabilityStateEstimate / RoutePlan
+  -> bounded NextStepContract
+  -> explicit ForgeUnit command bridge
+  -> ObservationReport / StateCorrection
+  -> verifier or acceptance failure routes to repair
+  -> repeated failure routes to review_required
+  -> closure registers only after independent gates pass
 ```
 
 Both modes write:

@@ -359,6 +359,181 @@ worker_result.write_text(json.dumps({
     assert "package/tests/fixtures/sample.json" in result["changed_files"]
 
 
+def test_forgeunit_codex_exec_worker_allows_declared_adaptive_attempt_scope(tmp_path: Path) -> None:
+    task_dir, run_dir, worker_result = _forgeunit_env_dirs(tmp_path)
+    (task_dir / "task.yaml").write_text(
+        """
+units:
+  execute:
+    worker:
+      write_scope:
+        - package
+        - evidence
+        - adaptive/attempts/003
+""".strip(),
+        encoding="utf-8",
+    )
+    fake_codex = tmp_path / "fake_codex_adaptive_scope.py"
+    fake_codex.write_text(
+        """
+from pathlib import Path
+import json
+import os
+import sys
+
+prompt = sys.stdin.read()
+assert "`adaptive/attempts/003/`" in prompt
+worker_result = Path(os.environ["FORGEUNIT_WORKER_RESULT"])
+Path("package").mkdir(exist_ok=True)
+Path("evidence").mkdir(exist_ok=True)
+Path("adaptive/attempts/003").mkdir(parents=True, exist_ok=True)
+Path("package/SKILL.md").write_text(__MINIMAL_VALID_SKILL__, encoding="utf-8")
+Path("evidence/transcript.md").write_text("adaptive repair transcript summary\\n", encoding="utf-8")
+Path("adaptive/attempts/003/repair_evidence.md").write_text("repair evidence\\n", encoding="utf-8")
+worker_result.write_text(json.dumps({
+    "status": "completed",
+    "output_artifacts": [
+        {"path": "package/SKILL.md", "kind": "codex_skill", "summary": "skill"},
+    ],
+    "boundary_evidence": [
+        {"path": "evidence/transcript.md", "kind": "transcript", "summary": "transcript"},
+    ],
+    "changed_files": [
+        "package/SKILL.md",
+        "evidence/transcript.md",
+        "adaptive/attempts/003/repair_evidence.md",
+    ],
+    "usage": None,
+    "usage_unavailable_reason": "external_worker_no_provider_telemetry"
+}, indent=2), encoding="utf-8")
+""".strip().replace("__MINIMAL_VALID_SKILL__", repr(MINIMAL_VALID_SKILL)),
+        encoding="utf-8",
+    )
+
+    completed = _run_wrapper(
+        task_dir=task_dir,
+        run_dir=run_dir,
+        worker_result=worker_result,
+        codex_command=f"{sys.executable} {fake_codex}",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(worker_result.read_text(encoding="utf-8"))
+    manifest = json.loads((task_dir / "evidence" / "manifest.json").read_text(encoding="utf-8"))
+    assert "adaptive/attempts/003/repair_evidence.md" in result["changed_files"]
+    assert "adaptive/attempts/003/repair_evidence.md" in manifest["changed_files"]
+
+
+def test_forgeunit_codex_exec_worker_rejects_undeclared_adaptive_attempt_scope(tmp_path: Path) -> None:
+    task_dir, run_dir, worker_result = _forgeunit_env_dirs(tmp_path)
+    (task_dir / "task.yaml").write_text(
+        """
+units:
+  execute:
+    worker:
+      write_scope:
+        - package
+        - evidence
+""".strip(),
+        encoding="utf-8",
+    )
+    fake_codex = tmp_path / "fake_codex_undeclared_adaptive_scope.py"
+    fake_codex.write_text(
+        """
+from pathlib import Path
+import json
+import os
+import sys
+
+_ = sys.stdin.read()
+worker_result = Path(os.environ["FORGEUNIT_WORKER_RESULT"])
+Path("package").mkdir(exist_ok=True)
+Path("evidence").mkdir(exist_ok=True)
+Path("adaptive/attempts/003").mkdir(parents=True, exist_ok=True)
+Path("package/SKILL.md").write_text(__MINIMAL_VALID_SKILL__, encoding="utf-8")
+Path("evidence/transcript.md").write_text("adaptive repair transcript summary\\n", encoding="utf-8")
+Path("adaptive/attempts/003/repair_evidence.md").write_text("repair evidence\\n", encoding="utf-8")
+worker_result.write_text(json.dumps({
+    "status": "completed",
+    "output_artifacts": [
+        {"path": "package/SKILL.md", "kind": "codex_skill", "summary": "skill"},
+    ],
+    "boundary_evidence": [
+        {"path": "evidence/transcript.md", "kind": "transcript", "summary": "transcript"},
+    ],
+    "changed_files": [
+        "package/SKILL.md",
+        "evidence/transcript.md",
+        "adaptive/attempts/003/repair_evidence.md",
+    ],
+    "usage": None,
+    "usage_unavailable_reason": "external_worker_no_provider_telemetry"
+}, indent=2), encoding="utf-8")
+""".strip().replace("__MINIMAL_VALID_SKILL__", repr(MINIMAL_VALID_SKILL)),
+        encoding="utf-8",
+    )
+
+    completed = _run_wrapper(
+        task_dir=task_dir,
+        run_dir=run_dir,
+        worker_result=worker_result,
+        codex_command=f"{sys.executable} {fake_codex}",
+    )
+
+    assert completed.returncode == 1
+    assert "outside ForgeUnit write scope" in completed.stderr
+    assert "adaptive/attempts/003/repair_evidence.md" in completed.stderr
+
+
+def test_forgeunit_codex_exec_worker_allows_protocol_worker_result_ref(tmp_path: Path) -> None:
+    task_dir, run_dir, worker_result = _forgeunit_env_dirs(tmp_path)
+    worker_result_ref = worker_result.relative_to(task_dir).as_posix()
+    fake_codex = tmp_path / "fake_codex_protocol_worker_result_ref.py"
+    fake_codex.write_text(
+        f"""
+from pathlib import Path
+import json
+import os
+import sys
+
+_ = sys.stdin.read()
+worker_result = Path(os.environ["FORGEUNIT_WORKER_RESULT"])
+Path("package").mkdir(exist_ok=True)
+Path("evidence").mkdir(exist_ok=True)
+Path("package/SKILL.md").write_text(__MINIMAL_VALID_SKILL__, encoding="utf-8")
+Path("evidence/transcript.md").write_text("protocol worker result transcript summary\\n", encoding="utf-8")
+worker_result.write_text(json.dumps({{
+    "status": "completed",
+    "output_artifacts": [
+        {{"path": "package/SKILL.md", "kind": "codex_skill", "summary": "skill"}},
+    ],
+    "boundary_evidence": [
+        {{"path": "evidence/transcript.md", "kind": "transcript", "summary": "transcript"}},
+    ],
+    "changed_files": [
+        "package/SKILL.md",
+        "evidence/transcript.md",
+        {worker_result_ref!r},
+    ],
+    "usage": None,
+    "usage_unavailable_reason": "external_worker_no_provider_telemetry"
+}}, indent=2), encoding="utf-8")
+""".strip().replace("__MINIMAL_VALID_SKILL__", repr(MINIMAL_VALID_SKILL)),
+        encoding="utf-8",
+    )
+
+    completed = _run_wrapper(
+        task_dir=task_dir,
+        run_dir=run_dir,
+        worker_result=worker_result,
+        codex_command=f"{sys.executable} {fake_codex}",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(worker_result.read_text(encoding="utf-8"))
+    assert worker_result_ref in result["changed_files"]
+
+
 def test_forgeunit_real_codex_exec_wrapper_can_drive_command_bridge_graph(tmp_path: Path) -> None:
     runs_root = tmp_path / "runs"
     registry_path = tmp_path / "registry.json"

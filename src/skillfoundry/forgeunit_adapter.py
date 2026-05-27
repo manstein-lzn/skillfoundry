@@ -18,6 +18,7 @@ from .acceptance import (
     AcceptanceCoverageEvaluator,
     AcceptanceCriteriaPlanner,
 )
+from .bundle_verifier import BUNDLE_VERIFICATION_RESULT_REF
 from .contracts import (
     BUILD_NODE_CONTRACT_REF,
     CONTRACT_MANIFEST_REF,
@@ -53,6 +54,7 @@ from .schema import (
     sha256_json,
     utc_now,
 )
+from .security import validate_relative_path
 from .verifier import Verifier
 from .verification_bridge import CONTEXTFORGE_VERIFICATION_RESULT_REF, bridge_skillfoundry_verification_result
 from .workspace import JOB_ID_RE, JobWorkspace
@@ -118,40 +120,73 @@ class ForgeUnitBridgeResult:
     artifact_manifest_ref: str
 
 
-def materialize_forgeunit_task_pack(workspace: JobWorkspace) -> ForgeUnitTaskPackArtifacts:
+def materialize_forgeunit_task_pack(
+    workspace: JobWorkspace,
+    *,
+    adaptive_contract_ref: str | None = None,
+    adaptive_worker_input_ref: str | None = None,
+    unit_objective: str | None = None,
+    expected_output_refs: list[str] | None = None,
+    write_scope: list[str] | None = None,
+) -> ForgeUnitTaskPackArtifacts:
     """Write a ForgeUnit task pack over the existing SkillFoundry job workspace."""
 
     workspace.check_locked_inputs()
     for relative_dir in ("package", "evidence"):
         workspace.resolve_path(relative_dir).mkdir(parents=True, exist_ok=True)
 
+    inputs: dict[str, dict[str, str]] = {
+        "skill_spec": {
+            "path": "skill_spec.yaml",
+            "kind": "skill_spec",
+            "summary": "Frozen SkillFoundry SkillSpec.",
+        },
+        "verification_spec": {
+            "path": "verification_spec.yaml",
+            "kind": "verification_spec",
+            "summary": "Frozen SkillFoundry VerificationSpec.",
+        },
+        "build_contract": {
+            "path": "build_contract.yaml",
+            "kind": "build_contract",
+            "summary": "Locked SkillFoundry build contract.",
+        },
+        "worker_input": {
+            "path": "worker_input.md",
+            "kind": "worker_input",
+            "summary": "Natural-language requirement summary.",
+        },
+    }
+    if adaptive_contract_ref is not None:
+        validate_relative_path(adaptive_contract_ref)
+        inputs["adaptive_next_step_contract"] = {
+            "path": adaptive_contract_ref,
+            "kind": "adaptive_next_step_contract",
+            "summary": "Current adaptive steering contract for this bounded work unit.",
+        }
+    if adaptive_worker_input_ref is not None:
+        validate_relative_path(adaptive_worker_input_ref)
+        inputs["adaptive_worker_input"] = {
+            "path": adaptive_worker_input_ref,
+            "kind": "adaptive_worker_input",
+            "summary": "Human-readable adaptive work-unit instructions derived from the current contract.",
+        }
+
+    execute_objective = unit_objective or (
+        "Build a Codex Skill package from the frozen SkillFoundry inputs. "
+        "Write package/SKILL.md and boundary evidence before reporting completion."
+    )
+    execute_expected_outputs = [
+        {"path": ref, "kind": "adaptive_expected_output" if ref.startswith("adaptive/") else "codex_skill"}
+        for ref in (expected_output_refs or ["package/SKILL.md"])
+    ]
+    execute_write_scope = write_scope or ["package", "evidence"]
     task_payload = {
         "id": f"skillfoundry_{workspace.job_id}_forgeunit",
         "version": "skillfoundry.forgeunit_task_pack.v1",
         "graph": "plan_execute_verify",
         "max_repair_attempts": 1,
-        "inputs": {
-            "skill_spec": {
-                "path": "skill_spec.yaml",
-                "kind": "skill_spec",
-                "summary": "Frozen SkillFoundry SkillSpec.",
-            },
-            "verification_spec": {
-                "path": "verification_spec.yaml",
-                "kind": "verification_spec",
-                "summary": "Frozen SkillFoundry VerificationSpec.",
-            },
-            "build_contract": {
-                "path": "build_contract.yaml",
-                "kind": "build_contract",
-                "summary": "Locked SkillFoundry build contract.",
-            },
-            "worker_input": {
-                "path": "worker_input.md",
-                "kind": "worker_input",
-                "summary": "Natural-language requirement summary.",
-            },
-        },
+        "inputs": inputs,
         "units": {
             "plan": {
                 "objective": "Create a concise build plan from the frozen SkillFoundry inputs.",
@@ -160,16 +195,13 @@ def materialize_forgeunit_task_pack(workspace: JobWorkspace) -> ForgeUnitTaskPac
                 "verify": [{"type": "file_exists", "path": "attempts/forgeunit_plan.md"}],
             },
             FORGEUNIT_CODEX_EXEC_UNIT_ID: {
-                "objective": (
-                    "Build a Codex Skill package from the frozen SkillFoundry inputs. "
-                    "Write package/SKILL.md and boundary evidence before reporting completion."
-                ),
+                "objective": execute_objective,
                 "worker": {
                     "kind": "codex_boundary",
-                    "write_scope": ["package", "evidence"],
+                    "write_scope": execute_write_scope,
                     "required_boundary_evidence": ["evidence/transcript.md", "evidence/manifest.json"],
                 },
-                "expected_outputs": [{"path": "package/SKILL.md", "kind": "codex_skill"}],
+                "expected_outputs": execute_expected_outputs,
                 "verify": [
                     {"type": "file_exists", "path": "package/SKILL.md"},
                     {"type": "worker_evidence_manifest", "path": "evidence/manifest.json"},
@@ -201,10 +233,22 @@ def run_forgeunit_codex_exec_node(
     dry_run: bool = True,
     command: str | None = None,
     unit_id: str = FORGEUNIT_CODEX_EXEC_UNIT_ID,
+    adaptive_contract_ref: str | None = None,
+    adaptive_worker_input_ref: str | None = None,
+    unit_objective: str | None = None,
+    expected_output_refs: list[str] | None = None,
+    write_scope: list[str] | None = None,
 ) -> ForgeUnitNodeResult:
     """Invoke ForgeUnit's public LangGraph adapter for one SkillFoundry workspace."""
 
-    task_pack = materialize_forgeunit_task_pack(workspace)
+    task_pack = materialize_forgeunit_task_pack(
+        workspace,
+        adaptive_contract_ref=adaptive_contract_ref,
+        adaptive_worker_input_ref=adaptive_worker_input_ref,
+        unit_objective=unit_objective,
+        expected_output_refs=expected_output_refs,
+        write_scope=write_scope,
+    )
     forgeunit_node = _load_forgeunit_node()(
         "codex_exec",
         unit_id=unit_id,
@@ -821,6 +865,11 @@ def _maybe_write_acceptance_coverage(
 
     if result.passed is not True:
         raise ForgeUnitIntegrationError("acceptance coverage evaluation did not pass")
+    _upsert_manifest_records(
+        workspace,
+        [ACCEPTANCE_COVERAGE_PLAN_REF, ACCEPTANCE_COVERAGE_RESULT_REF],
+        created_by="skillfoundry.forgeunit_adapter",
+    )
 
     refs = dict(state.get("refs", {}))
     refs.update(
@@ -1145,7 +1194,29 @@ def _bridge_and_verify_forgeunit_attempt_state(
         created_at=created_at,
     )
     _maybe_write_contextforge_frontdesk_boundary_evidence(workspace, created_at=created_at)
+    _upsert_existing_manifest_records(
+        workspace,
+        [
+            FORGEUNIT_VERIFICATION_RESULT_REF,
+            "verifier/static_report.json",
+            "verifier/sandbox.log",
+            BUNDLE_VERIFICATION_RESULT_REF,
+            ACCEPTANCE_COVERAGE_PLAN_REF,
+            ACCEPTANCE_COVERAGE_RESULT_REF,
+        ],
+        created_by="skillfoundry.forgeunit_adapter.pre_verifier_refresh",
+    )
     result = Verifier().verify(workspace, attempt_id=bridge.attempt_id)
+    _upsert_existing_manifest_records(
+        workspace,
+        [
+            FORGEUNIT_VERIFICATION_RESULT_REF,
+            "verifier/static_report.json",
+            "verifier/sandbox.log",
+            BUNDLE_VERIFICATION_RESULT_REF,
+        ],
+        created_by="skillfoundry.forgeunit_adapter.post_verifier_refresh",
+    )
 
     refs_out = dict(state.get("refs", {}))
     refs_out.update(
@@ -1585,6 +1656,24 @@ def _upsert_manifest_records(
             order.append(ref)
     manifest.artifacts = [by_path[path] for path in order]
     workspace.write_manifest(manifest)
+
+
+def _upsert_existing_manifest_records(
+    workspace: JobWorkspace,
+    refs: list[str],
+    *,
+    created_by: str,
+) -> None:
+    existing_refs: list[str] = []
+    for ref in refs:
+        try:
+            path = workspace.resolve_path(ref)
+        except Exception:
+            continue
+        if path.is_file():
+            existing_refs.append(ref)
+    if existing_refs:
+        _upsert_manifest_records(workspace, _dedupe_strings(existing_refs), created_by=created_by)
 
 
 def _artifact_kind_for_ref(ref: str) -> str:

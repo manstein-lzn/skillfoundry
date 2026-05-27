@@ -45,6 +45,7 @@ from skillfoundry.product_contract import (
     ProductRepairPacket,
 )
 from skillfoundry.product_grade_gate import ProductGradeGate
+from skillfoundry.schema import ArtifactRecord, sha256_file, utc_now
 from skillfoundry.security import PathSecurityError, assert_under_root, validate_relative_path
 from skillfoundry.workspace import JobWorkspace, initialize_job_workspace
 
@@ -366,6 +367,11 @@ def _collect_observation_node(config: AdaptiveGraphConfig) -> Any:
         iteration = _latest_iteration(state)
         work_unit_result = _read_work_unit_result(workspace, iteration)
         bundle_result = BundleVerifier().verify(workspace)
+        _refresh_manifest_records(
+            workspace,
+            [BUNDLE_VERIFICATION_RESULT_REF],
+            created_by="forgeunit_skillfoundry.adaptive_graph",
+        )
         verifier_evidence = _dedupe_refs([*work_unit_result.verifier_evidence, BUNDLE_VERIFICATION_RESULT_REF])
         failures = list(work_unit_result.failures)
         if work_unit_result.verification_status in {"failed", "review_required"} and not failures:
@@ -389,6 +395,11 @@ def _collect_observation_node(config: AdaptiveGraphConfig) -> Any:
                 contextforge["adaptive_product_grade_error"] = type(exc).__name__
                 verification_status = "failed"
             else:
+                _refresh_manifest_records(
+                    workspace,
+                    [PRODUCT_GRADE_REPORT_REF, PRODUCT_REPAIR_PACKET_REF],
+                    created_by="forgeunit_skillfoundry.adaptive_graph",
+                )
                 verifier_evidence = _dedupe_refs(
                     [*verifier_evidence, PRODUCT_GRADE_REPORT_REF, PRODUCT_REPAIR_PACKET_REF]
                 )
@@ -631,6 +642,42 @@ def _writable_workspace_path(workspace: JobWorkspace, ref: str) -> Path:
         return assert_under_root(root, path)
     except PathSecurityError as exc:
         raise ForgeUnitSkillFoundryError(f"adaptive artifact path escapes workspace: {ref}") from exc
+
+
+def _refresh_manifest_records(workspace: JobWorkspace, refs: list[str], *, created_by: str) -> None:
+    existing_refs: list[str] = []
+    for ref in refs:
+        try:
+            path = workspace.resolve_path(ref)
+        except Exception:
+            continue
+        if path.is_file():
+            existing_refs.append(ref)
+    if not existing_refs:
+        return
+    manifest = workspace.read_manifest()
+    by_path = {record.path: record for record in manifest.artifacts}
+    order = [record.path for record in manifest.artifacts]
+    now = utc_now()
+    for ref in existing_refs:
+        path = workspace.resolve_path(ref, must_exist=True)
+        existing = by_path.get(ref)
+        locked = existing.locked if existing is not None else False
+        by_path[ref] = ArtifactRecord(
+            artifact_id=existing.artifact_id if existing is not None else f"{workspace.job_id}:{ref.replace('/', ':')}",
+            path=ref,
+            kind=existing.kind if existing is not None else "adaptive_verifier_artifact",
+            sha256=sha256_file(path),
+            created_by=created_by,
+            created_at=existing.created_at if existing is not None else now,
+            job_id=workspace.job_id,
+            attempt_id=existing.attempt_id if existing is not None else None,
+            locked=locked,
+        )
+        if ref not in order:
+            order.append(ref)
+    manifest.artifacts = [by_path[path] for path in order]
+    workspace.write_manifest(manifest)
 
 
 def _read_work_unit_result(workspace: JobWorkspace, iteration: int) -> AdaptiveWorkUnitResult:

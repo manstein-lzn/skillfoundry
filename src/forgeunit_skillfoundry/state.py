@@ -29,8 +29,12 @@ ADAPTIVE_PRODUCT_REF_KEYS = frozenset(
         "adaptive_state",
         "latest_route_plan",
         "latest_next_step_contract",
+        "latest_work_unit_result",
         "latest_observation_report",
         "latest_state_correction",
+        "bundle_verification_result",
+        "product_grade_report",
+        "product_repair_packet",
         "decision_ledger",
     }
 )

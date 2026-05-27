@@ -10,7 +10,6 @@ WP documents.
 FrontDesk
   -> ContextForge Goal Runtime
   -> ForgeUnit SkillFoundry vNext
-     -> validated adaptive steering loop
   -> Codex exec / deterministic fake command boundary
   -> SkillFoundry Verifier
   -> Registry
@@ -20,9 +19,18 @@ The current mainline is not the old WP0-WP17 prototype path. Historical modules
 and docs remain for compatibility, fixtures, and product memory, but new
 product behavior should start from the mainline above.
 
-The adaptive steering loop is now a verified product-layer control primitive,
-not a temporary experiment. Its stable artifacts are candidates for future
-substate extraction into ContextForge / ForgeUnit.
+The adaptive steering loop is now both a verified product-layer control
+primitive and an explicit opt-in FrontDesk build path:
+
+```text
+POST /frontdesk/jobs/{job_id}/build
+body: {"build_mode": "adaptive_codex"}
+```
+
+That path runs `NextStepContract -> ForgeUnit Codex command worker ->
+ObservationReport -> StateCorrection`, then routes repair, review, or closure
+from verifier / acceptance / ProductGradeGate evidence. It is still opt-in; the
+default FrontDesk build remains the non-adaptive ForgeUnit vNext command bridge.
 
 ## 10-Minute Reading Path
 
@@ -57,6 +65,9 @@ Current composition:
 - `src/forgeunit_skillfoundry/adaptive_graph.py`,
   `src/forgeunit_skillfoundry/adaptive_benchmark.py`
   Deterministic adaptive steering loop and baseline/upgraded pressure benchmark.
+- `src/forgeunit_skillfoundry/adaptive_codex.py`
+  Opt-in FrontDesk adaptive Codex bridge. It wraps the existing ForgeUnit command
+  boundary as an `AdaptiveWorkUnit` worker.
 - `src/skillfoundry/api.py`
   FrontDesk API and product read models.
 - `src/skillfoundry/frontdesk*.py`

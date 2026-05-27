@@ -7,6 +7,7 @@ import sys
 import yaml
 
 from forgeunit import validate_task_pack_or_raise
+import skillfoundry.forgeunit_adapter as forgeunit_adapter
 from skillfoundry.forgeunit_adapter import (
     FORGEUNIT_ADAPTER_VERSION,
     FORGEUNIT_BOUNDARY_VERIFICATION_REF,
@@ -29,6 +30,7 @@ from skillfoundry.forgeunit_adapter import (
 )
 from skillfoundry.graph_v2 import V2Stage, V2Status, validate_v2_graph_state
 from skillfoundry.registry import LocalSkillRegistry
+from skillfoundry.schema import sha256_file
 from skillfoundry.workspace import initialize_job_workspace
 
 
@@ -312,6 +314,89 @@ def test_forgeunit_command_bridge_pilot_verifies_and_registers_offline_package(t
     assert "raw_prompt" not in serialized_state
     assert "raw_transcript" not in serialized_state
     assert "package_content" not in serialized_state
+
+
+def test_acceptance_coverage_rerun_refreshes_artifact_manifest_hash(tmp_path: Path, monkeypatch) -> None:
+    workspace = initialize_job_workspace(tmp_path / "runs", "forgeunit-coverage-refresh")
+    workspace.resolve_path("acceptance_criteria.yaml").write_text("criteria: []\n", encoding="utf-8")
+    workspace.resolve_path("qa").mkdir(parents=True, exist_ok=True)
+    workspace.resolve_path("qa/acceptance_coverage_plan.json").write_text('{"old": "plan"}\n', encoding="utf-8")
+    workspace.resolve_path("qa/acceptance_coverage_result.json").write_text(
+        '{"old": "result"}\n',
+        encoding="utf-8",
+    )
+    forgeunit_adapter._upsert_manifest_records(
+        workspace,
+        ["qa/acceptance_coverage_plan.json", "qa/acceptance_coverage_result.json"],
+        created_by="test",
+    )
+    old_result_hash = sha256_file(workspace.resolve_path("qa/acceptance_coverage_result.json", must_exist=True))
+
+    class FakePlanner:
+        def plan(self, workspace):
+            workspace.resolve_path("qa/acceptance_coverage_plan.json").write_text(
+                '{"new": "plan"}\n',
+                encoding="utf-8",
+            )
+            return object()
+
+    class FakeCoverageResult:
+        passed = True
+
+    class FakeEvaluator:
+        def evaluate(self, workspace, *, plan):
+            workspace.resolve_path("qa/acceptance_coverage_result.json").write_text(
+                '{"new": "result"}\n',
+                encoding="utf-8",
+            )
+            return FakeCoverageResult()
+
+    monkeypatch.setattr(forgeunit_adapter, "AcceptanceCriteriaPlanner", FakePlanner)
+    monkeypatch.setattr(forgeunit_adapter, "AcceptanceCoverageEvaluator", FakeEvaluator)
+    state = {
+        "schema_version": "skillfoundry.graph_v2_state.v1",
+        "job_id": workspace.job_id,
+        "stage": V2Stage.VERIFY.value,
+        "status": V2Status.VERIFIED.value,
+        "attempt_count": 1,
+        "attempt_limit": 1,
+        "refs": {},
+        "hashes": {},
+        "contextforge": {},
+        "human_review_required": False,
+        "next_route": "continue",
+    }
+
+    next_state = forgeunit_adapter._maybe_write_acceptance_coverage(workspace, state)
+
+    new_result_hash = sha256_file(workspace.resolve_path("qa/acceptance_coverage_result.json", must_exist=True))
+    manifest_record = next(
+        record for record in workspace.read_manifest().artifacts if record.path == "qa/acceptance_coverage_result.json"
+    )
+    assert new_result_hash != old_result_hash
+    assert manifest_record.sha256 == new_result_hash
+    assert next_state["hashes"]["acceptance_coverage_result"] == new_result_hash
+
+
+def test_existing_verifier_outputs_refresh_artifact_manifest_hash(tmp_path: Path) -> None:
+    workspace = initialize_job_workspace(tmp_path / "runs", "forgeunit-verifier-refresh")
+    verifier_ref = "verifier/verification_result.json"
+    workspace.resolve_path(verifier_ref).write_text('{"old": "verifier"}\n', encoding="utf-8")
+    forgeunit_adapter._upsert_manifest_records(workspace, [verifier_ref], created_by="test")
+    old_hash = sha256_file(workspace.resolve_path(verifier_ref, must_exist=True))
+
+    workspace.resolve_path(verifier_ref).write_text('{"new": "verifier"}\n', encoding="utf-8")
+    forgeunit_adapter._upsert_existing_manifest_records(
+        workspace,
+        [verifier_ref, "verifier/missing.json"],
+        created_by="test-refresh",
+    )
+
+    new_hash = sha256_file(workspace.resolve_path(verifier_ref, must_exist=True))
+    manifest_record = next(record for record in workspace.read_manifest().artifacts if record.path == verifier_ref)
+    assert new_hash != old_hash
+    assert manifest_record.sha256 == new_hash
+    assert manifest_record.created_by == "test-refresh"
 
 
 def test_forgeunit_repair_pilot_registers_initial_success_without_repair(tmp_path: Path) -> None:

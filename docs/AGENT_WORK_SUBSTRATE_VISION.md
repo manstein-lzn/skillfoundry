@@ -1,6 +1,6 @@
 # Agent Work Substrate Vision
 
-最后更新：2026-05-24
+最后更新：2026-05-27
 
 ## 文档地位
 
@@ -9,6 +9,8 @@
 它不是 SkillFoundry 的产品愿景，而是 SkillFoundry 背后的通用 agent work substrate 愿景。
 
 SkillFoundry 是这套底座的第一个产品化组合应用。Capability Bundle Factory 是 SkillFoundry 的当前业务形态，但并不是这套底座的能力边界。
+
+更长期的递归组织目标见 `docs/RECURSIVE_AGENT_ORGANIZATION_VISION.md`。本文定义底座分层；该文定义这些底座 primitives 如何递归组合成 agent team、department、organization 和更大智能组织。
 
 本文不声称当前代码已经完整实现所有抽象。当前实现状态仍以 `README.md`、`docs/SYSTEM_MAP.md`、`docs/FORGEUNIT_SKILLFOUNDRY_COMPOSITION.md` 和测试结果为准。
 
